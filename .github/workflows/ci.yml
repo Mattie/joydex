@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore .\VirpilCodexPad.sln
+
+      - name: Audit transitive packages
+        shell: pwsh
+        run: |
+          $audit = dotnet list .\VirpilCodexPad.sln package --vulnerable --include-transitive
+          $audit | Out-String | Write-Host
+          if ($audit -match 'has the following vulnerable packages') {
+            throw 'NuGet reported one or more vulnerable packages.'
+          }
+
+      - name: Build
+        run: dotnet build .\VirpilCodexPad.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test .\VirpilCodexPad.sln --configuration Release --no-build --no-restore

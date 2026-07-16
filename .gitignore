@@ -1,0 +1,24 @@
+# Local SDKs, packages, and build output
+/.tools/
+/artifacts/
+bin/
+obj/
+TestResults/
+*.user
+*.log
+
+# Workstation-only agent and scratch data
+/.agents/
+/.codex-dev-logs/
+/tmp/
+AGENTS.local.md
+AGENTS.override.md
+
+# Machine-specific configuration
+/config/virpil-codex-pad.json
+/config/config.json
+
+# Local reference material retained outside the public source set
+/Virpil Mongoose T-50CM2+3 Fillable.pdf
+/vpc-mongoost-50cm3-throttle-template-v0.webp
+/src/VirpilCodexPad.App/Assets/cm3-button-map.png

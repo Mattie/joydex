@@ -1,0 +1,23 @@
+{
+  "device": {
+    "productNameContains": "VPC Throttle MT-50CM3"
+  },
+  "polling": {
+    "connectWarmupMs": 250,
+    "pollIntervalMs": 16,
+    "reconnectIntervalMs": 2000,
+    "actionCooldownMs": 250,
+    "axisTraceThreshold": 512
+  },
+  "safety": {
+    "dryRun": true,
+    "requireCodexForeground": true,
+    "codexProcessNames": [
+      "ChatGPT",
+      "Codex"
+    ],
+    "simulatorProcessNames": []
+  },
+  "bankSelectors": {},
+  "bindings": []
+}

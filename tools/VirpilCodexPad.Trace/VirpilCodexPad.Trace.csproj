@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\VirpilCodexPad.Core\VirpilCodexPad.Core.csproj" />
+    <ProjectReference Include="..\..\src\VirpilCodexPad.Windows\VirpilCodexPad.Windows.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+  </PropertyGroup>
+
+</Project>
