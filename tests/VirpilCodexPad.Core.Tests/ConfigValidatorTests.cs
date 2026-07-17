@@ -114,6 +114,57 @@ public sealed class ConfigValidatorTests
             error => error.Contains("must remain true", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void ExistingConfigurationsDefaultOpenToVisualStudioCode()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "VirpilCodexPadTests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "config.json");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(path, "{}");
+        try
+        {
+            var config = ConfigStore.LoadOrCreate(path);
+
+            Assert.Equal(OpenWorkingDirectoryOptions.VisualStudioCodeTarget, config.OpenWorkingDirectory.Target);
+            Assert.Empty(ConfigValidator.Validate(config));
+
+            var explorerConfig = new CompanionConfig
+            {
+                Device = config.Device,
+                Polling = config.Polling,
+                Safety = config.Safety,
+                OpenWorkingDirectory = new OpenWorkingDirectoryOptions
+                {
+                    Target = OpenWorkingDirectoryOptions.FileExplorerTarget,
+                },
+                BankSelectors = config.BankSelectors,
+                Bindings = config.Bindings,
+            };
+            ConfigStore.Save(path, explorerConfig);
+
+            Assert.Equal(
+                OpenWorkingDirectoryOptions.FileExplorerTarget,
+                ConfigStore.LoadOrCreate(path).OpenWorkingDirectory.Target);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void RejectsUnknownOpenWorkingDirectoryTarget()
+    {
+        var config = new CompanionConfig
+        {
+            OpenWorkingDirectory = new OpenWorkingDirectoryOptions { Target = "powershell" },
+        };
+
+        Assert.Contains(
+            ConfigValidator.Validate(config),
+            error => error.Contains("openWorkingDirectory.target", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(101)]

@@ -69,13 +69,13 @@ public sealed class ForegroundSafetyTests
     {
         var guard = new RecordingGuard(new ForegroundCheck(true, "ChatGPT", "allowed"));
         var log = new List<string>();
-        var executor = new CodexActionExecutor(Safety(dryRun: true), log.Add, guard);
+        var executor = CreateExecutor(Safety(dryRun: true), log.Add, guard);
 
         var result = await executor.ExecuteAsync(Request(CodexAction.NewTask), CancellationToken.None);
 
         Assert.False(result.Executed);
         Assert.True(result.DryRun);
-        Assert.True(guard.LastActionMayBringCodexForward);
+        Assert.False(guard.LastActionMayBringCodexForward);
         Assert.Contains("DRY RUN new-task", Assert.Single(log), StringComparison.Ordinal);
     }
 
@@ -84,7 +84,7 @@ public sealed class ForegroundSafetyTests
     {
         var guard = new RecordingGuard(new ForegroundCheck(false, "DCS", "blocked"));
         var log = new List<string>();
-        var executor = new CodexActionExecutor(Safety(dryRun: true), log.Add, guard);
+        var executor = CreateExecutor(Safety(dryRun: true), log.Add, guard);
 
         var result = await executor.ExecuteAsync(Request(CodexAction.ToggleSidebar), CancellationToken.None);
 
@@ -102,7 +102,7 @@ public sealed class ForegroundSafetyTests
     {
         var guard = new RecordingGuard(new ForegroundCheck(false, "Explorer", "Codex is not foreground"));
         var log = new List<string>();
-        var executor = new CodexActionExecutor(Safety(dryRun: false), log.Add, guard);
+        var executor = CreateExecutor(Safety(dryRun: false), log.Add, guard);
 
         var result = await executor.ExecuteAsync(Request(CodexAction.ToggleSidebar), CancellationToken.None);
 
@@ -120,8 +120,10 @@ public sealed class ForegroundSafetyTests
         var executor = new CodexActionExecutor(
             Safety(dryRun: true),
             log.Add,
-            guard,
-            request => delivered = request);
+            new FixedResolver(),
+            new OpenWorkingDirectoryOptions(),
+            foregroundGuard: guard,
+            internalAction: request => delivered = request);
 
         var result = await executor.ExecuteAsync(Request(CodexAction.ButtonMap), CancellationToken.None);
 
@@ -144,6 +146,51 @@ public sealed class ForegroundSafetyTests
         Trigger: "press",
         Action: action,
         RequestedAt: DateTimeOffset.UtcNow);
+
+    private static CodexActionExecutor CreateExecutor(
+        SafetyOptions safety,
+        Action<string> log,
+        IForegroundProcessGuard guard) => new(
+            safety,
+            log,
+            new FixedResolver(),
+            new OpenWorkingDirectoryOptions(),
+            foregroundGuard: guard,
+            inputSender: new RecordingInputSender());
+
+    private sealed class FixedResolver : ICodexKeybindingResolver
+    {
+        public Task<CodexBindingResolution> ResolveAsync(
+            CodexAction action,
+            CancellationToken cancellationToken)
+        {
+            KeySequenceParser.TryParse("Ctrl+N", false, out var sequence, out _);
+            return Task.FromResult(new CodexBindingResolution(
+                action,
+                action.ToString(),
+                sequence,
+                CodexBindingSource.User,
+                CodexBindingSnapshotState.Current,
+                null));
+        }
+    }
+
+    private sealed class RecordingInputSender : IInputSender
+    {
+        public Task SendSequenceAsync(KeySequence sequence, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public void HoldChord(KeyChord chord)
+        {
+        }
+
+        public void ReleaseChord(KeyChord chord)
+        {
+        }
+
+        public void SendMouseWheel(int delta)
+        {
+        }
+    }
 
     private sealed class RecordingGuard(ForegroundCheck result) : IForegroundProcessGuard
     {

@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
 
@@ -26,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\VirpilCodexPad.Core\VirpilCodexPad.Core.csproj" />
     <ProjectReference Include="..\..\src\VirpilCodexPad.Windows\VirpilCodexPad.Windows.csproj" />
+    <ProjectReference Include="..\..\src\VirpilCodexPad.App\VirpilCodexPad.App.csproj" />
   </ItemGroup>
 
 </Project>

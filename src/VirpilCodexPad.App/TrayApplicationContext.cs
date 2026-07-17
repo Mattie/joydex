@@ -14,6 +14,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly string _windowStatePath;
     private readonly string _buttonMapStatePath;
     private readonly FileLog _log;
+    private readonly CodexKeybindingService _keybindingService;
     private readonly CooperativeWindow _cooperativeWindow;
     private readonly Icon _appIcon;
     private readonly NotifyIcon _notifyIcon;
@@ -33,12 +34,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
     public TrayApplicationContext(string configPath)
     {
         _configPath = configPath;
+        var existingCompanionInstall = ConfigPathResolver.HasExistingInstallation(
+            configPath,
+            CodexKeybindingService.DefaultProvisioningStatePath);
         var dataDirectory = Path.GetDirectoryName(Path.GetFullPath(configPath))
             ?? throw new InvalidOperationException("The configuration path has no parent directory.");
         _windowStatePath = Path.Combine(dataDirectory, "configuration-window.json");
         _buttonMapStatePath = Path.Combine(dataDirectory, "button-map-window.json");
         _log = new FileLog(Path.Combine(dataDirectory, "virpil-codex-pad.log"));
-        var shortcutsMigrated = TryMigrateLegacyCodexShortcuts();
+        _keybindingService = CodexKeybindingService.CreateDefault(_log.Write, existingCompanionInstall);
+        _keybindingService.InitializeAsync().GetAwaiter().GetResult();
         _cooperativeWindow = new CooperativeWindow("Virpil Codex Pad");
         _appIcon = AppIconFactory.Create();
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
@@ -84,14 +89,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Visible = true,
         };
         _notifyIcon.DoubleClick += OnConfigure;
-        if (shortcutsMigrated)
-        {
-            _notifyIcon.ShowBalloonTip(
-                6000,
-                "Codex shortcuts repaired",
-                "Restart Codex once to activate the updated throttle shortcuts.",
-                ToolTipIcon.Info);
-        }
 
         var firstRun = !File.Exists(_configPath);
         StartWorker(showFirstRunNotice: firstRun);
@@ -102,25 +99,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         else if (_activeConfig?.Safety.DryRun == true)
         {
             _uiContext.Post(_ => OnTestControls(this, EventArgs.Empty), null);
-        }
-    }
-
-    private bool TryMigrateLegacyCodexShortcuts()
-    {
-        try
-        {
-            var migrated = CodexShortcutInstaller.MigrateLegacyExtendedFunctionBindings();
-            if (migrated)
-            {
-                _log.Write("Migrated Codex shortcuts from F13-F24 to Ctrl+Alt+Shift+F1-F12.");
-            }
-
-            return migrated;
-        }
-        catch (Exception exception)
-        {
-            _log.Write($"Could not migrate legacy Codex shortcuts: {exception.Message}");
-            return false;
         }
     }
 
@@ -140,6 +118,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _worker.DisposeAsync().AsTask().GetAwaiter().GetResult();
             _worker = null;
         }
+
+        _keybindingService.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
@@ -196,6 +176,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     CodexProcessNames = current.Safety.CodexProcessNames,
                     SimulatorProcessNames = current.Safety.SimulatorProcessNames,
                 },
+                OpenWorkingDirectory = current.OpenWorkingDirectory,
                 BankSelectors = current.BankSelectors,
                 Bindings = current.Bindings,
             };
@@ -299,6 +280,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var executor = new CodexActionExecutor(
                 config.Safety,
                 WriteActivity,
+                _keybindingService,
+                config.OpenWorkingDirectory,
                 internalAction: OnInternalAction);
             _worker = new CompanionWorker(config, source, executor, WriteActivity);
             _worker.StatusChanged += OnStatusChanged;
@@ -398,7 +381,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             if (_buttonMapForm is null || _buttonMapForm.IsDisposed)
             {
-                _buttonMapForm = new ButtonMapForm(_activeConfig, _buttonMapStatePath);
+                _buttonMapForm = new ButtonMapForm(_activeConfig, _buttonMapStatePath, _log.Write);
                 _buttonMapForm.VisibleChanged += (_, _) =>
                     _buttonMapItem.Checked = _buttonMapForm is { Visible: true };
             }
@@ -482,5 +465,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         message.StartsWith("INPUT ", StringComparison.Ordinal)
         || message.StartsWith("DRY RUN ", StringComparison.Ordinal)
         || message.StartsWith("BLOCKED ", StringComparison.Ordinal)
+        || message.StartsWith("FAILED ", StringComparison.Ordinal)
         || message.StartsWith("EXECUTED ", StringComparison.Ordinal);
 }

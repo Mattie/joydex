@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using VirpilCodexPad.Core.Config;
@@ -9,7 +10,7 @@ internal sealed class ButtonMapForm : Form
     private readonly string _windowStatePath;
     private readonly ButtonMapCanvas _canvas;
 
-    public ButtonMapForm(CompanionConfig config, string windowStatePath)
+    public ButtonMapForm(CompanionConfig config, string windowStatePath, Action<string>? log = null)
     {
         _windowStatePath = windowStatePath;
 
@@ -23,7 +24,7 @@ internal sealed class ButtonMapForm : Form
         ShowInTaskbar = false;
         TopMost = true;
 
-        _canvas = new ButtonMapCanvas(config) { Dock = DockStyle.Fill };
+        _canvas = new ButtonMapCanvas(config, log) { Dock = DockStyle.Fill };
         Controls.Add(_canvas);
         RestoreWindowState();
     }
@@ -130,19 +131,35 @@ internal sealed class ButtonMapForm : Form
 
 internal sealed class ButtonMapCanvas : Control
 {
-    private const int TemplateWidth = 3450;
-    private const int TemplateHeight = 2560;
+    private const int TemplateWidth = 3300;
+    private const int TemplateHeight = 2550;
+    private const string TemplateAssetPath = "Assets/cm3-button-map.png";
     private static readonly IReadOnlyDictionary<int, RectangleF> ButtonRegions = CreateButtonRegions();
+    private readonly Bitmap? _templateBitmap;
+    private readonly Size _templateSize;
     private IReadOnlyDictionary<int, string> _labels;
 
-    public ButtonMapCanvas(CompanionConfig config)
+    public ButtonMapCanvas(CompanionConfig config, Action<string>? log = null)
+        : this(config, LoadTemplateBitmap(log))
+    {
+    }
+
+    private ButtonMapCanvas(CompanionConfig config, Bitmap? templateBitmap)
     {
         _labels = BuildLabels(config);
+        _templateBitmap = templateBitmap;
+        _templateSize = _templateBitmap?.Size ?? new Size(TemplateWidth, TemplateHeight);
 
         BackColor = Color.White;
         DoubleBuffered = true;
         ResizeRedraw = true;
     }
+
+    internal static ButtonMapCanvas CreateWithTemplateForTesting(
+        CompanionConfig config,
+        Bitmap templateBitmap) => new(config, templateBitmap);
+
+    internal static Size CanonicalTemplateSize => new(TemplateWidth, TemplateHeight);
 
     public void UpdateConfig(CompanionConfig config)
     {
@@ -164,6 +181,16 @@ internal sealed class ButtonMapCanvas : Control
         Draw(eventArgs.Graphics, ClientRectangle);
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _templateBitmap?.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+
     private void Draw(Graphics graphics, Rectangle bounds)
     {
         graphics.Clear(BackColor);
@@ -172,12 +199,77 @@ internal sealed class ButtonMapCanvas : Control
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-        var destination = FitRectangle(bounds, new Size(TemplateWidth, TemplateHeight));
-        DrawTemplate(graphics, destination);
-        DrawLabels(graphics, destination);
+        // ButtonRegions use the bitmap's native pixels. One layout calculation keeps
+        // the background and every overlay in the same coordinate space.
+        var layout = FitLayout(bounds, _templateSize);
+        DrawTemplate(graphics, layout.Destination);
+        DrawLabels(graphics, layout);
     }
 
-    private static void DrawTemplate(Graphics graphics, RectangleF destination)
+    private void DrawTemplate(Graphics graphics, RectangleF destination)
+    {
+        if (_templateBitmap is not null)
+        {
+            graphics.DrawImage(_templateBitmap, destination);
+            return;
+        }
+
+        DrawGeneratedTemplate(graphics, destination);
+    }
+
+    private static Bitmap? LoadTemplateBitmap(Action<string>? log)
+    {
+        var packagedPath = Path.Combine(AppContext.BaseDirectory, TemplateAssetPath);
+        var userPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "VirpilCodexPad",
+            "cm3-button-map.png");
+        return LoadTemplateBitmap([userPath, packagedPath], log);
+    }
+
+    internal static Bitmap? LoadTemplateBitmap(
+        IEnumerable<string> candidatePaths,
+        Action<string>? log = null)
+    {
+        foreach (var path in candidatePaths.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var decoded = Image.FromStream(stream, useEmbeddedColorManagement: true, validateImageData: true);
+                var bitmap = new Bitmap(decoded);
+                if (bitmap.Size != CanonicalTemplateSize)
+                {
+                    var message =
+                        $"CM3 button-map bitmap '{path}' is {bitmap.Width}x{bitmap.Height}; "
+                        + $"expected {TemplateWidth}x{TemplateHeight}. The mismatched bitmap was skipped.";
+                    bitmap.Dispose();
+                    Trace.TraceError(message);
+                    log?.Invoke(message);
+                    continue;
+                }
+
+                log?.Invoke($"Loaded the CM3 button-map bitmap from '{path}' ({bitmap.Width}x{bitmap.Height}).");
+                return bitmap;
+            }
+            catch (Exception error)
+            {
+                Trace.TraceError("CM3 button-map asset could not be loaded from {0}: {1}", path, error.Message);
+                log?.Invoke($"Could not load the CM3 button-map bitmap from '{path}': {error.Message}");
+            }
+        }
+
+        Trace.TraceWarning("CM3 button-map assets were not found; using the generated fallback.");
+        log?.Invoke("CM3 button-map bitmap unavailable; using the generated fallback.");
+        return null;
+    }
+
+    private static void DrawGeneratedTemplate(Graphics graphics, RectangleF destination)
     {
         var state = graphics.Save();
         var scale = destination.Width / TemplateWidth;
@@ -253,7 +345,7 @@ internal sealed class ButtonMapCanvas : Control
             DrawBankHeading(graphics, "M5", 2014, headingFont, textBrush, center);
 
             graphics.DrawString(
-                "Labels are generated from the current configuration",
+                "Generated fallback - CM3 bitmap asset unavailable",
                 subtitleFont,
                 mutedTextBrush,
                 new RectangleF(900, 2480, 1650, 45),
@@ -334,9 +426,10 @@ internal sealed class ButtonMapCanvas : Control
         StringFormat center) =>
         graphics.DrawString(text, font, brush, new RectangleF(2600, top - 52, 668, 42), center);
 
-    private void DrawLabels(Graphics graphics, RectangleF destination)
+    private void DrawLabels(Graphics graphics, ButtonMapLayout layout)
     {
-        var scale = destination.Width / TemplateWidth;
+        var destination = layout.Destination;
+        var scale = layout.Scale;
         var fontSize = Math.Clamp(25F * scale, 7.5F, 15F);
         using var font = new Font("Segoe UI Semibold", fontSize, FontStyle.Bold, GraphicsUnit.Pixel);
         using var badgeFont = new Font(
@@ -447,18 +540,20 @@ internal sealed class ButtonMapCanvas : Control
             RectangleF.Inflate(legend, -8F, -6F));
     }
 
-    private static RectangleF FitRectangle(Rectangle bounds, Size imageSize)
+    private static ButtonMapLayout FitLayout(Rectangle bounds, Size imageSize)
     {
         var scale = Math.Min(
             bounds.Width / (float)imageSize.Width,
             bounds.Height / (float)imageSize.Height);
         var width = imageSize.Width * scale;
         var height = imageSize.Height * scale;
-        return new RectangleF(
-            bounds.Left + (bounds.Width - width) / 2F,
-            bounds.Top + (bounds.Height - height) / 2F,
-            width,
-            height);
+        return new ButtonMapLayout(
+            new RectangleF(
+                bounds.Left + (bounds.Width - width) / 2F,
+                bounds.Top + (bounds.Height - height) / 2F,
+                width,
+                height),
+            scale);
     }
 
     private static RectangleF Transform(RectangleF source, RectangleF destination, float scale) => new(
@@ -466,6 +561,8 @@ internal sealed class ButtonMapCanvas : Control
         destination.Y + source.Y * scale,
         source.Width * scale,
         source.Height * scale);
+
+    private readonly record struct ButtonMapLayout(RectangleF Destination, float Scale);
 
     private static IReadOnlyDictionary<int, string> BuildLabels(CompanionConfig config) =>
         config.Bindings
@@ -507,6 +604,7 @@ internal sealed class ButtonMapCanvas : Control
         "toggle-sidebar" => "Sidebar",
         "open-skills" => "Skills",
         "dictation" => "Dictation",
+        "open" => "Open",
         _ => action.Replace('-', ' '),
     };
 

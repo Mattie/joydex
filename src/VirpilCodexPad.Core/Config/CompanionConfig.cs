@@ -10,6 +10,8 @@ public sealed class CompanionConfig
 
     public SafetyOptions Safety { get; init; } = new();
 
+    public OpenWorkingDirectoryOptions OpenWorkingDirectory { get; init; } = new();
+
     /// <summary>
     /// Maps a bank name to the one-based logical button held by that mode-dial position.
     /// Exactly one configured selector must be held before a binding can fire.
@@ -52,6 +54,15 @@ public sealed class SafetyOptions
     public string[] CodexProcessNames { get; init; } = ["ChatGPT", "Codex"];
 
     public string[] SimulatorProcessNames { get; init; } = [];
+}
+
+public sealed class OpenWorkingDirectoryOptions
+{
+    public const string VisualStudioCodeTarget = "vscode";
+
+    public const string FileExplorerTarget = "explorer";
+
+    public string Target { get; init; } = VisualStudioCodeTarget;
 }
 
 public sealed class ButtonBinding

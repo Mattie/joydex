@@ -21,6 +21,7 @@ internal sealed class ConfigurationForm : Form
     private readonly DataGridView _bindingGrid = CreateGrid();
     private readonly CheckBox _dryRunCheckBox = new() { AutoSize = true, Text = "Dry run (log actions without sending them)" };
     private readonly TextBox _simulatorProcessesTextBox = new() { Dock = DockStyle.Fill };
+    private readonly ComboBox _openTargetCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Button _captureBankButton = new() { AutoSize = true, Text = "Capture selector" };
     private readonly Button _captureBindingButton = new() { AutoSize = true, Text = "Capture action button" };
     private readonly Button _cancelCaptureButton = new() { AutoSize = true, Text = "Cancel capture", Visible = false };
@@ -29,7 +30,6 @@ internal sealed class ConfigurationForm : Form
     private JoystickSnapshot? _lastSnapshot;
     private DateTimeOffset _captureReadyAt;
     private DateTimeOffset _nextReconnectAt;
-    private bool _installCodexShortcutsOnSave;
     private string? _loadWarning;
 
     public ConfigurationForm(string configPath, string windowStatePath, IntPtr cooperativeWindowHandle)
@@ -135,7 +135,7 @@ internal sealed class ConfigurationForm : Form
         main.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
         main.RowStyles.Add(new RowStyle(SizeType.Percent, 34));
         main.RowStyles.Add(new RowStyle(SizeType.Percent, 66));
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
+        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
         main.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
 
         var introduction = new FlowLayoutPanel
@@ -358,13 +358,13 @@ internal sealed class ConfigurationForm : Form
 
     private Control BuildSafetyGroup()
     {
-        var group = new GroupBox { Dock = DockStyle.Fill, Text = "Safety" };
+        var group = new GroupBox { Dock = DockStyle.Fill, Text = "Safety and Open" };
         var layout = new TableLayoutPanel
         {
             ColumnCount = 2,
             Dock = DockStyle.Fill,
             Padding = new Padding(8, 4, 8, 4),
-            RowCount = 3,
+            RowCount = 4,
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -372,6 +372,10 @@ internal sealed class ConfigurationForm : Form
         layout.SetColumnSpan(_dryRunCheckBox, 2);
         layout.Controls.Add(new Label { Anchor = AnchorStyles.Left, AutoSize = true, Text = "Block when these apps run" }, 0, 1);
         layout.Controls.Add(_simulatorProcessesTextBox, 1, 1);
+        layout.Controls.Add(new Label { Anchor = AnchorStyles.Left, AutoSize = true, Text = "Open working directory in" }, 0, 2);
+        _openTargetCombo.Items.AddRange(
+            [OpenWorkingDirectoryOptions.VisualStudioCodeTarget, OpenWorkingDirectoryOptions.FileExplorerTarget]);
+        layout.Controls.Add(_openTargetCombo, 1, 2);
         var hint = new Label
         {
             AutoSize = true,
@@ -379,7 +383,7 @@ internal sealed class ConfigurationForm : Form
             ForeColor = SystemColors.GrayText,
             Text = "Comma-separated process names, for example: DCS, FlightSimulator. Keyboard actions always require Codex in the foreground.",
         };
-        layout.Controls.Add(hint, 0, 2);
+        layout.Controls.Add(hint, 0, 3);
         layout.SetColumnSpan(hint, 2);
         group.Controls.Add(layout);
         return group;
@@ -475,11 +479,10 @@ internal sealed class ConfigurationForm : Form
             UpdateWheelNotchesCell(_bindingGrid.Rows[rowIndex]);
         }
 
-        _installCodexShortcutsOnSave = true;
         var profileName = dialProfile == Cm3ModeDialProfile.FiveWayShift
             ? "CM3 5-way shift mode"
             : "CM3 standard mode buttons";
-        _captureLabel.Text = $"Loaded {profileName}. Save to install the matching Codex hotkeys; Codex will need one restart.";
+        _captureLabel.Text = $"Loaded {profileName}. Save to use this device layout.";
     }
 
     private void PopulateFromConfig()
@@ -535,6 +538,11 @@ internal sealed class ConfigurationForm : Form
 
         _dryRunCheckBox.Checked = _originalConfig.Safety.DryRun;
         _simulatorProcessesTextBox.Text = string.Join(", ", _originalConfig.Safety.SimulatorProcessNames);
+        _openTargetCombo.SelectedItem = _originalConfig.OpenWorkingDirectory.Target;
+        if (_openTargetCombo.SelectedIndex < 0)
+        {
+            _openTargetCombo.SelectedItem = OpenWorkingDirectoryOptions.VisualStudioCodeTarget;
+        }
     }
 
     private void ConnectSelectedDevice()
@@ -757,6 +765,11 @@ internal sealed class ConfigurationForm : Form
                 CodexProcessNames = _originalConfig.Safety.CodexProcessNames,
                 SimulatorProcessNames = simulatorProcesses,
             },
+            OpenWorkingDirectory = new OpenWorkingDirectoryOptions
+            {
+                Target = Convert.ToString(_openTargetCombo.SelectedItem)
+                    ?? OpenWorkingDirectoryOptions.VisualStudioCodeTarget,
+            },
             BankSelectors = bankSelectors,
             Bindings = bindings,
         };
@@ -788,11 +801,6 @@ internal sealed class ConfigurationForm : Form
 
         try
         {
-            if (_installCodexShortcutsOnSave)
-            {
-                CodexShortcutInstaller.Install();
-            }
-
             ConfigStore.Save(_configPath, config);
             DialogResult = DialogResult.OK;
             Close();

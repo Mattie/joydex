@@ -30,6 +30,7 @@ public enum CodexAction
     ToggleSidebar,
     OpenSkills,
     Dictation,
+    OpenWorkingDirectory,
 }
 
 public static class CodexActionCatalog
@@ -65,6 +66,7 @@ public static class CodexActionCatalog
             ["toggle-sidebar"] = CodexAction.ToggleSidebar,
             ["open-skills"] = CodexAction.OpenSkills,
             ["dictation"] = CodexAction.Dictation,
+            ["open"] = CodexAction.OpenWorkingDirectory,
         };
 
     public static IEnumerable<string> SupportedIds => Actions.Keys.Order(StringComparer.OrdinalIgnoreCase);

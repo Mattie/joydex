@@ -8,11 +8,13 @@ namespace VirpilCodexPad.Windows.Runtime;
 
 public sealed class CompanionWorker(
     CompanionConfig config,
-    DirectInputJoystickSource source,
+    IJoystickSource source,
     CodexActionExecutor executor,
-    Action<string> log) : IAsyncDisposable
+    Action<string> log,
+    IInjectedKeyStateLifecycle? keyStateLifecycle = null) : IAsyncDisposable
 {
     private readonly CompanionEngine _engine = new(config);
+    private readonly IInjectedKeyStateLifecycle _keyStateLifecycle = keyStateLifecycle ?? executor;
     private CancellationTokenSource? _cancellation;
     private Task? _runTask;
 
@@ -27,7 +29,7 @@ public sealed class CompanionWorker(
 
         try
         {
-            executor.ClearInjectedKeyState();
+            _keyStateLifecycle.ClearInjectedKeyState();
         }
         catch (Exception exception)
         {
@@ -95,7 +97,7 @@ public sealed class CompanionWorker(
         {
             try
             {
-                executor.ReleaseHeldKeys();
+                _keyStateLifecycle.ReleaseHeldKeys();
             }
             catch (Exception exception)
             {

@@ -13,8 +13,8 @@ When available, ready-to-run packages are distributed through the repository's G
 3. The app appears in the Windows system tray. Its configuration window opens automatically the first time.
 4. Choose the CM3 throttle in the device list.
 5. Choose **Load Codex Micro defaults**.
-6. Choose **Save and close**. The app installs the matching Codex keyboard shortcuts and keeps **Dry run** enabled.
-7. Restart Codex once so it reads the new shortcuts. The tray companion can stay open.
+6. Choose **Save and close**. The app keeps **Dry run** enabled.
+7. Configure Codex commands in **Settings → Keyboard Shortcuts**. Joystick actions follow changes made there without restarting the companion.
 
 The starter profile follows the Codex Micro controls:
 
@@ -42,9 +42,10 @@ T3 is the quick-reference control: hold it up to show the floating CM3 button ma
 - Reasoning encoder pulses bypass that cooldown so each detent reaches Codex.
 - Keyboard shortcuts require ChatGPT/Codex to be the foreground process; this guard cannot be disabled in the MVP.
 - Processes in `simulatorProcessNames` block every action, including deep links.
-- The action catalog contains fixed Codex commands. It cannot run shell commands or send free-form text.
+- Command-backed actions resolve the current Codex keyboard binding immediately before dispatch. Scroll, Home, End, and the internal button-map action remain fixed raw gestures.
+- The action catalog cannot run arbitrary shell commands or send free-form text.
 
-`new-task` and `open-skills` use documented `codex://` deep links and may bring Codex forward. Other actions use the documented Windows shortcuts and remain foreground-gated. See [ChatGPT desktop app commands](https://learn.chatgpt.com/docs/reference/commands.md).
+The resolver runs in-process as part of the tray application; it is not a separate Windows service. It watches `%USERPROFILE%\.codex\keybindings.json`, checks file metadata again before each dispatch, and retains the last known-good snapshot during partial writes. Codex remains authoritative: the companion never restores a shortcut that you change or remove in Codex.
 
 ## Advanced: build from source
 
@@ -76,6 +77,18 @@ Move one control at a time. Trace output uses one-based button numbers, matching
 ## Advanced: configuration file
 
 The tray application creates `%LOCALAPPDATA%\VirpilCodexPad\config.json` and `%LOCALAPPDATA%\VirpilCodexPad\virpil-codex-pad.log`. The graphical configuration pane manages the file for normal use.
+
+The Open action first invokes Codex's `copyWorkingDirectory` command, waits for a fresh clipboard value, validates it as an existing absolute directory, and opens it in a fixed supported target. VS Code is the default; File Explorer is also available in the configuration pane:
+
+```json
+{
+  "openWorkingDirectory": {
+    "target": "vscode"
+  }
+}
+```
+
+The copied directory remains on the clipboard. Clipboard contents are never written to the activity log.
 
 The checked-in [example configuration](config/virpil-codex-pad.example.json) selects the throttle by product name and intentionally omits machine-specific DirectInput GUIDs. The graphical pane writes the normal configuration. A direct binding that works without a bank uses the reserved `always` bank:
 
@@ -113,33 +126,32 @@ or the app's `--config D:\path\to\config.json` argument.
 
 ## Supported actions
 
-| Action ID | Codex operation | Delivery |
+| Action ID | Codex operation | Command ID / delivery |
 | --- | --- | --- |
-| `agent-1` through `agent-6` | Select agent slot 1-6 | `Ctrl+Alt+Shift+F1` through `F6` |
-| `fast-mode` | Toggle fast mode | `Ctrl+Alt+Shift+F7` |
-| `approve` / `reject` | Answer an approval request | `Ctrl+Alt+Shift+F8` / `F9` |
-| `fork-task` | Fork the current task | `Ctrl+Alt+Shift+F10` |
-| `push-to-talk` | Hold global dictation | `Ctrl+CapsLock` held |
-| `submit` | Submit the composer | `Ctrl+Alt+Shift+F11` |
-| `plan-mode` | Toggle plan mode | `Ctrl+Alt+Shift+F12` |
-| `reasoning-up` / `reasoning-down` | Change reasoning effort | `Ctrl+Alt+PageUp` / `Ctrl+Alt+PageDown` |
+| `agent-1` through `agent-6` | Select task slot 1-6 | `thread1` through `thread6` |
+| `fast-mode` | Toggle fast mode | `composer.toggleFastMode` |
+| `approve` / `reject` | Answer an approval request | `approval.approve` / `approval.decline` |
+| `fork-task` | Fork the current task | `forkThread` |
+| `push-to-talk` | Hold global dictation | `globalDictationHold` (resolved chord is held) |
+| `submit` | Submit the composer | `composer.submit` |
+| `plan-mode` | Toggle plan mode | `composer.togglePlanMode` |
+| `reasoning-up` / `reasoning-down` | Change reasoning effort | `composer.increaseReasoningEffort` / `composer.decreaseReasoningEffort` |
 | `scroll-up` / `scroll-down` | Scroll the pane under the pointer | Configurable 1-100 mouse-wheel notches per encoder detent |
 | `home` / `end` | Send Home or End | Unmodified `Home` / `End` key |
 | `button-map` | Show the floating CM3 quick-reference map | Internal press-to-show / release-to-hide window |
-| `new-task` | Open a new local task | `codex://threads/new` |
-| `open-skills` | Open Skills | `codex://skills` |
-| `previous-task` | Select previous task | `Ctrl+Shift+[` |
-| `next-task` | Select next task | `Ctrl+Shift+]` |
-| `navigate-back` | Navigate back | `Ctrl+[` |
-| `navigate-forward` | Navigate forward | `Ctrl+]` |
-| `toggle-sidebar` | Toggle sidebar | `Ctrl+B` |
-| `dictation` | Start dictation | `Ctrl+Shift+D` |
+| `new-task` | Open a new local task | `newTask` |
+| `open-skills` | Open Skills | `openSkills` |
+| `previous-task` / `next-task` | Select adjacent task | `previousThread` / `nextThread` |
+| `navigate-back` / `navigate-forward` | Navigate history | `navigateBack` / `navigateForward` |
+| `toggle-sidebar` | Toggle sidebar | `toggleSidebar` |
+| `dictation` | Start dictation | `composer.startDictation` |
+| `open` | Open the copied working directory | `copyWorkingDirectory`, then the configured fixed launcher |
 
-The one-click profile merges these keys into `%USERPROFILE%\.codex\keybindings.json` and preserves unrelated bindings such as global dictation. Older F13-F24 bindings installed by this companion are migrated automatically.
+Commands with a verified Codex default use that default when the user keymap has no entry. Commands without a built-in shortcut may be provisioned once on initial setup. Provisioning preserves every existing entry and records per-command state so deleted bindings stay deleted. Existing extended function-key bindings remain supported and become ordinary user-editable Codex bindings.
 
 ## Scope
 
-This companion does not write a VPC profile, flash firmware, control RGB, or click desktop UI. Approve and Submit remain fixed, foreground-gated Codex commands.
+This companion does not write a VPC profile, flash firmware, control RGB, inspect Codex UI, or click desktop UI. All command-backed actions remain foreground-gated and use Codex's current keyboard-shortcut configuration.
 
 ## License and trademarks
 

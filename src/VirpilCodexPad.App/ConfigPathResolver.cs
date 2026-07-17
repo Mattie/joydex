@@ -2,6 +2,11 @@ namespace VirpilCodexPad.App;
 
 internal static class ConfigPathResolver
 {
+    public static string DefaultPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "VirpilCodexPad",
+        "config.json");
+
     public static string Resolve(IReadOnlyList<string> args)
     {
         for (var index = 0; index < args.Count - 1; index++)
@@ -18,9 +23,13 @@ internal static class ConfigPathResolver
             return Path.GetFullPath(environmentPath);
         }
 
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "VirpilCodexPad",
-            "config.json");
+        return DefaultPath;
+    }
+
+    public static bool HasExistingInstallation(string selectedConfigPath, string provisioningStatePath)
+    {
+        return File.Exists(selectedConfigPath)
+            || File.Exists(DefaultPath)
+            || File.Exists(provisioningStatePath);
     }
 }

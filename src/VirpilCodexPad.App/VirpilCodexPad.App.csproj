@@ -5,6 +5,13 @@
     <ProjectReference Include="..\VirpilCodexPad.Windows\VirpilCodexPad.Windows.csproj" />
   </ItemGroup>
 
+  <ItemGroup Condition="Exists('Assets\cm3-button-map.png')">
+    <Content Include="Assets\cm3-button-map.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>

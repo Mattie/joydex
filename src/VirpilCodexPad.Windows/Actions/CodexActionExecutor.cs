@@ -1,341 +1,426 @@
-using System.ComponentModel;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
 using VirpilCodexPad.Core.Config;
 using VirpilCodexPad.Core.Mapping;
 
 namespace VirpilCodexPad.Windows.Actions;
 
-public sealed partial class CodexActionExecutor(
-    SafetyOptions safety,
-    Action<string> log,
-    IForegroundProcessGuard? foregroundGuard = null,
-    Action<ActionRequest>? internalAction = null)
+public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
 {
-    private readonly IForegroundProcessGuard _foregroundGuard = foregroundGuard ?? new ForegroundProcessGuard();
+    private static readonly TimeSpan ClipboardTimeout = TimeSpan.FromSeconds(2);
+    private readonly SafetyOptions _safety;
+    private readonly Action<string> _log;
+    private readonly ICodexKeybindingResolver _keybindings;
+    private readonly OpenWorkingDirectoryOptions _openWorkingDirectory;
+    private readonly IForegroundProcessGuard _foregroundGuard;
+    private readonly IInputSender _inputSender;
+    private readonly IWorkingDirectoryClipboard _clipboard;
+    private readonly WorkingDirectoryLauncherRegistry _launchers;
+    private readonly Action<ActionRequest>? _internalAction;
     private readonly object _heldKeyLock = new();
     private readonly HashSet<(string Bank, int Button)> _heldPushToTalkControls = [];
+    private KeyChord? _heldPushToTalkChord;
+    private CodexBindingResolution? _heldPushToTalkResolution;
 
-    public Task<ActionExecutionResult> ExecuteAsync(ActionRequest request, CancellationToken cancellationToken)
+    public CodexActionExecutor(
+        SafetyOptions safety,
+        Action<string> log,
+        ICodexKeybindingResolver keybindings,
+        OpenWorkingDirectoryOptions openWorkingDirectory,
+        IForegroundProcessGuard? foregroundGuard = null,
+        IInputSender? inputSender = null,
+        IWorkingDirectoryClipboard? clipboard = null,
+        WorkingDirectoryLauncherRegistry? launchers = null,
+        Action<ActionRequest>? internalAction = null)
+    {
+        _safety = safety ?? throw new ArgumentNullException(nameof(safety));
+        _log = log ?? throw new ArgumentNullException(nameof(log));
+        _keybindings = keybindings ?? throw new ArgumentNullException(nameof(keybindings));
+        _openWorkingDirectory = openWorkingDirectory ?? throw new ArgumentNullException(nameof(openWorkingDirectory));
+        _foregroundGuard = foregroundGuard ?? new ForegroundProcessGuard();
+        _inputSender = inputSender ?? new WindowsInputSender();
+        _clipboard = clipboard ?? new WindowsWorkingDirectoryClipboard();
+        _launchers = launchers ?? new WorkingDirectoryLauncherRegistry();
+        _internalAction = internalAction;
+    }
+
+    public async Task<ActionExecutionResult> ExecuteAsync(
+        ActionRequest request,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
         if (request.Action == CodexAction.ButtonMap)
         {
-            if (internalAction is null)
-            {
-                throw new InvalidOperationException("The button-map action needs an application callback.");
-            }
-
-            internalAction(request);
-            var internalMessage = $"EXECUTED button-map {request.Trigger} from {request.Bank}/button {request.Button}.";
-            log(internalMessage);
-            return Task.FromResult(ActionExecutionResult.Success(internalMessage));
+            return ExecuteInternalAction(request);
         }
 
         if (request.Action == CodexAction.PushToTalk
             && string.Equals(request.Trigger, "release", StringComparison.OrdinalIgnoreCase))
         {
-            return Task.FromResult(ReleasePushToTalk(request));
+            return ReleasePushToTalk(request);
         }
 
-        var deepLink = GetDeepLink(request.Action);
-        var wheelDelta = GetMouseWheelDelta(request.Action, request.WheelNotches);
-        var foreground = _foregroundGuard.Check(safety, deepLink is not null);
-        if (safety.DryRun)
+        CodexBindingResolution? resolution = null;
+        try
         {
-            var safetyResult = foreground.Allowed
-                ? foreground.Reason
-                : $"LIVE MODE WOULD BLOCK: {foreground.Reason}";
-            var simulated = $"DRY RUN {CodexActionCatalog.GetId(request.Action)} {request.Trigger} from {request.Bank}/button {request.Button}; {safetyResult}";
-            log(simulated);
-            return Task.FromResult(ActionExecutionResult.Simulated(simulated));
-        }
+            var commandBacked = CodexCommandCatalog.TryGet(request.Action, out var descriptor);
+            if (commandBacked)
+            {
+                resolution = new CodexBindingResolution(
+                    request.Action,
+                    descriptor.CommandId,
+                    null,
+                    CodexBindingSource.None,
+                    CodexBindingSnapshotState.Unavailable,
+                    "Binding resolution did not complete.");
+                resolution = await _keybindings.ResolveAsync(request.Action, cancellationToken).ConfigureAwait(false);
+            }
+            var foreground = _foregroundGuard.Check(_safety, actionMayBringCodexForward: false);
+            if (_safety.DryRun)
+            {
+                var blockers = new List<string>();
+                if (!foreground.Allowed)
+                {
+                    blockers.Add(foreground.Reason);
+                }
 
-        if (!foreground.Allowed)
-        {
-            var blocked = $"BLOCKED {CodexActionCatalog.GetId(request.Action)} {request.Trigger} from {request.Bank}/button {request.Button}: {foreground.Reason}";
-            log(blocked);
-            return Task.FromResult(ActionExecutionResult.Blocked(blocked));
-        }
+                if (resolution is { Resolved: false })
+                {
+                    blockers.Add(resolution.Error ?? "The Codex binding is unresolved.");
+                }
 
-        if (request.Action == CodexAction.PushToTalk)
-        {
-            HoldPushToTalk(request);
-        }
-        else if (wheelDelta is not null)
-        {
-            SendMouseWheel(wheelDelta.Value);
-        }
-        else if (deepLink is not null)
-        {
-            Process.Start(new ProcessStartInfo(deepLink) { UseShellExecute = true });
-        }
-        else
-        {
-            SendChord(GetShortcut(request.Action));
-        }
+                var safetyResult = blockers.Count == 0
+                    ? foreground.Reason
+                    : "LIVE MODE WOULD BLOCK: " + string.Join("; ", blockers);
+                var simulated =
+                    $"DRY RUN {DescribeRequest(request)}; {DescribeResolution(resolution)}; {safetyResult}";
+                _log(simulated);
+                return ActionExecutionResult.Simulated(simulated);
+            }
 
-        var message = $"EXECUTED {CodexActionCatalog.GetId(request.Action)} {request.Trigger} from {request.Bank}/button {request.Button}.";
-        log(message);
-        return Task.FromResult(ActionExecutionResult.Success(message));
+            if (!foreground.Allowed)
+            {
+                return LogBlocked(request, resolution, foreground.Reason);
+            }
+
+            if (resolution is { Resolved: false })
+            {
+                return LogBlocked(request, resolution, resolution.Error ?? "The Codex binding is unresolved.");
+            }
+
+            ActionExecutionResult result;
+            if (request.Action == CodexAction.PushToTalk)
+            {
+                result = HoldPushToTalk(request, resolution!);
+            }
+            else if (request.Action == CodexAction.OpenWorkingDirectory)
+            {
+                result = await OpenWorkingDirectoryAsync(request, resolution!, cancellationToken).ConfigureAwait(false);
+            }
+            else if (resolution is not null)
+            {
+                await _inputSender.SendSequenceAsync(resolution.Sequence!, cancellationToken).ConfigureAwait(false);
+                result = Success(request, resolution);
+            }
+            else if (RawInputCatalog.GetMouseWheelDelta(request.Action, request.WheelNotches) is { } wheelDelta)
+            {
+                _inputSender.SendMouseWheel(wheelDelta);
+                result = Success(request, null);
+            }
+            else if (RawInputCatalog.TryGetKeySequence(request.Action, out var rawSequence))
+            {
+                await _inputSender.SendSequenceAsync(rawSequence, cancellationToken).ConfigureAwait(false);
+                result = Success(request, null);
+            }
+            else
+            {
+                throw new InvalidOperationException($"Action '{request.Action}' has no execution behavior.");
+            }
+
+            if (result.Executed)
+            {
+                _log(result.Message);
+            }
+            return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _log($"FAILED {DescribeRequest(request)}; {DescribeResolution(resolution)}; error={exception.Message}");
+            throw;
+        }
     }
 
-    public void ClearInjectedKeyState() => ReleasePushToTalkKeys(force: true);
+    public void ClearInjectedKeyState()
+    {
+        var resolution = _keybindings
+            .ResolveAsync(CodexAction.PushToTalk, CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
+        if (!resolution.Resolved || resolution.Sequence!.Chords.Count != 1)
+        {
+            _log(
+                $"BLOCKED startup push-to-talk cleanup; {DescribeResolution(resolution)}; "
+                + "error=The current globalDictationHold binding is not one releasable chord.");
+            return;
+        }
+
+        try
+        {
+            _inputSender.ReleaseChord(resolution.Sequence.Chords[0]);
+            _log($"EXECUTED startup push-to-talk cleanup; {DescribeResolution(resolution)}");
+        }
+        catch (Exception exception)
+        {
+            _log($"FAILED startup push-to-talk cleanup; {DescribeResolution(resolution)}; error={exception.Message}");
+            throw;
+        }
+    }
 
     public void ReleaseHeldKeys() => ReleasePushToTalkKeys(force: false);
 
-    private void ReleasePushToTalkKeys(bool force)
+    private ActionExecutionResult ExecuteInternalAction(ActionRequest request)
     {
-        lock (_heldKeyLock)
+        if (_internalAction is null)
         {
-            if (!force && _heldPushToTalkControls.Count == 0)
-            {
-                return;
-            }
-
-            SendInputs(
-                Input.Key(VirtualKey.CapsLock, keyUp: true),
-                Input.Key(VirtualKey.Control, keyUp: true));
-            _heldPushToTalkControls.Clear();
+            throw new InvalidOperationException("The button-map action needs an application callback.");
         }
+
+        _internalAction(request);
+        var message = $"EXECUTED {DescribeRequest(request)}; internal-action";
+        _log(message);
+        return ActionExecutionResult.Success(message);
     }
 
-    private static string? GetDeepLink(CodexAction action) => action switch
+    private async Task<ActionExecutionResult> OpenWorkingDirectoryAsync(
+        ActionRequest request,
+        CodexBindingResolution resolution,
+        CancellationToken cancellationToken)
     {
-        CodexAction.NewTask => "codex://threads/new",
-        CodexAction.OpenSkills => "codex://skills",
-        _ => null,
-    };
+        var previousSequenceNumber = _clipboard.GetSequenceNumber();
+        await _inputSender.SendSequenceAsync(resolution.Sequence!, cancellationToken).ConfigureAwait(false);
+        var clipboardResult = await _clipboard
+            .WaitForNewDirectoryAsync(previousSequenceNumber, ClipboardTimeout, cancellationToken)
+            .ConfigureAwait(false);
+        if (!clipboardResult.Success)
+        {
+            return LogBlocked(request, resolution, clipboardResult.Error ?? "Codex did not copy a working directory.");
+        }
 
-    private static int? GetMouseWheelDelta(CodexAction action, int wheelNotches) => action switch
+        var launchResult = _launchers.Launch(
+            _openWorkingDirectory.Target,
+            clipboardResult.DirectoryPath!);
+        if (!launchResult.Success)
+        {
+            return LogBlocked(request, resolution, launchResult.Error ?? "The configured target could not be launched.");
+        }
+
+        return Success(request, resolution, $"target={_openWorkingDirectory.Target}");
+    }
+
+    private ActionExecutionResult HoldPushToTalk(
+        ActionRequest request,
+        CodexBindingResolution resolution)
     {
-        CodexAction.ScrollUp => checked(120 * wheelNotches),
-        CodexAction.ScrollDown => checked(-120 * wheelNotches),
-        _ => null,
-    };
+        if (resolution.Sequence!.Chords.Count != 1)
+        {
+            return LogBlocked(
+                request,
+                resolution,
+                "Push-to-talk requires a single chord. Assign globalDictationHold a single chord in Settings > Keyboard Shortcuts.");
+        }
 
-    private static ushort[] GetShortcut(CodexAction action) => action switch
-    {
-        CodexAction.Agent1 => ModifiedFunctionKey(VirtualKey.F1),
-        CodexAction.Agent2 => ModifiedFunctionKey(VirtualKey.F2),
-        CodexAction.Agent3 => ModifiedFunctionKey(VirtualKey.F3),
-        CodexAction.Agent4 => ModifiedFunctionKey(VirtualKey.F4),
-        CodexAction.Agent5 => ModifiedFunctionKey(VirtualKey.F5),
-        CodexAction.Agent6 => ModifiedFunctionKey(VirtualKey.F6),
-        CodexAction.ToggleFastMode => ModifiedFunctionKey(VirtualKey.F7),
-        CodexAction.Approve => ModifiedFunctionKey(VirtualKey.F8),
-        CodexAction.Reject => ModifiedFunctionKey(VirtualKey.F9),
-        CodexAction.ForkTask => ModifiedFunctionKey(VirtualKey.F10),
-        CodexAction.Submit => ModifiedFunctionKey(VirtualKey.F11),
-        CodexAction.TogglePlanMode => ModifiedFunctionKey(VirtualKey.F12),
-        CodexAction.IncreaseReasoning => [VirtualKey.Control, VirtualKey.Alt, VirtualKey.PageUp],
-        CodexAction.DecreaseReasoning => [VirtualKey.Control, VirtualKey.Alt, VirtualKey.PageDown],
-        CodexAction.Home => [VirtualKey.Home],
-        CodexAction.End => [VirtualKey.End],
-        CodexAction.PreviousTask => [VirtualKey.Control, VirtualKey.Shift, VirtualKey.LeftBracket],
-        CodexAction.NextTask => [VirtualKey.Control, VirtualKey.Shift, VirtualKey.RightBracket],
-        CodexAction.NavigateBack => [VirtualKey.Control, VirtualKey.LeftBracket],
-        CodexAction.NavigateForward => [VirtualKey.Control, VirtualKey.RightBracket],
-        CodexAction.ToggleSidebar => [VirtualKey.Control, VirtualKey.B],
-        CodexAction.Dictation => [VirtualKey.Control, VirtualKey.Shift, VirtualKey.D],
-        _ => throw new InvalidOperationException($"Action '{action}' has no keyboard shortcut."),
-    };
-
-    private static ushort[] ModifiedFunctionKey(ushort functionKey) =>
-        [VirtualKey.Control, VirtualKey.Alt, VirtualKey.Shift, functionKey];
-
-    private void HoldPushToTalk(ActionRequest request)
-    {
         lock (_heldKeyLock)
         {
             var control = (request.Bank, request.Button);
-            if (!_heldPushToTalkControls.Add(control)
-                || _heldPushToTalkControls.Count > 1)
+            if (!_heldPushToTalkControls.Add(control) || _heldPushToTalkControls.Count > 1)
             {
-                return;
+                return Success(request, resolution, "hold-already-active");
             }
 
+            var chord = resolution.Sequence.Chords[0];
+            _heldPushToTalkChord = chord;
+            _heldPushToTalkResolution = resolution;
             try
             {
-                SendInputs(
-                    Input.Key(VirtualKey.Control, keyUp: false),
-                    Input.Key(VirtualKey.CapsLock, keyUp: false));
+                _inputSender.HoldChord(chord);
             }
             catch
             {
                 try
                 {
-                    ReleaseHeldKeys();
+                    _inputSender.ReleaseChord(chord);
+                    _heldPushToTalkControls.Clear();
+                    _heldPushToTalkChord = null;
+                    _heldPushToTalkResolution = null;
                 }
                 catch (Exception releaseException)
                 {
-                    log($"Could not clean up a partial push-to-talk chord: {releaseException.Message}");
+                    _log($"Could not clean up a partial push-to-talk chord: {releaseException.Message}");
                 }
-
                 throw;
             }
         }
+
+        return Success(request, resolution, "hold-started");
     }
 
     private ActionExecutionResult ReleasePushToTalk(ActionRequest request)
     {
-        if (safety.DryRun)
+        CodexBindingResolution? resolution = null;
+        if (_safety.DryRun)
         {
-            var simulated = $"DRY RUN push-to-talk release from {request.Bank}/button {request.Button}.";
-            log(simulated);
+            resolution = ResolvePushToTalkForDiagnostics();
+            var simulated = $"DRY RUN {DescribeRequest(request)}; {DescribeResolution(resolution)}; release-only";
+            _log(simulated);
             return ActionExecutionResult.Simulated(simulated);
         }
 
-        ReleasePushToTalkControl(request);
-        var message = $"EXECUTED push-to-talk release from {request.Bank}/button {request.Button}.";
-        log(message);
-        return ActionExecutionResult.Success(message);
+        try
+        {
+            lock (_heldKeyLock)
+            {
+                resolution = _heldPushToTalkResolution;
+            }
+
+            var released = ReleasePushToTalkControl(request);
+            resolution = released.Resolution ?? ResolvePushToTalkForDiagnostics();
+            if (!released.ControlWasHeld)
+            {
+                return LogBlocked(request, resolution, "No push-to-talk chord was held for this control.");
+            }
+
+            var result = Success(
+                request,
+                resolution,
+                released.KeysReleased ? "release" : "hold-remains-active");
+            _log(result.Message);
+            return result;
+        }
+        catch (Exception exception)
+        {
+            _log($"FAILED {DescribeRequest(request)}; {DescribeResolution(resolution)}; error={exception.Message}");
+            throw;
+        }
     }
 
-    private void ReleasePushToTalkControl(ActionRequest request)
+    private PushToTalkRelease ReleasePushToTalkControl(ActionRequest request)
     {
         lock (_heldKeyLock)
         {
             var control = (request.Bank, request.Button);
             if (!_heldPushToTalkControls.Contains(control))
             {
-                return;
+                return new(false, false, null);
             }
 
+            var resolution = _heldPushToTalkResolution;
             if (_heldPushToTalkControls.Count > 1)
             {
                 _heldPushToTalkControls.Remove(control);
+                return new(true, false, resolution);
+            }
+
+            if (_heldPushToTalkChord is not null)
+            {
+                _inputSender.ReleaseChord(_heldPushToTalkChord);
+            }
+
+            _heldPushToTalkChord = null;
+            _heldPushToTalkResolution = null;
+            _heldPushToTalkControls.Remove(control);
+            return new(true, true, resolution);
+        }
+    }
+
+    private CodexBindingResolution ResolvePushToTalkForDiagnostics()
+    {
+        try
+        {
+            return _keybindings
+                .ResolveAsync(CodexAction.PushToTalk, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception exception)
+        {
+            CodexCommandCatalog.TryGet(CodexAction.PushToTalk, out var descriptor);
+            return new CodexBindingResolution(
+                CodexAction.PushToTalk,
+                descriptor?.CommandId ?? "globalDictationHold",
+                null,
+                CodexBindingSource.None,
+                CodexBindingSnapshotState.Unavailable,
+                exception.Message);
+        }
+    }
+
+    private void ReleasePushToTalkKeys(bool force)
+    {
+        lock (_heldKeyLock)
+        {
+            if (!force && _heldPushToTalkControls.Count == 0 && _heldPushToTalkChord is null)
+            {
                 return;
             }
 
-            SendInputs(
-                Input.Key(VirtualKey.CapsLock, keyUp: true),
-                Input.Key(VirtualKey.Control, keyUp: true));
-            _heldPushToTalkControls.Remove(control);
-        }
-    }
-
-    private static void SendChord(IReadOnlyList<ushort> keys)
-    {
-        var inputs = new Input[keys.Count * 2];
-        for (var index = 0; index < keys.Count; index++)
-        {
-            inputs[index] = Input.Key(keys[index], keyUp: false);
-            inputs[inputs.Length - index - 1] = Input.Key(keys[index], keyUp: true);
-        }
-
-        SendInputs(inputs);
-    }
-
-    private static void SendMouseWheel(int delta) => SendInputs(Input.MouseWheel(delta));
-
-    private static void SendInputs(params Input[] inputs)
-    {
-        var inputSize = Marshal.SizeOf<Input>();
-        var sent = SendInput((uint)inputs.Length, inputs, inputSize);
-        if (sent != inputs.Length)
-        {
-            var error = Marshal.GetLastWin32Error();
-            throw new Win32Exception(
-                error,
-                $"Windows accepted {sent} of {inputs.Length} input events (INPUT size {inputSize}, Win32 error {error}).");
-        }
-    }
-
-    private static class VirtualKey
-    {
-        public const ushort Shift = 0x10;
-        public const ushort Control = 0x11;
-        public const ushort Alt = 0x12;
-        public const ushort CapsLock = 0x14;
-        public const ushort PageUp = 0x21;
-        public const ushort PageDown = 0x22;
-        public const ushort End = 0x23;
-        public const ushort Home = 0x24;
-        public const ushort B = 0x42;
-        public const ushort D = 0x44;
-        public const ushort F1 = 0x70;
-        public const ushort F2 = 0x71;
-        public const ushort F3 = 0x72;
-        public const ushort F4 = 0x73;
-        public const ushort F5 = 0x74;
-        public const ushort F6 = 0x75;
-        public const ushort F7 = 0x76;
-        public const ushort F8 = 0x77;
-        public const ushort F9 = 0x78;
-        public const ushort F10 = 0x79;
-        public const ushort F11 = 0x7A;
-        public const ushort F12 = 0x7B;
-        public const ushort LeftBracket = 0xDB;
-        public const ushort RightBracket = 0xDD;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Input
-    {
-        public uint Type;
-        public InputUnion Data;
-
-        public static Input Key(ushort virtualKey, bool keyUp) => new()
-        {
-            Type = 1,
-            Data = new InputUnion
+            if (_heldPushToTalkChord is not null)
             {
-                Keyboard = new KeyboardInput
-                {
-                    VirtualKey = virtualKey,
-                    Flags = keyUp ? 0x0002u : 0u,
-                },
-            },
-        };
+                _inputSender.ReleaseChord(_heldPushToTalkChord);
+            }
 
-        public static Input MouseWheel(int delta) => new()
+            _heldPushToTalkChord = null;
+            _heldPushToTalkResolution = null;
+            _heldPushToTalkControls.Clear();
+        }
+    }
+
+    private readonly record struct PushToTalkRelease(
+        bool ControlWasHeld,
+        bool KeysReleased,
+        CodexBindingResolution? Resolution);
+
+    private ActionExecutionResult LogBlocked(
+        ActionRequest request,
+        CodexBindingResolution? resolution,
+        string reason)
+    {
+        var message = $"BLOCKED {DescribeRequest(request)}; {DescribeResolution(resolution)}; error={reason}";
+        _log(message);
+        return ActionExecutionResult.Blocked(message);
+    }
+
+    private static ActionExecutionResult Success(
+        ActionRequest request,
+        CodexBindingResolution? resolution,
+        string? detail = null)
+    {
+        var suffix = string.IsNullOrWhiteSpace(detail) ? string.Empty : $"; {detail}";
+        var message = $"EXECUTED {DescribeRequest(request)}; {DescribeResolution(resolution)}{suffix}";
+        return ActionExecutionResult.Success(message);
+    }
+
+    private static string DescribeRequest(ActionRequest request) =>
+        $"{CodexActionCatalog.GetId(request.Action)} {request.Trigger} from {request.Bank}/button {request.Button}";
+
+    private static string DescribeResolution(CodexBindingResolution? resolution)
+    {
+        if (resolution is null)
         {
-            Type = 0,
-            Data = new InputUnion
-            {
-                Mouse = new MouseInput
-                {
-                    MouseData = unchecked((uint)delta),
-                    Flags = 0x0800,
-                },
-            },
+            return "raw-input";
+        }
+
+        var binding = resolution.Sequence?.NormalizedText ?? "<unresolved>";
+        var source = resolution.Source.ToString().ToLowerInvariant();
+        var snapshot = resolution.SnapshotState switch
+        {
+            CodexBindingSnapshotState.Current => "current",
+            CodexBindingSnapshotState.LastKnownGood => "last-known-good",
+            _ => "unavailable",
         };
+        return $"command={resolution.CommandId}; binding={binding}; source={source}; snapshot={snapshot}";
     }
-
-    [StructLayout(LayoutKind.Explicit)]
-    private struct InputUnion
-    {
-        [FieldOffset(0)]
-        public MouseInput Mouse;
-
-        [FieldOffset(0)]
-        public KeyboardInput Keyboard;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MouseInput
-    {
-        public int X;
-        public int Y;
-        public uint MouseData;
-        public uint Flags;
-        public uint Time;
-        public UIntPtr ExtraInfo;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct KeyboardInput
-    {
-        public ushort VirtualKey;
-        public ushort ScanCode;
-        public uint Flags;
-        public uint Time;
-        public UIntPtr ExtraInfo;
-    }
-
-    [LibraryImport("user32.dll", SetLastError = true)]
-    private static partial uint SendInput(uint inputCount, [In] Input[] inputs, int inputSize);
 }

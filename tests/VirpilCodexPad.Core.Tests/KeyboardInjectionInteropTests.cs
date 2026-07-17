@@ -1,6 +1,5 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
-using VirpilCodexPad.Core.Mapping;
 using VirpilCodexPad.Windows.Actions;
 
 namespace VirpilCodexPad.Core.Tests;
@@ -10,8 +9,8 @@ public sealed class KeyboardInjectionInteropTests
     [Fact]
     public void InputStructureMatchesTheWindowsAbi()
     {
-        var inputType = typeof(CodexActionExecutor).GetNestedType("Input", BindingFlags.NonPublic);
-        var unionType = typeof(CodexActionExecutor).GetNestedType("InputUnion", BindingFlags.NonPublic);
+        var inputType = typeof(NativeWindowsInputSink).GetNestedType("Input", BindingFlags.NonPublic);
+        var unionType = typeof(NativeWindowsInputSink).GetNestedType("InputUnion", BindingFlags.NonPublic);
 
         Assert.NotNull(inputType);
         Assert.NotNull(unionType);
@@ -19,64 +18,111 @@ public sealed class KeyboardInjectionInteropTests
         Assert.Equal(IntPtr.Size == 8 ? 32 : 24, Marshal.SizeOf(unionType));
     }
 
-    [Theory]
-    [InlineData(CodexAction.Agent1, 0x70)]
-    [InlineData(CodexAction.Agent2, 0x71)]
-    [InlineData(CodexAction.Agent3, 0x72)]
-    [InlineData(CodexAction.Agent4, 0x73)]
-    [InlineData(CodexAction.Agent5, 0x74)]
-    [InlineData(CodexAction.Agent6, 0x75)]
-    [InlineData(CodexAction.ToggleFastMode, 0x76)]
-    [InlineData(CodexAction.Approve, 0x77)]
-    [InlineData(CodexAction.Reject, 0x78)]
-    [InlineData(CodexAction.ForkTask, 0x79)]
-    [InlineData(CodexAction.Submit, 0x7A)]
-    [InlineData(CodexAction.TogglePlanMode, 0x7B)]
-    public void CommandActionsUseStandardModifiedFunctionKeys(CodexAction action, int expectedFunctionKey)
+    [Fact]
+    public void ParserSupportsOrdinaryAndMultiStepSequences()
     {
-        var getShortcut = typeof(CodexActionExecutor).GetMethod("GetShortcut", BindingFlags.NonPublic | BindingFlags.Static);
+        var parsed = KeySequenceParser.TryParse(
+            "Ctrl+K Ctrl+Shift+F24",
+            allowBareModifiers: false,
+            out var sequence,
+            out var error);
 
-        Assert.NotNull(getShortcut);
-        var shortcut = Assert.IsType<ushort[]>(getShortcut.Invoke(null, [action]));
-        Assert.Equal(new ushort[] { 0x11, 0x12, 0x10, (ushort)expectedFunctionKey }, shortcut);
+        Assert.True(parsed, error);
+        Assert.Equal("Ctrl+K Ctrl+Shift+F24", sequence!.NormalizedText);
+        Assert.Equal(2, sequence.Chords.Count);
+    }
+
+    [Fact]
+    public void ParserAllowsBareModifiersOnlyWhenRequested()
+    {
+        Assert.False(KeySequenceParser.TryParse("Ctrl", false, out _, out _));
+
+        Assert.True(KeySequenceParser.TryParse("Ctrl", true, out var sequence, out var error), error);
+        Assert.Equal("Ctrl", sequence!.NormalizedText);
+    }
+
+    [Fact]
+    public void ParserRejectsNonKeyboardBindings()
+    {
+        Assert.False(KeySequenceParser.TryParse("MouseBack", false, out _, out var error));
+        Assert.Contains("cannot be sent", error, StringComparison.Ordinal);
     }
 
     [Theory]
-    [InlineData(CodexAction.Home, 0x24)]
-    [InlineData(CodexAction.End, 0x23)]
-    public void HomeAndEndActionsUseUnmodifiedNavigationKeys(CodexAction action, int expectedKey)
+    [InlineData("+", "Shift+Plus")]
+    [InlineData("Ctrl++", "Ctrl+Shift+Plus")]
+    [InlineData("Ctrl+?", "Ctrl+Shift+Slash")]
+    [InlineData("Ctrl+!", "Ctrl+Shift+1")]
+    public void ParserSupportsThePlusPunctuationKey(string binding, string normalized)
     {
-        var getShortcut = typeof(CodexActionExecutor).GetMethod("GetShortcut", BindingFlags.NonPublic | BindingFlags.Static);
-
-        Assert.NotNull(getShortcut);
-        var shortcut = Assert.IsType<ushort[]>(getShortcut.Invoke(null, [action]));
-        Assert.Equal([(ushort)expectedKey], shortcut);
+        Assert.True(KeySequenceParser.TryParse(binding, false, out var sequence, out var error), error);
+        Assert.Equal(normalized, sequence!.NormalizedText);
     }
 
-    [Theory]
-    [InlineData(CodexAction.ScrollUp, 1, 120)]
-    [InlineData(CodexAction.ScrollDown, 1, -120)]
-    [InlineData(CodexAction.ScrollUp, 5, 600)]
-    [InlineData(CodexAction.ScrollDown, 5, -600)]
-    public void ScrollActionsUseTheConfiguredMouseWheelNotches(
-        CodexAction action,
-        int wheelNotches,
-        int expectedDelta)
+    [Fact]
+    public async Task MultiStepSenderReleasesEachChordBeforeWaitingForTheNext()
     {
-        var getDelta = typeof(CodexActionExecutor).GetMethod(
-            "GetMouseWheelDelta",
-            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.True(KeySequenceParser.TryParse(
+            "Ctrl+K Alt+Enter",
+            false,
+            out var sequence,
+            out var error), error);
+        var sink = new RecordingSink();
+        var delay = new RecordingDelay();
+        var sender = new WindowsInputSender(sink, delay);
 
-        Assert.NotNull(getDelta);
-        Assert.Equal(expectedDelta, Assert.IsType<int>(getDelta.Invoke(null, [action, wheelNotches])));
+        await sender.SendSequenceAsync(sequence!, CancellationToken.None);
+
+        Assert.Equal(2, sink.Batches.Count);
+        Assert.Collection(
+            sink.Batches[0],
+            input => AssertEvent(input, WindowsInputEventKind.KeyDown, 0x11),
+            input => AssertEvent(input, WindowsInputEventKind.KeyDown, 0x4B),
+            input => AssertEvent(input, WindowsInputEventKind.KeyUp, 0x4B),
+            input => AssertEvent(input, WindowsInputEventKind.KeyUp, 0x11));
+        Assert.Collection(
+            sink.Batches[1],
+            input => AssertEvent(input, WindowsInputEventKind.KeyDown, 0x12),
+            input => AssertEvent(input, WindowsInputEventKind.KeyDown, 0x0D),
+            input => AssertEvent(input, WindowsInputEventKind.KeyUp, 0x0D),
+            input => AssertEvent(input, WindowsInputEventKind.KeyUp, 0x12));
+        Assert.Equal([50], delay.Delays);
+    }
+
+    [Fact]
+    public async Task NavigationKeysAreMarkedAsExtendedWindowsKeys()
+    {
+        Assert.True(KeySequenceParser.TryParse("Home", false, out var sequence, out var error), error);
+        var sink = new RecordingSink();
+        var sender = new WindowsInputSender(sink, new RecordingDelay());
+
+        await sender.SendSequenceAsync(sequence!, CancellationToken.None);
+
+        Assert.All(Assert.Single(sink.Batches), input => Assert.True(input.ExtendedKey));
+    }
+
+    [Fact]
+    public async Task WindowsModifierIsMarkedExtendedWhileItsPrimaryKeyIsNot()
+    {
+        Assert.True(KeySequenceParser.TryParse("Win+K", false, out var sequence, out var error), error);
+        var sink = new RecordingSink();
+        var sender = new WindowsInputSender(sink, new RecordingDelay());
+
+        await sender.SendSequenceAsync(sequence!, CancellationToken.None);
+
+        var events = Assert.Single(sink.Batches);
+        Assert.True(events[0].ExtendedKey);
+        Assert.False(events[1].ExtendedKey);
+        Assert.False(events[2].ExtendedKey);
+        Assert.True(events[3].ExtendedKey);
     }
 
     [Fact]
     public void MouseWheelInputUsesTheWindowsWheelFlagAndSignedDelta()
     {
-        var inputType = typeof(CodexActionExecutor).GetNestedType("Input", BindingFlags.NonPublic);
-        var unionType = typeof(CodexActionExecutor).GetNestedType("InputUnion", BindingFlags.NonPublic);
-        var mouseType = typeof(CodexActionExecutor).GetNestedType("MouseInput", BindingFlags.NonPublic);
+        var inputType = typeof(NativeWindowsInputSink).GetNestedType("Input", BindingFlags.NonPublic);
+        var unionType = typeof(NativeWindowsInputSink).GetNestedType("InputUnion", BindingFlags.NonPublic);
+        var mouseType = typeof(NativeWindowsInputSink).GetNestedType("MouseInput", BindingFlags.NonPublic);
 
         Assert.NotNull(inputType);
         Assert.NotNull(unionType);
@@ -93,5 +139,29 @@ public sealed class KeyboardInjectionInteropTests
         Assert.Equal(0u, Assert.IsType<uint>(inputType.GetField("Type")?.GetValue(input)));
         Assert.Equal(unchecked((uint)-120), Assert.IsType<uint>(mouseType.GetField("MouseData")?.GetValue(mouse)));
         Assert.Equal(0x0800u, Assert.IsType<uint>(mouseType.GetField("Flags")?.GetValue(mouse)));
+    }
+
+    private static void AssertEvent(WindowsInputEvent input, WindowsInputEventKind kind, ushort virtualKey)
+    {
+        Assert.Equal(kind, input.Kind);
+        Assert.Equal(virtualKey, input.VirtualKey);
+    }
+
+    private sealed class RecordingSink : IWindowsInputSink
+    {
+        public List<WindowsInputEvent[]> Batches { get; } = [];
+
+        public void Send(IReadOnlyList<WindowsInputEvent> events) => Batches.Add(events.ToArray());
+    }
+
+    private sealed class RecordingDelay : IWindowsInputDelay
+    {
+        public List<int> Delays { get; } = [];
+
+        public Task DelayAsync(int milliseconds, CancellationToken cancellationToken)
+        {
+            Delays.Add(milliseconds);
+            return Task.CompletedTask;
+        }
     }
 }

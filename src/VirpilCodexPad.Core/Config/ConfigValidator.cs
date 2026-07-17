@@ -41,6 +41,18 @@ public static class ConfigValidator
             errors.Add("safety.simulatorProcessNames cannot contain empty process names");
         }
 
+        if (!string.Equals(
+                config.OpenWorkingDirectory.Target,
+                OpenWorkingDirectoryOptions.VisualStudioCodeTarget,
+                StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(
+                config.OpenWorkingDirectory.Target,
+                OpenWorkingDirectoryOptions.FileExplorerTarget,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            errors.Add("openWorkingDirectory.target must be 'vscode' or 'explorer'");
+        }
+
         var selectorButtons = new HashSet<int>();
         foreach (var (bank, button) in config.BankSelectors)
         {

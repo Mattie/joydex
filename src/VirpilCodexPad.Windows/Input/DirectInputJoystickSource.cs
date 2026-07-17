@@ -4,7 +4,7 @@ using Vortice.DirectInput;
 
 namespace VirpilCodexPad.Windows.Input;
 
-public sealed class DirectInputJoystickSource : IDisposable
+public sealed class DirectInputJoystickSource : IJoystickSource
 {
     private readonly IDirectInput8 _directInput = DInput.DirectInput8Create();
     private readonly IntPtr _cooperativeWindowHandle;
