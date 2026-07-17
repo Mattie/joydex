@@ -21,19 +21,19 @@ jobs:
           global-json-file: global.json
 
       - name: Restore
-        run: dotnet restore .\VirpilCodexPad.sln
+        run: dotnet restore .\Joydex.sln
 
       - name: Audit transitive packages
         shell: pwsh
         run: |
-          $audit = dotnet list .\VirpilCodexPad.sln package --vulnerable --include-transitive
+          $audit = dotnet list .\Joydex.sln package --vulnerable --include-transitive
           $audit | Out-String | Write-Host
           if ($audit -match 'has the following vulnerable packages') {
             throw 'NuGet reported one or more vulnerable packages.'
           }
 
       - name: Build
-        run: dotnet build .\VirpilCodexPad.sln --configuration Release --no-restore
+        run: dotnet build .\Joydex.sln --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test .\VirpilCodexPad.sln --configuration Release --no-build --no-restore
+        run: dotnet test .\Joydex.sln --configuration Release --no-build --no-restore

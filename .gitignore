@@ -15,7 +15,7 @@ AGENTS.local.md
 AGENTS.override.md
 
 # Machine-specific configuration
-/config/virpil-codex-pad.json
+/config/joydex.json
 /config/config.json
 
 # Local reference material retained outside the public source set

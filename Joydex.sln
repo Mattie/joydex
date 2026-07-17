@@ -1,0 +1,59 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{E2410E01-2903-45FB-98C8-91DD1E194599}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Joydex.Core", "src\Joydex.Core\Joydex.Core.csproj", "{3164D466-1B0D-496E-A00C-FCED33739C9D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Joydex.Windows", "src\Joydex.Windows\Joydex.Windows.csproj", "{828482D5-6A56-4401-8FF3-7EE416F246A0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Joydex.App", "src\Joydex.App\Joydex.App.csproj", "{18911FBD-4F2A-404A-A60C-F6CC51C9A626}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{DEFBDF7A-8DC4-4D45-95B1-C55E7DDB342F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Joydex.Trace", "tools\Joydex.Trace\Joydex.Trace.csproj", "{DA7922AD-9900-4E7B-8479-190C57ED72DD}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{450F8F5B-BB91-4471-AB6C-5FDD608C58C2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Joydex.Tests", "tests\Joydex.Tests\Joydex.Tests.csproj", "{3B99BEE9-29C8-4704-9873-3D2E6D521BC3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3164D466-1B0D-496E-A00C-FCED33739C9D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3164D466-1B0D-496E-A00C-FCED33739C9D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3164D466-1B0D-496E-A00C-FCED33739C9D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3164D466-1B0D-496E-A00C-FCED33739C9D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{828482D5-6A56-4401-8FF3-7EE416F246A0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{828482D5-6A56-4401-8FF3-7EE416F246A0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{828482D5-6A56-4401-8FF3-7EE416F246A0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{828482D5-6A56-4401-8FF3-7EE416F246A0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{18911FBD-4F2A-404A-A60C-F6CC51C9A626}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{18911FBD-4F2A-404A-A60C-F6CC51C9A626}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{18911FBD-4F2A-404A-A60C-F6CC51C9A626}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{18911FBD-4F2A-404A-A60C-F6CC51C9A626}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DA7922AD-9900-4E7B-8479-190C57ED72DD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DA7922AD-9900-4E7B-8479-190C57ED72DD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DA7922AD-9900-4E7B-8479-190C57ED72DD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DA7922AD-9900-4E7B-8479-190C57ED72DD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3B99BEE9-29C8-4704-9873-3D2E6D521BC3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3B99BEE9-29C8-4704-9873-3D2E6D521BC3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3B99BEE9-29C8-4704-9873-3D2E6D521BC3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3B99BEE9-29C8-4704-9873-3D2E6D521BC3}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{3164D466-1B0D-496E-A00C-FCED33739C9D} = {E2410E01-2903-45FB-98C8-91DD1E194599}
+		{828482D5-6A56-4401-8FF3-7EE416F246A0} = {E2410E01-2903-45FB-98C8-91DD1E194599}
+		{18911FBD-4F2A-404A-A60C-F6CC51C9A626} = {E2410E01-2903-45FB-98C8-91DD1E194599}
+		{DA7922AD-9900-4E7B-8479-190C57ED72DD} = {DEFBDF7A-8DC4-4D45-95B1-C55E7DDB342F}
+		{3B99BEE9-29C8-4704-9873-3D2E6D521BC3} = {450F8F5B-BB91-4471-AB6C-5FDD608C58C2}
+	EndGlobalSection
+EndGlobal
