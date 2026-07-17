@@ -126,6 +126,6 @@ Joydex does not write VPC profiles, flash firmware, control RGB, inspect the Cod
 
 ## License and trademarks
 
-The source code is available under the [MIT License](LICENSE).
+The source code is available under the [MIT License](LICENSE). Attribution for the CM3 visual template is recorded in [Third-party notices](THIRD_PARTY_NOTICES.md).
 
 Joydex is an independent project and is not affiliated with or endorsed by VIRPIL Controls, OpenAI, or Work Louder. VIRPIL, VPC, OpenAI, ChatGPT, Codex, Work Louder, and associated marks are the property of their respective owners.
