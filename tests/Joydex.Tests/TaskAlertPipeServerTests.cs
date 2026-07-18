@@ -18,15 +18,15 @@ public sealed class TaskAlertPipeServerTests
             await using var server = new TaskAlertPipeServer(coordinator, _ => { }, pipeName);
             server.Start();
 
-            await Task.WhenAll(Enumerable.Range(1, 6).Select(index => SendAsync(pipeName, index)));
+            await Task.WhenAll(Enumerable.Range(1, 12).Select(index => SendAsync(pipeName, index)));
             await WaitUntilAsync(
-                () => coordinator.GetSnapshot() is { Assignments.Count: 4, DroppedEventCount: 2 },
+                () => coordinator.GetSnapshot() is { Assignments.Count: 10, DroppedEventCount: 2 },
                 TimeSpan.FromSeconds(3));
 
             var snapshot = coordinator.GetSnapshot();
-            Assert.Equal(4, snapshot.Assignments.Count);
+            Assert.Equal(10, snapshot.Assignments.Count);
             Assert.Equal(2, snapshot.DroppedEventCount);
-            Assert.Equal([1, 2, 4, 5], snapshot.Assignments.Select(assignment => assignment.Channel));
+            Assert.Equal(Enumerable.Range(1, 10), snapshot.Assignments.Select(assignment => assignment.Slot));
         }
         finally
         {

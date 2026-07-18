@@ -596,7 +596,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ? "none"
             : string.Join(
                 ',',
-                snapshot.Assignments.Select(assignment => $"B{assignment.Channel}={assignment.State}"));
+                snapshot.Assignments.Select(assignment => $"S{assignment.Slot}={assignment.State}"));
         _log.Write(
             $"Task-alert snapshot enabled={snapshot.Enabled}; bank=M{snapshot.Bank}; assignments={assignmentSummary}; " +
             $"dropped={snapshot.DroppedEventCount}.");

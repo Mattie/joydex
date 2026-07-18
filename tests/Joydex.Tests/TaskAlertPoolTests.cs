@@ -7,9 +7,9 @@ public sealed class TaskAlertPoolTests
     private static readonly DateTimeOffset Start = new(2026, 7, 17, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public void AllocatesLowestFreeChannelAndUpdatesExistingSession()
+    public void AllocatesLowestFreeSlotAndUpdatesExistingSession()
     {
-        var pool = new TaskAlertPool([5, 1, 4, 2]);
+        var pool = new TaskAlertPool();
 
         Assert.True(pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-a", Start)));
         Assert.True(pool.Apply(Event(CodexLifecycleEvent.PermissionRequest, "session-b", Start.AddSeconds(1))));
@@ -19,27 +19,31 @@ public sealed class TaskAlertPoolTests
             pool.Assignments,
             first =>
             {
-                Assert.Equal(1, first.Channel);
+                Assert.Equal(1, first.Slot);
                 Assert.Equal("session-a", first.SessionId);
                 Assert.Equal(TaskAlertState.Approval, first.State);
             },
-            second => Assert.Equal(2, second.Channel));
+            second => Assert.Equal(2, second.Slot));
     }
 
     [Fact]
     public void DropsOverflowWithoutBacklogAndAllowsLaterRetry()
     {
-        var pool = new TaskAlertPool([1]);
-        pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-a", Start));
+        var pool = new TaskAlertPool();
+        foreach (var index in Enumerable.Range(1, 10))
+        {
+            pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, $"session-{index}", Start));
+        }
 
-        Assert.False(pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-b", Start)));
+        Assert.Equal(Enumerable.Range(1, 10), pool.Assignments.Select(assignment => assignment.Slot));
+        Assert.False(pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-11", Start)));
         Assert.Equal(1, pool.DroppedEventCount);
-        pool.Apply(Event(CodexLifecycleEvent.Fault, "session-a", Start.AddMilliseconds(500)));
-        Assert.True(pool.AcknowledgeTerminal(1, "session-a"));
-        Assert.Empty(pool.Assignments);
+        pool.Apply(Event(CodexLifecycleEvent.Fault, "session-1", Start.AddMilliseconds(500)));
+        Assert.True(pool.AcknowledgeTerminal(1, "session-1"));
 
-        Assert.True(pool.Apply(Event(CodexLifecycleEvent.PermissionRequest, "session-b", Start.AddSeconds(1))));
-        Assert.Equal("session-b", Assert.Single(pool.Assignments).SessionId);
+        Assert.True(pool.Apply(Event(CodexLifecycleEvent.PermissionRequest, "session-11", Start.AddSeconds(1))));
+        Assert.Equal("session-11", pool.Assignments.Single(assignment => assignment.Slot == 1).SessionId);
+        Assert.Equal("session-5", pool.Assignments.Single(assignment => assignment.Slot == 5).SessionId);
     }
 
     [Theory]
@@ -49,7 +53,7 @@ public sealed class TaskAlertPoolTests
         CodexLifecycleEvent lifecycleEvent,
         TaskAlertState expectedState)
     {
-        var pool = new TaskAlertPool([1]);
+        var pool = new TaskAlertPool();
         pool.Apply(Event(lifecycleEvent, "session-a", Start));
 
         Assert.False(pool.AcknowledgeTerminal(1, "session-a"));
@@ -66,7 +70,7 @@ public sealed class TaskAlertPoolTests
         CodexLifecycleEvent lifecycleEvent,
         TaskAlertState expectedState)
     {
-        var pool = new TaskAlertPool([1]);
+        var pool = new TaskAlertPool();
         pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-a", Start));
         pool.Apply(Event(lifecycleEvent, "session-a", Start.AddSeconds(1)));
         pool.Advance(Start.AddSeconds(2));
@@ -79,7 +83,7 @@ public sealed class TaskAlertPoolTests
     [Fact]
     public void StopUsesGraceAndContinuationCancelsCompletion()
     {
-        var pool = new TaskAlertPool([1]);
+        var pool = new TaskAlertPool();
         pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-a", Start));
         pool.Apply(Event(CodexLifecycleEvent.Stop, "session-a", Start.AddSeconds(1)));
 
@@ -98,12 +102,12 @@ public sealed class TaskAlertPoolTests
     [Fact]
     public void ExpiresRunningAndAttentionLeases()
     {
-        var running = new TaskAlertPool([1]);
+        var running = new TaskAlertPool();
         running.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "run", Start));
         Assert.True(running.Advance(Start + TaskAlertPool.RunningLease));
         Assert.Empty(running.Assignments);
 
-        var approval = new TaskAlertPool([1]);
+        var approval = new TaskAlertPool();
         approval.Apply(Event(CodexLifecycleEvent.PermissionRequest, "approval", Start));
         Assert.True(approval.Advance(Start + TaskAlertPool.AttentionLease));
         Assert.Empty(approval.Assignments);
@@ -123,7 +127,7 @@ public sealed class TaskAlertPoolTests
     [Fact]
     public void LateConcurrentEventCannotReplaceNewerState()
     {
-        var pool = new TaskAlertPool([1]);
+        var pool = new TaskAlertPool();
         pool.Apply(Event(CodexLifecycleEvent.PermissionRequest, "session-a", Start.AddSeconds(2)));
 
         Assert.False(pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-a", Start)));

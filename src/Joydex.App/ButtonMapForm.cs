@@ -586,9 +586,10 @@ internal sealed class ButtonMapCanvas : Control
             var shortSession = assignment.SessionId.Length <= 8
                 ? assignment.SessionId
                 : assignment.SessionId[..8];
-            var label = $"TASK B{assignment.Channel}  {assignment.State.ToString().ToUpperInvariant()}\n{shortSession}";
+            var page = TaskAlertSlots.Page(assignment.Slot) == TaskAlertPage.Primary ? "P" : "O";
+            var label = $"TASK {page}{TaskAlertSlots.PageIndex(assignment.Slot)}  {assignment.State.ToString().ToUpperInvariant()}\n{shortSession}";
 
-            foreach (var logicalButton in TaskAlertChannels.LogicalButtons[assignment.Channel])
+            foreach (var logicalButton in TaskAlertSlots.LogicalButtons(assignment.Slot))
             {
                 if (!ButtonRegions.TryGetValue(logicalButton, out var sourceRegion))
                 {

@@ -13,11 +13,10 @@ public sealed class LinkToolLedServiceTests
         var at = DateTimeOffset.UtcNow;
         var snapshot = new TaskAlertSnapshot(
             true,
-            [1, 2, 4, 5],
             [
                 new TaskAlertAssignment(1, "running", null, TaskAlertState.Running, at),
                 new TaskAlertAssignment(2, "approval", null, TaskAlertState.Approval, at),
-                new TaskAlertAssignment(4, "completed", null, TaskAlertState.Completed, at),
+                new TaskAlertAssignment(3, "completed", null, TaskAlertState.Completed, at),
                 new TaskAlertAssignment(5, "fault", null, TaskAlertState.Fault, at),
             ],
             0,
@@ -26,10 +25,11 @@ public sealed class LinkToolLedServiceTests
         var state = LinkToolTelemetryState.From(snapshot);
 
         Assert.Equal(3, state.JoydexBank);
-        Assert.Equal(1, state.JoydexB1State);
-        Assert.Equal(2, state.JoydexB2State);
-        Assert.Equal(3, state.JoydexB4State);
-        Assert.Equal(4, state.JoydexB5State);
+        Assert.Equal(1, state.JoydexPrimaryB1State);
+        Assert.Equal(2, state.JoydexPrimaryB2State);
+        Assert.Equal(3, state.JoydexPrimaryB4State);
+        Assert.Equal(0, state.JoydexPrimaryB5State);
+        Assert.Equal(4, state.JoydexOverflowB1State);
         Assert.Equal(4, state.JoydexAlphaState);
         Assert.True(state.HasAlert);
     }
@@ -48,8 +48,32 @@ public sealed class LinkToolLedServiceTests
 
         Assert.Equal(2, state.JoydexBank);
         Assert.False(state.HasAlert);
-        Assert.Equal(0, state.JoydexB1State);
+        Assert.Equal(0, state.JoydexPrimaryB1State);
         Assert.Equal(0, state.JoydexAlphaState);
+    }
+
+    [Fact]
+    public void GlobalAlphaKeepsHighestStateOnCommandOnlyM5()
+    {
+        var snapshot = new TaskAlertSnapshot(
+            true,
+            [
+                new TaskAlertAssignment(
+                    6,
+                    "overflow",
+                    null,
+                    TaskAlertState.Approval,
+                    DateTimeOffset.UtcNow),
+            ],
+            0,
+            5);
+
+        var state = LinkToolTelemetryState.From(snapshot);
+
+        Assert.Equal(5, state.JoydexBank);
+        Assert.Equal(2, state.JoydexOverflowB2State);
+        Assert.Equal(2, state.JoydexAlphaState);
+        Assert.True(state.HasAlert);
     }
 
     [Fact]
@@ -83,7 +107,7 @@ public sealed class LinkToolLedServiceTests
             null,
             TaskAlertState.Running,
             DateTimeOffset.UtcNow)));
-        await WaitUntilAsync(() => sender.States.Any(state => state.JoydexB1State == 1), TimeSpan.FromSeconds(2));
+        await WaitUntilAsync(() => sender.States.Any(state => state.JoydexPrimaryB1State == 1), TimeSpan.FromSeconds(2));
 
         service.Apply(EmptySnapshot());
         await WaitUntilAsync(
@@ -92,7 +116,7 @@ public sealed class LinkToolLedServiceTests
 
         Assert.Equal([true, false], dirty.ToArray());
         Assert.Equal(2, sender.States[^1].JoydexBank);
-        Assert.Equal(0, sender.States[^1].JoydexB1State);
+        Assert.Equal(0, sender.States[^1].JoydexPrimaryB1State);
     }
 
     [Fact]
@@ -113,7 +137,7 @@ public sealed class LinkToolLedServiceTests
 
         conflicts.Value = false;
         service.RestoreAndReplay(replay: true);
-        await WaitUntilAsync(() => sender.States.Any(state => state.JoydexB2State == 2), TimeSpan.FromSeconds(2));
+        await WaitUntilAsync(() => sender.States.Any(state => state.JoydexPrimaryB2State == 2), TimeSpan.FromSeconds(2));
     }
 
     [Fact]
@@ -141,7 +165,7 @@ public sealed class LinkToolLedServiceTests
 
         sender.IsListening = true;
         service.RestoreAndReplay(replay: true);
-        await WaitUntilAsync(() => sender.States.Any(state => state.JoydexB1State == 1), TimeSpan.FromSeconds(2));
+        await WaitUntilAsync(() => sender.States.Any(state => state.JoydexPrimaryB1State == 1), TimeSpan.FromSeconds(2));
     }
 
     [Fact]
@@ -161,12 +185,12 @@ public sealed class LinkToolLedServiceTests
         service.RestoreAndReplay(replay: true);
 
         await WaitUntilAsync(() => sender.States.Count > 0, TimeSpan.FromSeconds(2));
-        Assert.DoesNotContain(sender.States, state => state.JoydexB1State == 1);
-        Assert.Equal(2, sender.States[^1].JoydexB1State);
+        Assert.DoesNotContain(sender.States, state => state.JoydexPrimaryB1State == 1);
+        Assert.Equal(2, sender.States[^1].JoydexPrimaryB1State);
     }
 
     [Fact]
-    public void WritesLinkToolProfileWithAlertRulesOnlyForSelectedLedsAndBaselinesForEveryLed()
+    public void WritesBankGatedPrimaryAndOverflowRulesWithM5BaselinesOnly()
     {
         var directory = Path.Combine(Path.GetTempPath(), "joydex-tests", Guid.NewGuid().ToString("N"));
         var path = Path.Combine(directory, "joydex-linktool.led.json");
@@ -176,9 +200,13 @@ public sealed class LinkToolLedServiceTests
             using var document = JsonDocument.Parse(File.ReadAllText(path));
             var rules = document.RootElement.GetProperty("rules").EnumerateArray().ToArray();
 
-            Assert.Equal(50, rules.Length);
+            Assert.Equal(106, rules.Length);
+            Assert.Equal(48, rules.Count(rule =>
+                rule.GetProperty("argument").GetString()?.StartsWith("JoydexPrimary", StringComparison.Ordinal) == true));
+            Assert.Equal(24, rules.Count(rule =>
+                rule.GetProperty("argument").GetString()?.StartsWith("JoydexOverflow", StringComparison.Ordinal) == true));
             Assert.DoesNotContain(rules, rule =>
-                rule.GetProperty("argument").GetString() is "JoydexB3State" or "JoydexB6State");
+                rule.GetProperty("argument").GetString() is "JoydexPrimaryB3State" or "JoydexPrimaryB6State");
             Assert.Contains(rules, rule =>
                 rule.GetProperty("comment").GetString() == "Joydex M2 B3 baseline"
                 && rule.GetProperty("colorOne").GetString() == "16711680");
@@ -192,21 +220,42 @@ public sealed class LinkToolLedServiceTests
                 && rule.GetProperty("colorOne").GetString() == "16711680"
                 && rule.GetProperty("priority").GetInt32() == 0);
             Assert.Contains(rules, rule =>
-                rule.GetProperty("comment").GetString() == "Joydex B1 running"
-                && rule.GetProperty("argument").GetString() == "JoydexB1State"
+                rule.GetProperty("comment").GetString() == "Joydex primary M2 B1 running"
+                && rule.GetProperty("argument").GetString() == "JoydexPrimaryB1State"
                 && rule.GetProperty("primaryValue").GetString() == "1"
                 && rule.GetProperty("colorOne").GetString() == "16777215"
+                && rule.GetProperty("priority").GetInt32() == 100
+                && HasCondition(rule, "JoydexBank", "2"));
+            Assert.Contains(rules, rule =>
+                rule.GetProperty("comment").GetString() == "Joydex overflow M1 B3 running"
+                && rule.GetProperty("argument").GetString() == "JoydexOverflowB3State"
+                && HasCondition(rule, "JoydexBank", "1"));
+            Assert.DoesNotContain(rules, rule =>
+                rule.GetProperty("comment").GetString()?.Contains("M5", StringComparison.Ordinal) == true
                 && rule.GetProperty("priority").GetInt32() == 100);
 
-            foreach (var channel in TaskAlertChannels.Selectable)
+            foreach (var slot in TaskAlertSlots.Primary)
             {
-                var alertIndex = Array.FindIndex(rules, rule =>
-                    rule.GetProperty("comment").GetString() == $"Joydex B{channel} running");
-                var baselineIndex = Array.FindIndex(rules, rule =>
-                    rule.GetProperty("comment").GetString() == $"Joydex M2 B{channel} baseline");
-                Assert.True(alertIndex >= 0);
-                Assert.True(baselineIndex >= 0);
-                Assert.True(alertIndex < baselineIndex);
+                var button = TaskAlertSlots.Button(slot);
+                foreach (var bank in new[] { 2, 3, 4 })
+                {
+                    var alertIndex = Array.FindIndex(rules, rule => rule.GetProperty("comment").GetString()
+                        == $"Joydex primary M{bank} B{button} running"
+                        && HasCondition(rule, "JoydexBank", bank.ToString()));
+                    var baselineIndex = Array.FindIndex(rules, rule =>
+                        rule.GetProperty("comment").GetString() == $"Joydex M{bank} B{button} baseline");
+                    Assert.True(alertIndex >= 0);
+                    Assert.True(baselineIndex >= 0);
+                    Assert.True(alertIndex < baselineIndex);
+                }
+            }
+
+            foreach (var slot in TaskAlertSlots.Overflow)
+            {
+                var button = TaskAlertSlots.Button(slot);
+                Assert.Contains(rules, rule =>
+                    rule.GetProperty("comment").GetString() == $"Joydex overflow M1 B{button} running"
+                    && HasCondition(rule, "JoydexBank", "1"));
             }
         }
         finally
@@ -218,10 +267,16 @@ public sealed class LinkToolLedServiceTests
         }
     }
 
-    private static TaskAlertSnapshot EmptySnapshot() => new(true, [1, 2, 4, 5], [], 0, 2);
+    private static bool HasCondition(JsonElement rule, string argument, string value) =>
+        rule.GetProperty("conditions").EnumerateArray().Any(condition =>
+            condition.GetProperty("argument").GetString() == argument
+            && condition.GetProperty("condition").GetString() == "=="
+            && condition.GetProperty("value").GetString() == value);
+
+    private static TaskAlertSnapshot EmptySnapshot() => new(true, [], 0, 2);
 
     private static TaskAlertSnapshot Snapshot(params TaskAlertAssignment[] assignments) =>
-        new(true, [1, 2, 4, 5], assignments, 0, 2);
+        new(true, assignments, 0, 2);
 
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {

@@ -63,8 +63,12 @@ internal static class Guardian
             return;
         }
 
-        var json = "{\"JoydexB1State\":0,\"JoydexB2State\":0,\"JoydexB4State\":0," +
-            "\"JoydexB5State\":0,\"JoydexAlphaState\":0}";
+        var json = "{\"JoydexPrimaryB1State\":0,\"JoydexPrimaryB2State\":0," +
+            "\"JoydexPrimaryB4State\":0,\"JoydexPrimaryB5State\":0," +
+            "\"JoydexOverflowB1State\":0,\"JoydexOverflowB2State\":0," +
+            "\"JoydexOverflowB3State\":0,\"JoydexOverflowB4State\":0," +
+            "\"JoydexOverflowB5State\":0,\"JoydexOverflowB6State\":0," +
+            "\"JoydexAlphaState\":0}";
         var payload = Encoding.UTF8.GetBytes(json);
         using var client = new UdpClient(AddressFamily.InterNetwork);
         await client.SendAsync(payload, new IPEndPoint(IPAddress.Loopback, port)).ConfigureAwait(false);

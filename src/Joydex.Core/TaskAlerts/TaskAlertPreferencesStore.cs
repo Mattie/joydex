@@ -2,21 +2,14 @@ using System.Text.Json;
 
 namespace Joydex.Core.TaskAlerts;
 
-public sealed record TaskAlertPreferences(bool Enabled, int[] Channels, int Bank = 2)
+public sealed record TaskAlertPreferences(bool Enabled = true, int Bank = 2)
 {
-    public static TaskAlertPreferences Default { get; } = new(true, [.. TaskAlertChannels.Defaults], 2);
+    public static TaskAlertPreferences Default { get; } = new();
 
     public TaskAlertPreferences Normalize()
     {
-        var channels = (Channels ?? [])
-            .Select(TaskAlertChannels.ValidateSelectable)
-            .Distinct()
-            .OrderBy(channel => channel)
-            .ToArray();
         var bank = Math.Clamp(Bank, 1, 5);
-        return channels.Length == 0
-            ? this with { Channels = [.. TaskAlertChannels.Defaults], Bank = bank }
-            : this with { Channels = channels, Bank = bank };
+        return this with { Bank = bank };
     }
 }
 

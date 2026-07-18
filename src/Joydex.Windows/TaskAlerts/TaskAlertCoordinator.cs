@@ -5,7 +5,6 @@ namespace Joydex.Windows.TaskAlerts;
 
 public sealed record TaskAlertSnapshot(
     bool Enabled,
-    int[] Channels,
     IReadOnlyList<TaskAlertAssignment> Assignments,
     long DroppedEventCount,
     int Bank = 2,
@@ -32,7 +31,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
     {
         _preferencesPath = preferencesPath ?? throw new ArgumentNullException(nameof(preferencesPath));
         _preferences = TaskAlertPreferencesStore.LoadOrCreate(preferencesPath);
-        _pool = new TaskAlertPool(_preferences.Channels);
+        _pool = new TaskAlertPool();
         if (!_preferences.Enabled)
         {
             _pool.SetEnabled(false);
@@ -97,24 +96,6 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         RaiseChanged(snapshot);
     }
 
-    public void SetChannels(IEnumerable<int> channels)
-    {
-        ArgumentNullException.ThrowIfNull(channels);
-        var selected = channels.Distinct().OrderBy(channel => channel).ToArray();
-        TaskAlertSnapshot? snapshot = null;
-        lock (_sync)
-        {
-            if (_pool.SetChannels(selected))
-            {
-                _preferences = _preferences with { Channels = selected };
-                TaskAlertPreferencesStore.Save(_preferencesPath, _preferences);
-                snapshot = SnapshotUnsafe();
-            }
-        }
-
-        RaiseChanged(snapshot);
-    }
-
     public void SetDetectedBank(int bank)
     {
         if (bank is < 1 or > 5)
@@ -135,12 +116,12 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         RaiseChanged(snapshot);
     }
 
-    public bool AcknowledgeTerminal(int channel, string sessionId)
+    public bool AcknowledgeTerminal(int slot, string sessionId)
     {
         TaskAlertSnapshot? snapshot = null;
         lock (_sync)
         {
-            if (_pool.AcknowledgeTerminal(channel, sessionId))
+            if (_pool.AcknowledgeTerminal(slot, sessionId))
             {
                 snapshot = SnapshotUnsafe();
             }
@@ -180,7 +161,9 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             {
                 lock (_sync)
                 {
+                    var droppedBefore = _pool.DroppedEventCount;
                     changed |= _pool.Apply(taskEvent);
+                    changed |= droppedBefore != _pool.DroppedEventCount;
                 }
             }
 
@@ -198,7 +181,6 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
 
     private TaskAlertSnapshot SnapshotUnsafe() => new(
         _pool.Enabled,
-        [.. _preferences.Channels],
         _pool.Assignments,
         _pool.DroppedEventCount,
         _detectedBank ?? _preferences.Bank,

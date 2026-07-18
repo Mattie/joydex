@@ -22,7 +22,7 @@ public sealed class TaskDeepLinkNavigatorTests
                 return null;
             });
 
-        var result = await navigator.NavigateAsync(new TaskAlertNavigationRequest(1, "a/b c"), default);
+        var result = await navigator.NavigateAsync(new TaskAlertNavigationRequest(1, 2, 1, "a/b c"), default);
 
         Assert.True(result);
         Assert.NotNull(started);
@@ -44,7 +44,7 @@ public sealed class TaskDeepLinkNavigatorTests
                 return null;
             });
 
-        var result = await navigator.NavigateAsync(new TaskAlertNavigationRequest(1, "session"), default);
+        var result = await navigator.NavigateAsync(new TaskAlertNavigationRequest(1, 2, 1, "session"), default);
 
         Assert.False(result);
         Assert.False(started);

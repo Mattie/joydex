@@ -7,19 +7,13 @@ public sealed class TaskAlertPool
     public static readonly TimeSpan AttentionLease = TimeSpan.FromHours(24);
 
     private readonly Dictionary<int, TaskAlertAssignment> _assignments = [];
-    private HashSet<int> _enabledChannels;
-
-    public TaskAlertPool(IEnumerable<int>? enabledChannels = null)
-    {
-        _enabledChannels = NormalizeChannels(enabledChannels ?? TaskAlertChannels.Defaults);
-    }
 
     public bool Enabled { get; private set; } = true;
 
     public long DroppedEventCount { get; private set; }
 
     public IReadOnlyList<TaskAlertAssignment> Assignments => _assignments.Values
-        .OrderBy(assignment => assignment.Channel)
+        .OrderBy(assignment => assignment.Slot)
         .ToArray();
 
     public bool Apply(TaskAlertEvent taskEvent)
@@ -35,18 +29,17 @@ public sealed class TaskAlertPool
             string.Equals(candidate.SessionId, taskEvent.SessionId, StringComparison.Ordinal));
         if (existing is null)
         {
-            var channel = _enabledChannels
+            var slot = TaskAlertSlots.All
                 .Where(candidate => !_assignments.ContainsKey(candidate))
-                .OrderBy(candidate => candidate)
                 .FirstOrDefault();
-            if (channel == 0)
+            if (slot == 0)
             {
                 DroppedEventCount++;
                 return false;
             }
 
             existing = new TaskAlertAssignment(
-                channel,
+                slot,
                 taskEvent.SessionId,
                 taskEvent.TurnId,
                 TaskAlertState.Running,
@@ -89,7 +82,7 @@ public sealed class TaskAlertPool
             _ => throw new ArgumentOutOfRangeException(nameof(taskEvent)),
         };
 
-        _assignments[updated.Channel] = updated;
+        _assignments[updated.Slot] = updated;
         return true;
     }
 
@@ -122,17 +115,17 @@ public sealed class TaskAlertPool
         return changed;
     }
 
-    public bool AcknowledgeTerminal(int channel, string sessionId)
+    public bool AcknowledgeTerminal(int slot, string sessionId)
     {
-        TaskAlertChannels.Validate(channel);
-        if (!_assignments.TryGetValue(channel, out var assignment)
+        TaskAlertSlots.Validate(slot);
+        if (!_assignments.TryGetValue(slot, out var assignment)
             || !string.Equals(assignment.SessionId, sessionId, StringComparison.Ordinal)
             || assignment.State is not (TaskAlertState.Completed or TaskAlertState.Fault))
         {
             return false;
         }
 
-        return _assignments.Remove(channel);
+        return _assignments.Remove(slot);
     }
 
     public bool SetEnabled(bool enabled)
@@ -147,32 +140,4 @@ public sealed class TaskAlertPool
         return true;
     }
 
-    public bool SetChannels(IEnumerable<int> channels)
-    {
-        var normalized = NormalizeChannels(channels);
-        if (_enabledChannels.SetEquals(normalized))
-        {
-            return false;
-        }
-
-        _enabledChannels = normalized;
-        foreach (var channel in _assignments.Keys.Where(channel => !_enabledChannels.Contains(channel)).ToArray())
-        {
-            _assignments.Remove(channel);
-        }
-
-        return true;
-    }
-
-    private static HashSet<int> NormalizeChannels(IEnumerable<int> channels)
-    {
-        ArgumentNullException.ThrowIfNull(channels);
-        var result = channels.Select(TaskAlertChannels.ValidateSelectable).ToHashSet();
-        if (result.Count == 0)
-        {
-            throw new ArgumentException("Select at least one task-alert channel.", nameof(channels));
-        }
-
-        return result;
-    }
 }

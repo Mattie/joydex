@@ -206,8 +206,11 @@ public sealed class LinkToolLedService : IAsyncDisposable
 
             _log(
                 $"LinkTool telemetry applied: bank=M{desired.JoydexBank}; " +
-                $"B1={desired.JoydexB1State}; B2={desired.JoydexB2State}; " +
-                $"B4={desired.JoydexB4State}; B5={desired.JoydexB5State}; " +
+                $"primary={desired.JoydexPrimaryB1State},{desired.JoydexPrimaryB2State}," +
+                $"{desired.JoydexPrimaryB4State},{desired.JoydexPrimaryB5State}; " +
+                $"overflow={desired.JoydexOverflowB1State},{desired.JoydexOverflowB2State}," +
+                $"{desired.JoydexOverflowB3State},{desired.JoydexOverflowB4State}," +
+                $"{desired.JoydexOverflowB5State},{desired.JoydexOverflowB6State}; " +
                 $"Alpha={desired.JoydexAlphaState}.");
             SetStatus(desired.HasAlert ? "LinkTool task LEDs active" : "LinkTool bank colors active");
         }

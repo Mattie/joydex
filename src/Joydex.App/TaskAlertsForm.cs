@@ -12,8 +12,8 @@ internal sealed class TaskAlertsForm : Form
     private readonly string _linkToolProfilePath;
     private readonly Func<bool, Task> _setEnabled;
     private readonly CheckBox _enabled;
-    private readonly Dictionary<int, CheckBox> _channels = [];
     private readonly Label _bank;
+    private readonly Label _dropped;
     private readonly DataGridView _assignments;
     private readonly Label _hookStatus;
     private bool _updating;
@@ -90,23 +90,22 @@ internal sealed class TaskAlertsForm : Form
         };
         channelPanel.Controls.Add(new Label
         {
-            Text = "Alert channels:",
+            Text = "Primary: M2-M4 B1, B2, B4, B5",
             AutoSize = true,
-            Margin = new Padding(0, 5, 8, 0),
+            Margin = new Padding(0, 5, 14, 0),
         });
-        foreach (var channel in TaskAlertChannels.Selectable)
-        {
-            var checkBox = new CheckBox { Text = $"B{channel}", AutoSize = true };
-            checkBox.CheckedChanged += OnChannelsChanged;
-            _channels[channel] = checkBox;
-            channelPanel.Controls.Add(checkBox);
-        }
         channelPanel.Controls.Add(new Label
         {
-            Text = "B3 and B6 stay profile-controlled for bank indication.",
+            Text = "Overflow: M1 B1-B6",
+            AutoSize = true,
+            Margin = new Padding(0, 5, 14, 0),
+        });
+        channelPanel.Controls.Add(new Label
+        {
+            Text = "M5: commands only",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
-            Margin = new Padding(14, 5, 0, 0),
+            Margin = new Padding(0, 5, 0, 0),
         });
         channelPanel.Controls.Add(new Label
         {
@@ -120,6 +119,18 @@ internal sealed class TaskAlertsForm : Form
             Margin = new Padding(0, 5, 0, 0),
         };
         channelPanel.Controls.Add(_bank);
+        channelPanel.Controls.Add(new Label
+        {
+            Text = "Dropped events:",
+            AutoSize = true,
+            Margin = new Padding(20, 5, 6, 0),
+        });
+        _dropped = new Label
+        {
+            AutoSize = true,
+            Margin = new Padding(0, 5, 0, 0),
+        };
+        channelPanel.Controls.Add(_dropped);
 
         _assignments = new DataGridView
         {
@@ -133,7 +144,8 @@ internal sealed class TaskAlertsForm : Form
             RowHeadersVisible = false,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         };
-        _assignments.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Channel", FillWeight = 45 });
+        _assignments.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Slot", FillWeight = 45 });
+        _assignments.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Control", FillWeight = 70 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "State", FillWeight = 60 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Color", FillWeight = 55 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Session", FillWeight = 125 });
@@ -197,21 +209,23 @@ internal sealed class TaskAlertsForm : Form
         try
         {
             _enabled.Checked = snapshot.Enabled;
-            foreach (var pair in _channels)
-            {
-                pair.Value.Checked = snapshot.Channels.Contains(pair.Key);
-            }
-
             _bank.Text = snapshot.BankAutomaticallyDetected
                 ? $"M{snapshot.Bank} (automatic)"
                 : $"M{snapshot.Bank} (fallback)";
+            _dropped.Text = snapshot.DroppedEventCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
             _assignments.Rows.Clear();
             foreach (var assignment in snapshot.Assignments)
             {
                 var color = TaskAlertColors.Get(assignment.State);
+                var page = TaskAlertSlots.Page(assignment.Slot);
                 _assignments.Rows.Add(
-                    $"B{assignment.Channel}",
+                    page == TaskAlertPage.Primary
+                        ? $"P{TaskAlertSlots.PageIndex(assignment.Slot)}"
+                        : $"O{TaskAlertSlots.PageIndex(assignment.Slot)}",
+                    page == TaskAlertPage.Primary
+                        ? $"M2-M4 B{TaskAlertSlots.Button(assignment.Slot)}"
+                        : $"M1 B{TaskAlertSlots.Button(assignment.Slot)}",
                     assignment.State.ToString().ToLowerInvariant(),
                     $"{color.Red:X2} {color.Green:X2} {color.Blue:X2}",
                     assignment.SessionId,
@@ -222,25 +236,6 @@ internal sealed class TaskAlertsForm : Form
         {
             _updating = false;
         }
-    }
-
-    private void OnChannelsChanged(object? sender, EventArgs eventArgs)
-    {
-        if (_updating)
-        {
-            return;
-        }
-
-        var selected = _channels.Where(pair => pair.Value.Checked).Select(pair => pair.Key).ToArray();
-        if (selected.Length == 0)
-        {
-            _updating = true;
-            ((CheckBox)sender!).Checked = true;
-            _updating = false;
-            return;
-        }
-
-        _coordinator.SetChannels(selected);
     }
 
     private void OnInstallHooks(object? sender, EventArgs eventArgs)

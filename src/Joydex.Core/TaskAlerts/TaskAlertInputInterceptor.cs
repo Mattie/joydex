@@ -2,7 +2,7 @@ using Joydex.Core.Input;
 
 namespace Joydex.Core.TaskAlerts;
 
-public sealed record TaskAlertNavigationRequest(int Channel, string SessionId);
+public sealed record TaskAlertNavigationRequest(int Slot, int Bank, int Button, string SessionId);
 
 public sealed record TaskAlertInterception(
     IReadOnlyList<JoystickEvent> RemainingEvents,
@@ -19,15 +19,15 @@ public sealed class TaskAlertInputInterceptor(Func<IReadOnlyList<TaskAlertAssign
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(events);
 
-        var byChannel = assignmentProvider().ToDictionary(assignment => assignment.Channel);
+        var bySlot = assignmentProvider().ToDictionary(assignment => assignment.Slot);
         var pressedNow = events
             .Where(inputEvent => inputEvent.Kind == JoystickEventKind.ButtonPressed)
             .Select(inputEvent => inputEvent.DisplayIndex)
             .ToHashSet();
 
-        foreach (var assignment in byChannel.Values)
+        foreach (var assignment in bySlot.Values)
         {
-            foreach (var button in TaskAlertChannels.LogicalButtons[assignment.Channel])
+            foreach (var button in TaskAlertSlots.LogicalButtons(assignment.Slot))
             {
                 if (button <= snapshot.Buttons.Length
                     && snapshot.Buttons[button - 1]
@@ -43,7 +43,7 @@ public sealed class TaskAlertInputInterceptor(Func<IReadOnlyList<TaskAlertAssign
         foreach (var inputEvent in events)
         {
             var button = inputEvent.DisplayIndex;
-            var channel = TaskAlertChannels.FromLogicalButton(button);
+            var slot = TaskAlertSlots.FromLogicalButton(button);
             if (inputEvent.Kind == JoystickEventKind.ButtonReleased
                 && _suppressedUntilRelease.Remove(button))
             {
@@ -51,12 +51,14 @@ public sealed class TaskAlertInputInterceptor(Func<IReadOnlyList<TaskAlertAssign
             }
 
             if (inputEvent.Kind == JoystickEventKind.ButtonPressed
-                && channel is { } occupiedChannel
-                && byChannel.TryGetValue(occupiedChannel, out var assignment))
+                && slot is { } occupiedSlot
+                && bySlot.TryGetValue(occupiedSlot, out var assignment))
             {
                 _suppressedUntilRelease.Add(button);
                 navigation.Add(new TaskAlertNavigationRequest(
-                    assignment.Channel,
+                    assignment.Slot,
+                    TaskAlertSlots.BankFromLogicalButton(button),
+                    TaskAlertSlots.Button(assignment.Slot),
                     assignment.SessionId));
                 continue;
             }

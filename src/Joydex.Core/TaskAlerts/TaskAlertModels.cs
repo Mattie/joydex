@@ -23,61 +23,125 @@ public sealed record TaskAlertEvent(
     DateTimeOffset ReceivedAt);
 
 public sealed record TaskAlertAssignment(
-    int Channel,
+    int Slot,
     string SessionId,
     string? TurnId,
     TaskAlertState State,
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompleteAfter = null);
 
-public static class TaskAlertChannels
+public enum TaskAlertPage
 {
-    public static readonly int[] Defaults = [1, 2, 4, 5];
+    Primary,
+    Overflow,
+}
 
-    public static readonly int[] All = [1, 2, 3, 4, 5, 6];
+public static class TaskAlertSlots
+{
+    public static readonly int[] Primary = [1, 2, 3, 4];
 
-    public static readonly int[] Selectable = [1, 2, 4, 5];
+    public static readonly int[] Overflow = [5, 6, 7, 8, 9, 10];
 
-    public static readonly IReadOnlyDictionary<int, int[]> LogicalButtons =
-        Enumerable.Range(1, 6).ToDictionary(
-            channel => channel,
-            channel => new[] { 37 + channel, 55 + channel, 61 + channel, 67 + channel, 73 + channel });
+    public static readonly int[] All = [.. Primary, .. Overflow];
 
-    public static int LedId(int channel) => Validate(channel) + 4;
+    public static int Validate(int slot)
+    {
+        if (slot is < 1 or > 10)
+        {
+            throw new ArgumentOutOfRangeException(nameof(slot), "Task-alert slots are 1 through 10.");
+        }
+
+        return slot;
+    }
+
+    public static TaskAlertPage Page(int slot) => Validate(slot) <= 4
+        ? TaskAlertPage.Primary
+        : TaskAlertPage.Overflow;
+
+    public static int PageIndex(int slot)
+    {
+        Validate(slot);
+        return slot <= 4 ? slot : slot - 4;
+    }
+
+    public static int Button(int slot) => Validate(slot) switch
+    {
+        1 => 1,
+        2 => 2,
+        3 => 4,
+        4 => 5,
+        _ => slot - 4,
+    };
+
+    public static int[] Banks(int slot) => Page(slot) == TaskAlertPage.Primary
+        ? [2, 3, 4]
+        : [1];
+
+    public static int[] LogicalButtons(int slot)
+    {
+        var button = Button(slot);
+        return Banks(slot).Select(bank => LogicalButton(bank, button)).ToArray();
+    }
 
     public static int? FromLogicalButton(int logicalButton)
     {
-        foreach (var pair in LogicalButtons)
+        foreach (var bank in Enumerable.Range(1, 5))
         {
-            if (Array.IndexOf(pair.Value, logicalButton) >= 0)
+            var button = logicalButton - BankBase(bank);
+            if (button is < 1 or > 6)
             {
-                return pair.Key;
+                continue;
             }
+
+            return FromBankAndButton(bank, button);
         }
 
         return null;
     }
 
-    public static int Validate(int channel)
+    public static int? FromBankAndButton(int bank, int button)
     {
-        if (channel is < 1 or > 6)
+        if (button is < 1 or > 6)
         {
-            throw new ArgumentOutOfRangeException(nameof(channel), "Task-alert channels are B1 through B6.");
+            return null;
         }
 
-        return channel;
-    }
-
-    public static int ValidateSelectable(int channel)
-    {
-        Validate(channel);
-        if (channel is 3 or 6)
+        return bank switch
         {
-            throw new ArgumentOutOfRangeException(nameof(channel), "B3 and B6 are reserved for profile bank indication.");
-        }
-
-        return channel;
+            1 => 4 + button,
+            2 or 3 or 4 => button switch
+            {
+                1 => 1,
+                2 => 2,
+                4 => 3,
+                5 => 4,
+                _ => null,
+            },
+            _ => null,
+        };
     }
+
+    public static int BankFromLogicalButton(int logicalButton) => logicalButton switch
+    {
+        >= 38 and <= 43 => 1,
+        >= 56 and <= 61 => 2,
+        >= 62 and <= 67 => 3,
+        >= 68 and <= 73 => 4,
+        >= 74 and <= 79 => 5,
+        _ => 0,
+    };
+
+    private static int LogicalButton(int bank, int button) => BankBase(bank) + button;
+
+    private static int BankBase(int bank) => bank switch
+    {
+        1 => 37,
+        2 => 55,
+        3 => 61,
+        4 => 67,
+        5 => 73,
+        _ => throw new ArgumentOutOfRangeException(nameof(bank)),
+    };
 }
 
 public static class TaskAlertColors

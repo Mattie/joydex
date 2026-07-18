@@ -188,7 +188,7 @@ public sealed class CompanionWorker(
                         .ConfigureAwait(false);
                     if (navigated)
                     {
-                        acknowledgeTerminalTaskAlert?.Invoke(navigation.Channel, navigation.SessionId);
+                        acknowledgeTerminalTaskAlert?.Invoke(navigation.Slot, navigation.SessionId);
                     }
                 }
             }

@@ -9,29 +9,41 @@ namespace Joydex.Windows.TaskAlerts;
 
 public sealed record LinkToolTelemetryState(
     int JoydexBank,
-    int JoydexB1State,
-    int JoydexB2State,
-    int JoydexB4State,
-    int JoydexB5State,
+    int JoydexPrimaryB1State,
+    int JoydexPrimaryB2State,
+    int JoydexPrimaryB4State,
+    int JoydexPrimaryB5State,
+    int JoydexOverflowB1State,
+    int JoydexOverflowB2State,
+    int JoydexOverflowB3State,
+    int JoydexOverflowB4State,
+    int JoydexOverflowB5State,
+    int JoydexOverflowB6State,
     int JoydexAlphaState)
 {
-    public bool HasAlert => JoydexB1State != 0
-        || JoydexB2State != 0
-        || JoydexB4State != 0
-        || JoydexB5State != 0
+    public bool HasAlert => JoydexPrimaryB1State != 0
+        || JoydexPrimaryB2State != 0
+        || JoydexPrimaryB4State != 0
+        || JoydexPrimaryB5State != 0
+        || JoydexOverflowB1State != 0
+        || JoydexOverflowB2State != 0
+        || JoydexOverflowB3State != 0
+        || JoydexOverflowB4State != 0
+        || JoydexOverflowB5State != 0
+        || JoydexOverflowB6State != 0
         || JoydexAlphaState != 0;
 
     public static LinkToolTelemetryState From(TaskAlertSnapshot snapshot, bool suppressAlerts = false)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
-        var states = TaskAlertChannels.Selectable.ToDictionary(channel => channel, _ => 0);
+        var states = new int[11];
         if (snapshot.Enabled && !suppressAlerts)
         {
             foreach (var assignment in snapshot.Assignments)
             {
-                if (states.ContainsKey(assignment.Channel))
+                if (assignment.Slot is >= 1 and <= 10)
                 {
-                    states[assignment.Channel] = Encode(assignment.State);
+                    states[assignment.Slot] = Encode(assignment.State);
                 }
             }
         }
@@ -47,8 +59,14 @@ public sealed record LinkToolTelemetryState(
             snapshot.Bank,
             states[1],
             states[2],
+            states[3],
             states[4],
             states[5],
+            states[6],
+            states[7],
+            states[8],
+            states[9],
+            states[10],
             alpha);
     }
 
@@ -158,27 +176,46 @@ public static class LinkToolProfileWriter
         ArgumentException.ThrowIfNullOrWhiteSpace(alphaKey);
         var rules = new List<object>();
 
-        foreach (var channel in TaskAlertChannels.Selectable)
+        foreach (var slot in TaskAlertSlots.Primary)
+        {
+            foreach (var bank in TaskAlertSlots.Banks(slot))
+            {
+                foreach (var state in Enum.GetValues<TaskAlertState>())
+                {
+                    rules.Add(Rule(
+                        ThrottleName,
+                        throttleKey,
+                        TelemetryArgument(slot),
+                        Encode(state),
+                        TaskAlertSlots.Button(slot),
+                        VirpilLedColor.For(state),
+                        $"Joydex primary M{bank} B{TaskAlertSlots.Button(slot)} {state.ToString().ToLowerInvariant()}",
+                        priority: 100,
+                        bank: bank));
+                }
+            }
+        }
+
+        foreach (var slot in TaskAlertSlots.Overflow)
         {
             foreach (var state in Enum.GetValues<TaskAlertState>())
             {
                 rules.Add(Rule(
                     ThrottleName,
                     throttleKey,
-                    $"JoydexB{channel}State",
+                    TelemetryArgument(slot),
                     Encode(state),
-                    channel,
+                    TaskAlertSlots.Button(slot),
                     VirpilLedColor.For(state),
-                    $"Joydex B{channel} {state.ToString().ToLowerInvariant()}",
-                    priority: 100));
+                    $"Joydex overflow M1 B{TaskAlertSlots.Button(slot)} {state.ToString().ToLowerInvariant()}",
+                    priority: 100,
+                    bank: 1));
             }
         }
 
         // LinkTool resolves competing rules for one LED in profile order. Keep
-        // state rules ahead of the always-matching bank baselines so an active
-        // alert wins and state zero falls through to the profile color. LinkTool
-        // has no leave-current fallback for unruled LEDs, so B3 and B6 also need
-        // baseline-only rules to preserve their bank-indicator colors.
+        // bank-gated state rules ahead of the always-matching baselines. M5 has
+        // baseline rules only, so every control on that page keeps its command.
         foreach (var channel in Enumerable.Range(1, 6))
         {
             foreach (var bank in Enumerable.Range(1, 5))
@@ -247,7 +284,19 @@ public static class LinkToolProfileWriter
         int led,
         VirpilLedColor color,
         string comment,
-        int priority) => new
+        int priority,
+        int? bank = null)
+    {
+        var conditions = new List<object>
+        {
+            new { argument, condition = "==", value = value.ToString() },
+        };
+        if (bank is not null)
+        {
+            conditions.Add(new { argument = "JoydexBank", condition = "==", value = bank.Value.ToString() });
+        }
+
+        return new
         {
             device,
             argument,
@@ -266,7 +315,7 @@ public static class LinkToolProfileWriter
             priority,
             ruleType = "Telemetry",
             keyboardCombo = string.Empty,
-            conditions = new[] { new { argument, condition = "==", value = value.ToString() } },
+            conditions,
             buttonRule = new
             {
                 sourceDevice = AlphaName,
@@ -285,6 +334,7 @@ public static class LinkToolProfileWriter
                 secondaryValue = string.Empty,
             },
         };
+    }
 
     private static string FindDevicePath(ushort vendorId, ushort productId) =>
         DeviceList.Local.GetHidDevices(vendorId, productId)
@@ -293,6 +343,13 @@ public static class LinkToolProfileWriter
         ?? throw new IOException($"VIRPIL HID device {vendorId:X4}:{productId:X4} is unavailable.");
 
     private static int Bgr(VirpilLedColor color) => color.Red | (color.Green << 8) | (color.Blue << 16);
+
+    internal static string TelemetryArgument(int slot) => TaskAlertSlots.Page(slot) switch
+    {
+        TaskAlertPage.Primary => $"JoydexPrimaryB{TaskAlertSlots.Button(slot)}State",
+        TaskAlertPage.Overflow => $"JoydexOverflowB{TaskAlertSlots.Button(slot)}State",
+        _ => throw new ArgumentOutOfRangeException(nameof(slot)),
+    };
 
     private static int Encode(TaskAlertState state) => state switch
     {

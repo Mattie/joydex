@@ -1,6 +1,6 @@
 # Joydex task-status LEDs and alert routing
 
-Status: implementation updated on 2026-07-18 for VIRPIL Controls LinkTool v3. Automated tests pass. The Windows Desktop `UserPromptSubmit` canary passes on the updated Codex package, including a fresh real prompt after the automatic-bank build was staged. The generated 50-rule LinkTool profile passes the full M2 white/yellow/green/red, Alpha, bank-baseline, and clear canary without flicker or a device-wide color reset. M2 B1 also passes physical interception and deep-link navigation. A hardware canary verified that a running assignment stays white and continues routing after successful navigation. Another canary changed M2 to M3 and back to M2 while B1 was running; B1 stayed white and the other buttons followed the physical bank colors automatically. Completed and fault assignments acknowledge and restore immediately. The unchanged hook relay remains functional, but its p95 latency gate needs an idle-machine recheck after exceeding 25 ms under system load. Other-bank button routing and overflow canaries are still pending.
+Status: implementation updated on 2026-07-18 for VIRPIL Controls LinkTool v3. The ten-slot reducer, bank-specific interception, 106-rule profile generation, M5 isolation, and legacy-settings migration pass automated tests. Hardware canaries pass for the complete M2 primary pattern, complete M1 overflow pattern, M5 baseline isolation, and Global Alpha across those banks. The Windows Desktop `UserPromptSubmit` canary passes on the updated Codex package, including a fresh real prompt after automatic bank detection was staged. Earlier canaries also cover M2 deep-link routing, running-state preservation, and M2-M3-M2 bank following. The unchanged hook relay remains functional, but its p95 latency gate needs an idle-machine recheck after exceeding 25 ms under system load.
 
 The Codex behavior was checked against the installed Windows package `OpenAI.Codex 26.715.3651.0`. The current hardware work uses VIRPIL Controls LinkTool v3.0 and the firmware/toolset installed on 2026-07-18. Earlier quick-utility experiments used VPC Software Suite `20220720`.
 
@@ -48,17 +48,17 @@ LinkTool v3 provides the missing durable rule engine. Joydex sends custom DCS-st
 
 This result replaces the direct-HID refresh loop. Joydex now emits one atomic telemetry snapshot per state change, and LinkTool maintains the steady output inside its own process. Blinking remains deferred.
 
-## Final design: a four-channel dynamic pool
+## Final design: a ten-slot bank-aware pool
 
 The earlier six persistent session slots were dropped. They required a calibration workflow and would have tied physical buttons to chats long after those chats stopped mattering.
 
-Joydex now keeps a runtime pool on B1, B2, B4, and B5. Any Codex task can claim a free channel. Assignments use the lowest free B-position. Another event from the same task updates its existing channel.
+Joydex keeps ten stable runtime slots. Primary slots 1-4 use B1, B2, B4, and B5 across M2-M4. Overflow slots 5-10 use all six B-positions on M1. M5 never displays or routes a task alert, leaving all six controls available for ordinary commands. The Alpha remains global and shows the highest state across all ten assignments on every bank.
 
-Overflow is intentionally lossy. When all four channels are occupied, the event is dropped. There is no backlog and no preemption. A dropped task can claim a channel when it emits a later lifecycle event after one becomes free.
+Any Codex task claims the lowest free slot. Slots do not move when another slot becomes free, so a remembered physical target stays stable. Another event from the same task updates its existing slot. When all ten slots are occupied, later events are dropped without a backlog or preemption. A dropped task can retry on its next lifecycle event after a slot becomes available.
 
-B3 and B6 are excluded from the pool. They receive bank-baseline rules only, so their profile colors remain visible as bank indicators and they never show task state.
+On M2-M4, B3 and B6 remain ordinary controls with baseline colors. On the dedicated M1 overflow page, they become overflow slots 7 and 10. An unoccupied slot always falls through to its ordinary binding.
 
-The master enabled flag and selected pool channels live in `task-alerts.json` beside the normal Joydex configuration. Writes use a flushed temporary file followed by atomic replacement. Live task assignments are memory-only and start empty after a restart.
+The master enabled flag and fallback bank live in `task-alerts.json` beside the normal Joydex configuration. Earlier per-channel settings are accepted during migration and ignored because the bank layout is now fixed. Writes use a flushed temporary file followed by atomic replacement. Live task assignments are memory-only and start empty after a restart.
 
 ## Codex lifecycle hooks
 
@@ -74,7 +74,7 @@ Red `FF 00 00` is reserved for a future fault source. Hooks do not reliably dist
 
 The one-second Stop grace prevents a green flash when another handler or automatic continuation starts a new turn. A later running or approval event for that session cancels the pending completion.
 
-Running assignments expire after 12 hours. Approval, completed, and fault assignments expire after 24 hours. These leases recover a channel after a lost event without creating a short timer that interrupts real work.
+Running assignments expire after 12 hours. Approval, completed, and fault assignments expire after 24 hours. These leases recover a slot after a lost event without creating a short timer that interrupts real work.
 
 `SessionStart` and `PostToolUse` were left out. They add relay launches without supplying a state needed by this design.
 
@@ -130,7 +130,7 @@ All five CM3 bank variants are known:
 | M4 | 68 | 69 | 70 | 71 | 72 | 73 |
 | M5 | 74 | 75 | 76 | 77 | 78 | 79 |
 
-An occupied channel intercepts both the press and matching release before Joydex's normal binding engine. The override works in every bank listed above. A channel that appears while its physical control is already held is armed only after release, which prevents a stray release-only action.
+An occupied slot intercepts both the press and matching release before Joydex's normal binding engine. Primary slots intercept their B-position only on M2-M4. Overflow slots intercept only their M1 B-position. M5 and every unassigned control pass through. A slot that appears while its physical control is already held is armed only after release, which prevents a stray release-only action.
 
 The 2026-07-18 VIRPIL firmware update changed this throttle's DirectInput identity to `LEFT VPC MongoosT-50CM3`, instance GUID `[machine-specific value omitted]`, and product GUID `81943344-0000-0000-0000-504944564944`. Joydex must be reconfigured after a firmware update that changes these identifiers; USB disconnect/reconnect with stable identifiers requires no reconfiguration.
 
@@ -144,7 +144,7 @@ Routing uses the existing foreground guard in explicit deep-link mode. A configu
 
 A successful shell navigation preserves running and approval assignments because opening the task is not evidence that the turn ended or the approval was resolved. Their white or yellow status stays visible and the occupied button continues to route to that task. Completed and fault assignments are terminal, so successful navigation acknowledges them, clears their overlay, and returns the button to its normal binding. A blocked or failed navigation keeps every state assigned.
 
-The button-map window paints active task overlays across every bank variant. The Task Alerts window shows each channel, state, color, session ID, and deep-link target.
+The button-map window paints primary overlays on M2-M4, overflow overlays on M1, and none on M5. The Task Alerts window separates primary and overflow slot labels and shows each control, state, color, session ID, and deep-link target.
 
 ## Tray master switch
 
@@ -163,18 +163,19 @@ Re-enabling begins with an empty pool. If Joydex has not written an alert overla
 
 Joydex writes `joydex-linktool.led.json` beside its task-alert settings. The generated profile contains:
 
-- running, approval, completed, and fault rules for B1, B2, B4, and B5;
+- primary state rules for B1, B2, B4, and B5, gated to M2-M4;
+- overflow state rules for B1-B6, gated to M1;
 - a baseline rule for each of M1-M5 on all six throttle LEDs, ordered after the alert rules;
 - four priority rules for the Alpha grip;
-- no alert-state rules for B3 or B6.
+- no task-state rule gated to M5.
 
-LinkTool offers no leave-current behavior for LEDs without rules: its fallback choices are firmware defaults, one configured color, or off. The initial 40-rule profile therefore turned unruled B3 and B6 yellow on M2. Baseline-only rules are the explicit compromise that preserves their bank-indicator colors without allowing task assignment or routing on those buttons.
+The generated profile has 106 rules: 48 primary rules, 24 overflow rules, 30 bank baselines, and four global Alpha rules. LinkTool evaluates the task state and `JoydexBank` conditions together, which prevents primary state values from appearing on M1 or M5 and prevents overflow state values from appearing outside M1.
 
 Joydex reads the throttle's current physical bank from VIRPIL's read-only software-link HID feature report. Report ID `4` contains the shift-channel mask in byte `2`; one active bit maps directly to M1-M5. The M2 hardware probe returned `0x02`. Empty, multi-channel, and out-of-range masks are ignored so a transient selector position cannot replace the last valid bank. The Task Alerts window shows the detected bank as automatic and retains the persisted M2 value only as a startup fallback if no valid report is available.
 
 The bank monitor polls every 200 ms, matching LinkTool's own default Shift Link interval, but emits only a change. A physical dial change updates `JoydexBank` in the next atomic telemetry snapshot, so LinkTool selects the new baseline while preserving every active task state on the same B-position. This path only calls HID `GetFeature`; it does not send a feature report or alter controller configuration.
 
-The serialized output worker enforces a 250 ms minimum interval, suppresses identical snapshots, and coalesces changes to the latest complete state. A snapshot contains `JoydexBank`, the four B-channel states, and the highest-priority Alpha state. Clearing an assignment sends state `0` while retaining `JoydexBank`, so the lower baseline rule takes over immediately. Joydex never issues a device-wide restore in this backend.
+The serialized output worker enforces a 250 ms minimum interval, suppresses identical snapshots, and coalesces changes to the latest complete state. A snapshot contains `JoydexBank`, four primary states, six overflow states, and the highest-priority global Alpha state. Clearing an assignment sends state `0` while retaining `JoydexBank`, so the lower baseline rule takes over immediately. Joydex never issues a device-wide restore in this backend.
 
 On startup, Joydex compares the first automatically detected bank with the persisted fallback. If they differ, it sends one zero-alert snapshot so LinkTool selects the physical baseline. If they match, duplicate suppression keeps startup hardware-silent. Later telemetry is limited to task-state or physical-bank changes.
 
@@ -190,7 +191,7 @@ Runtime output is limited to temporary LED commands. Joydex does not flash firmw
 
 ### Guardian process
 
-The packaged app starts `Joydex.Guardian.exe` once an alert overlay is active. The guardian is a crash-only fallback. If the parent disappears while an alert is active, it sends one partial UDP message that sets B1, B2, B4, B5, and Alpha states to zero. It deliberately omits `JoydexBank`, allowing LinkTool to retain the last baseline selection. A clean exit clears the state in the main process and signals the guardian to stop.
+The packaged app starts `Joydex.Guardian.exe` once an alert overlay is active. The guardian is a crash-only fallback. If the parent disappears while an alert is active, it sends one partial UDP message that clears all four primary states, all six overflow states, and Alpha. It deliberately omits `JoydexBank`, allowing LinkTool to retain the last baseline selection. A clean exit clears the state in the main process and signals the guardian to stop.
 
 If LinkTool is already stopped during a crash, the firmware owns the LEDs and the lost UDP cleanup is harmless. A power loss can terminate both processes; reconnecting or power-cycling the devices remains the final recovery because Joydex never writes firmware, EEPROM, calibration, or the controller profile.
 
@@ -204,7 +205,7 @@ These states resemble those shown by Codex Pets, but Joydex has no supported Pet
 
 | Area | Main implementation |
 | --- | --- |
-| Reducer, leases, channel allocation | `src/Joydex.Core/TaskAlerts` |
+| Reducer, leases, slot allocation, and bank mapping | `src/Joydex.Core/TaskAlerts` |
 | Press/release interception | `TaskAlertInputInterceptor` and `CompanionEngine` |
 | Pipe receiver and coordinator | `src/Joydex.Windows/TaskAlerts` |
 | Deep-link navigation | `TaskDeepLinkNavigator` |
@@ -221,9 +222,9 @@ These states resemble those shown by Codex Pets, but Joydex has no supported Pet
 Automated tests do not write to the controllers. Completed canaries include hook trust and delivery, B1-B6 LED addressing, Alpha output, the official-utility/direct-HID comparison, the M2 LinkTool baseline/alert/clear sequence, and automatic M2/M3 bank tracking while an alert is active.
 
 1. Press B1-B6 in M1 through M5 and confirm the logical ranges in the table.
-2. Generate five task events. Confirm B1, B2, B4, and B5 fill in order, the fifth event is dropped, and a later event can claim a freed channel.
-3. Load the generated 50-rule LinkTool profile, enable profile autoload and LinkTool autostart, then confirm white, yellow, low green, and the reserved red test color on each enabled throttle channel and the Alpha while B3 and B6 retain their bank colors. Completed on M2.
-4. Press an alerting channel from several banks. Successful navigation must preserve running/approval status and free completed/fault status. Simulator-blocked navigation must leave every state assigned. M2 B1 navigation and running-state preservation are verified; the other states and banks still need operator canaries.
+2. Generate eleven task events. Confirm primary slots 1-4 fill first, overflow slots 5-10 fill next, and the eleventh event is dropped. Freeing a primary slot must not move an existing overflow assignment; a later event can claim the free primary slot.
+3. Load the generated 106-rule LinkTool profile. Confirm primary statuses appear on M2-M4, overflow statuses appear on M1, M5 shows only baseline colors, and Alpha shows the highest state globally. Completed for the M2 primary page, M1 overflow page, M5 isolation, and Global Alpha on 2026-07-18; M3 and M4 reuse the verified primary rules and bank gating.
+4. Press primary and overflow alerts from their intended banks. Successful navigation must preserve running/approval status and free completed/fault status. Buttons on other banks and simulator-blocked navigation must keep their expected assignment/binding behavior.
 5. Exercise tray disable, clean exit, and forced exit.
 
 Final acceptance means normal bindings return immediately after a terminal acknowledgement or disable, non-terminal assignments stay visible after navigation, both devices recover their profile colors, and Codex shows no visible delay attributable to Joydex.

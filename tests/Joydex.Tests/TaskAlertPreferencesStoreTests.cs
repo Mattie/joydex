@@ -7,14 +7,13 @@ public sealed class TaskAlertPreferencesStoreTests : IDisposable
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "joydex-tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
-    public void NewInstallDefaultsEnabledWithSelectedPoolChannels()
+    public void NewInstallDefaultsEnabledWithM2Fallback()
     {
         var path = Path.Combine(_directory, "task-alerts.json");
 
         var preferences = TaskAlertPreferencesStore.LoadOrCreate(path);
 
         Assert.True(preferences.Enabled);
-        Assert.Equal([1, 2, 4, 5], preferences.Channels);
         Assert.Equal(2, preferences.Bank);
         Assert.True(File.Exists(path));
     }
@@ -24,12 +23,11 @@ public sealed class TaskAlertPreferencesStoreTests : IDisposable
     {
         var path = Path.Combine(_directory, "task-alerts.json");
 
-        TaskAlertPreferencesStore.Save(path, new TaskAlertPreferences(false, [5, 1, 5]));
+        TaskAlertPreferencesStore.Save(path, new TaskAlertPreferences(false, 9));
         var loaded = TaskAlertPreferencesStore.LoadOrCreate(path);
 
         Assert.False(loaded.Enabled);
-        Assert.Equal([1, 5], loaded.Channels);
-        Assert.Equal(2, loaded.Bank);
+        Assert.Equal(5, loaded.Bank);
         Assert.False(File.Exists(path + ".tmp"));
     }
 
@@ -38,9 +36,24 @@ public sealed class TaskAlertPreferencesStoreTests : IDisposable
     {
         var path = Path.Combine(_directory, "task-alerts.json");
 
-        TaskAlertPreferencesStore.Save(path, new TaskAlertPreferences(true, [1], 9));
+        TaskAlertPreferencesStore.Save(path, new TaskAlertPreferences(true, 9));
 
         Assert.Equal(5, TaskAlertPreferencesStore.LoadOrCreate(path).Bank);
+    }
+
+    [Fact]
+    public void LoadsEarlierChannelSettingsWithoutKeepingObsoleteSelection()
+    {
+        var path = Path.Combine(_directory, "task-alerts.json");
+        Directory.CreateDirectory(_directory);
+        File.WriteAllText(path, """
+            { "enabled": false, "channels": [1, 2, 4, 5], "bank": 3 }
+            """);
+
+        var loaded = TaskAlertPreferencesStore.LoadOrCreate(path);
+
+        Assert.False(loaded.Enabled);
+        Assert.Equal(3, loaded.Bank);
     }
 
     public void Dispose()
