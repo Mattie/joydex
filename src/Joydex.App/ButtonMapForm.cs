@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using Joydex.Core.Config;
+using Joydex.Core.TaskAlerts;
 
 namespace Joydex.App;
 
@@ -32,6 +33,9 @@ internal sealed class ButtonMapForm : Form
     protected override bool ShowWithoutActivation => true;
 
     public void UpdateConfig(CompanionConfig config) => _canvas.UpdateConfig(config);
+
+    public void UpdateTaskAlerts(IReadOnlyList<TaskAlertAssignment> assignments) =>
+        _canvas.UpdateTaskAlerts(assignments);
 
     public void ShowReference()
     {
@@ -138,6 +142,7 @@ internal sealed class ButtonMapCanvas : Control
     private readonly Bitmap? _templateBitmap;
     private readonly Size _templateSize;
     private IReadOnlyDictionary<int, string> _labels;
+    private IReadOnlyList<TaskAlertAssignment> _taskAlerts = [];
 
     public ButtonMapCanvas(CompanionConfig config, Action<string>? log = null)
         : this(config, LoadTemplateBitmap(log))
@@ -164,6 +169,12 @@ internal sealed class ButtonMapCanvas : Control
     public void UpdateConfig(CompanionConfig config)
     {
         _labels = BuildLabels(config);
+        Invalidate();
+    }
+
+    public void UpdateTaskAlerts(IReadOnlyList<TaskAlertAssignment> assignments)
+    {
+        _taskAlerts = assignments ?? throw new ArgumentNullException(nameof(assignments));
         Invalidate();
     }
 
@@ -204,6 +215,7 @@ internal sealed class ButtonMapCanvas : Control
         var layout = FitLayout(bounds, _templateSize);
         DrawTemplate(graphics, layout.Destination);
         DrawLabels(graphics, layout);
+        DrawTaskAlertOverlays(graphics, layout);
     }
 
     private void DrawTemplate(Graphics graphics, RectangleF destination)
@@ -538,6 +550,57 @@ internal sealed class ButtonMapCanvas : Control
             font,
             brush,
             RectangleF.Inflate(legend, -8F, -6F));
+    }
+
+    private void DrawTaskAlertOverlays(Graphics graphics, ButtonMapLayout layout)
+    {
+        if (_taskAlerts.Count == 0)
+        {
+            return;
+        }
+
+        var scale = layout.Scale;
+        using var font = new Font(
+            "Segoe UI Semibold",
+            Math.Clamp(20F * scale, 6F, 12F),
+            FontStyle.Bold,
+            GraphicsUnit.Pixel);
+        using var format = new StringFormat
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.LineLimit,
+        };
+
+        foreach (var assignment in _taskAlerts)
+        {
+            var rgb = TaskAlertColors.Get(assignment.State);
+            var color = Color.FromArgb(rgb.Red, rgb.Green, rgb.Blue);
+            var textColor = assignment.State is TaskAlertState.Completed or TaskAlertState.Fault
+                ? Color.White
+                : Color.Black;
+            using var fill = new SolidBrush(Color.FromArgb(225, color));
+            using var text = new SolidBrush(textColor);
+            using var border = new Pen(color, Math.Max(2F, scale * 5F));
+            var shortSession = assignment.SessionId.Length <= 8
+                ? assignment.SessionId
+                : assignment.SessionId[..8];
+            var label = $"TASK B{assignment.Channel}  {assignment.State.ToString().ToUpperInvariant()}\n{shortSession}";
+
+            foreach (var logicalButton in TaskAlertChannels.LogicalButtons[assignment.Channel])
+            {
+                if (!ButtonRegions.TryGetValue(logicalButton, out var sourceRegion))
+                {
+                    continue;
+                }
+
+                var region = Transform(sourceRegion, layout.Destination, scale);
+                graphics.FillRectangle(fill, region);
+                graphics.DrawRectangle(border, region.X, region.Y, region.Width, region.Height);
+                graphics.DrawString(label, font, text, region, format);
+            }
+        }
     }
 
     private static ButtonMapLayout FitLayout(Rectangle bounds, Size imageSize)

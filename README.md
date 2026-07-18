@@ -1,10 +1,20 @@
 # Joydex
 
-Joydex is a source example for turning a VIRPIL throttle into a physical control surface for the Codex desktop app. The project began with a practical experiment: give Codex hardware traces, a safety brief, and a test loop, then have it build the Windows keyboard handlers that drive its own interface.
+## Codex companion for a Joystick/Throttle
+Why pay for a purpose-built Codex Micro keyboard when you already have a joystick, pad, or flight-sim throttle?
 
-The useful part of the example lives between the joystick and the keystroke. A short encoder pulse has to survive the polling loop. A physical button has to become a stable Codex command. The command has to follow the shortcut currently configured in Codex. Finally, the input must be blocked whenever another application has focus.
+Just use Codex to set it up in a couple of hours and save yourself that extra $230.
 
-![Joydex configuration window showing the CM3 device and action mappings](docs/images/joydex-configuration.png)
+## What is Joydex?
+Joydex is a source example for turning a VIRPIL throttle into a physical control surface for the Codex desktop app. It reads the throttle through DirectInput, resolves the current Codex shortcuts, and injects the corresponding Windows input events. It is a small, self-contained Windows tray app.
+
+It could be adapted pretty easily to other devices, but we wanted to show how easy it was to get going by using Codex itself to build the handlers. See [the case study](docs/CASE_STUDY.md) for the story of how this came together in just a few hours.
+
+Nothing rocket-science, but we live in an era where you can retrofit your own hardware to a new workflow without having to buy yet-another-device. Hopefully this inspires you to do more hacking.
+
+My favorite bit is I can just flip a T3 switch and see a floating map of the throttle's current bindings. The map reads its labels from the active configuration, so remapped controls are reflected in the floating window and I just flip the switch off and it instantly vanishes.
+
+![Joydex floating CM3 quick-reference map](docs/images/joydex-button-map.png)
 
 ## What the experiment produced
 
@@ -22,7 +32,11 @@ flowchart LR
     I["Dry run"] --> C
 ```
 
-The code demonstrates:
+Screenshot of the UI bindings, but you can also just ask Codex to configure them for you if you wanted. UI is so much easier when it's just some "oh hey set M2 B3 to reject" and your agent does the rest.
+
+![Joydex configuration window showing the CM3 device and action mappings](docs/images/joydex-configuration.png)
+
+FWIW, the checked-in code demonstrates:
 
 - Buffered joystick input, including encoder pulses that can begin and end between polling frames.
 - Banked mappings for VIRPIL's five-way shift profile, where the dial changes the logical button range instead of emitting its own button event.
@@ -62,11 +76,12 @@ The starter profile follows the Codex Micro controls:
 
 The floating map reads its labels from the active configuration, so remapped controls are reflected in the UI.
 
-![Joydex floating CM3 quick-reference map](docs/images/joydex-button-map.png)
 
 ## Build and explore the source
 
-Joydex targets Windows and pins .NET SDK 8.0.423 in `global.json`.
+This is really more of a proof-of-concept that you can have Codex build a handler for this kind of thing instead of buying yet another custom device.
+
+But if you want to build it, Joydex targets Windows and pins .NET SDK 8.0.423 in `global.json`.
 
 ```powershell
 dotnet restore .\Joydex.sln
@@ -81,7 +96,6 @@ $config = Join-Path $env:TEMP 'joydex-example.json'
 Copy-Item .\config\joydex.example.json $config
 dotnet run --project .\src\Joydex.App -- --config $config
 ```
-
 The example configuration selects the throttle by product name and omits machine-specific DirectInput GUIDs. Its `dryRun` setting is enabled. Raw control events appear in the test window without being sent to Codex.
 
 Use the tracer when adapting the example to another DirectInput profile:
@@ -95,7 +109,7 @@ dotnet run --project .\tools\Joydex.Trace -- trace `
 
 Trace output uses one-based button numbers, matching `config.json`. Move one control at a time and test B1-B6 in every dial position.
 
-## Repository map
+## Repo map
 
 | Path | Purpose |
 | --- | --- |
@@ -105,27 +119,40 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 | `tools/Joydex.Trace` | DirectInput discovery and event tracing |
 | `tests/Joydex.Tests` | Unit and Windows interop coverage |
 | `config/joydex.example.json` | Safe, machine-neutral starter configuration |
+| `docs/` | Case study, images, and planning notes |
 
-## Safety boundaries
+## Versions and Config
 
-Every newly created configuration starts in dry-run mode. The input engine establishes a baseline after connecting and ignores settling values during a short warm-up. Cooldowns reject accidental repeats, while reasoning-encoder pulses bypass the cooldown so each detent reaches Codex.
-
-Keyboard actions require ChatGPT or Codex to own the foreground window. Configured simulator processes block all actions, including working-directory launches. The action catalog cannot run arbitrary shell commands or send free-form text.
-
-Joydex reads Codex's keybindings and watches for changes. It never restores a shortcut that the user removes. Commands with verified defaults can use those defaults; commands without a built-in shortcut may receive a one-time, user-editable binding during a new local setup. Existing keybindings are preserved, and a timestamped backup is made before that one-time write.
-
-Command IDs, Windows defaults, aliases, and precedence behavior were last checked on 2026-07-16 against OpenAI Codex package `26.707.12708.0`, bundled app `26.707.91948`, build `5440`. Runtime code does not inspect `app.asar`.
-
-## Configuration identity
+Command IDs, Windows defaults, aliases, and precedence behavior were last checked on 2026-07-16 against OpenAI Codex package `26.707.12708.0`, bundled app `26.707.91948`, build `5440`.
 
 Source builds use `%LOCALAPPDATA%\Joydex\config.json`, with `JOYDEX_CONFIG` and `--config` available for alternate paths. The graphical editor is the normal way to change mappings. The checked-in [example configuration](config/joydex.example.json) is intended for dry-run exploration and contains no device GUIDs.
-
-## Scope
-
-Joydex does not write VPC profiles, flash firmware, control RGB, inspect the Codex interface, or click desktop UI. It is deliberately limited to DirectInput events, verified Codex commands, and foreground-gated Windows input.
 
 ## License and trademarks
 
 The source code is available under the [MIT License](LICENSE). Attribution for the CM3 visual template is recorded in [Third-party notices](THIRD_PARTY_NOTICES.md).
 
 Joydex is an independent project and is not affiliated with or endorsed by VIRPIL Controls, OpenAI, or Work Louder. VIRPIL, VPC, OpenAI, ChatGPT, Codex, Work Louder, and associated marks are the property of their respective owners.
+
+## Likely asked questions
+
+### Could I do this with Joystick Gremlin instead?
+
+Oh sure, quite likely. [Joystick Gremlin](https://whitemagic.github.io/JoystickGremlin/) can read the CM3 and map its buttons to keyboard or mouse input. If you want a fixed set of Codex shortcuts on your own PC, Gremlin is a much faster way to get started.
+
+Joydex is just a little more specific to the companion use case. It stores Codex command IDs and looks up your current shortcuts before it sends a key. It catches missing or conflicting shortcuts, releases held keys after a disconnect, and checks that Codex has focus. With a basic Gremlin profile, you would update the mapped keys by hand when your Codex shortcuts change. You would also pause the profile when you switch to another app.
+
+Joydex talks straight to the throttle, so it does not need a virtual joystick. Gremlin's supported setup uses [vJoy](https://whitemagic.github.io/JoystickGremlin/introduction/installation.html) and gives you another profile to keep track of. If you use Gremlin for flight sims, you may already have all of that.
+
+### I just want to try it in Gremlin. Any tips?
+
+Start small. Create a fresh profile, open Gremlin's Input Viewer, and press B1-B6 once in every dial position. VIRPIL shift modes can report a different logical button number for the same physical button. Write those numbers down before you create any extra modes in Gremlin.
+
+Next, map one normal button and one held control such as push-to-talk. Use the shortcuts shown in Codex Settings. Gremlin's [Map to Keyboard and Macro actions](https://whitemagic.github.io/JoystickGremlin/interface/actions.html) cover both cases. Once those work, fill in the rest of the throttle. Keep the profile paused while another app has focus; this quick setup will send its keys wherever you are typing.
+
+Follow Gremlin's instructions for installing vJoy. You can skip HidHide at first because Codex does not read joystick input.
+
+### Can it support the VIRPIL LEDs
+
+Gremlin can drive them, but you need Python scripts, so it doesn't really buy you anything there. With Joydex, task alerts can temporarily use B1, B2, B4, and B5 while B3 and B6 keep their normal bank indication. Alert buttons open the assigned Codex task and return to their ordinary binding after a successful handoff.
+
+Joydex sends one compact state snapshot to VIRPIL Controls LinkTool whenever a task or selected throttle bank changes. The generated LinkTool profile puts task rules first, followed by bank-color baselines for all six LEDs. B3 and B6 have baseline rules only because LinkTool has no leave-current fallback for unruled LEDs; they never become alert channels. In the M2 canary, B1/B2/B4/B5 held white/yellow/green/red while B3 and B6 stayed blue, then all six returned directly to blue with no yellow reset or refresh loop. See [the LED status research](docs/LED_STATUS_RESEARCH.md) for LinkTool setup, the hook design, safety behavior, and remaining hardware canaries.

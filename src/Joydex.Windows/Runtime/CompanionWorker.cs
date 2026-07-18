@@ -1,8 +1,10 @@
 using Joydex.Core.Config;
 using Joydex.Core.Input;
 using Joydex.Core.Runtime;
+using Joydex.Core.TaskAlerts;
 using Joydex.Windows.Actions;
 using Joydex.Windows.Input;
+using Joydex.Windows.TaskAlerts;
 
 namespace Joydex.Windows.Runtime;
 
@@ -11,9 +13,12 @@ public sealed class CompanionWorker(
     IJoystickSource source,
     CodexActionExecutor executor,
     Action<string> log,
-    IInjectedKeyStateLifecycle? keyStateLifecycle = null) : IAsyncDisposable
+    IInjectedKeyStateLifecycle? keyStateLifecycle = null,
+    TaskAlertInputInterceptor? taskAlertInputInterceptor = null,
+    ITaskAlertNavigator? taskAlertNavigator = null,
+    Func<int, string, bool>? acknowledgeTaskAlert = null) : IAsyncDisposable
 {
-    private readonly CompanionEngine _engine = new(config);
+    private readonly CompanionEngine _engine = new(config, taskAlertInputInterceptor);
     private readonly IInjectedKeyStateLifecycle _keyStateLifecycle = keyStateLifecycle ?? executor;
     private CancellationTokenSource? _cancellation;
     private Task? _runTask;
@@ -170,6 +175,20 @@ public sealed class CompanionWorker(
                     if (trigger is not null)
                     {
                         log($"INPUT {trigger} from throttle/button {inputEvent.DisplayIndex}");
+                    }
+                }
+            }
+
+            if (taskAlertNavigator is not null)
+            {
+                foreach (var navigation in result.TaskAlertNavigationRequests)
+                {
+                    var navigated = await taskAlertNavigator
+                        .NavigateAsync(navigation, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (navigated)
+                    {
+                        acknowledgeTaskAlert?.Invoke(navigation.Channel, navigation.SessionId);
                     }
                 }
             }

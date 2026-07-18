@@ -1,10 +1,13 @@
 using System.Diagnostics;
 using Joydex.Core.Config;
 using Joydex.Core.Mapping;
+using Joydex.Core.TaskAlerts;
 using Joydex.Windows.Actions;
 using Joydex.Windows.Input;
 using Joydex.Windows.Interop;
 using Joydex.Windows.Runtime;
+using Joydex.Windows.TaskAlerts;
+using Microsoft.Win32;
 
 namespace Joydex.App;
 
@@ -23,12 +26,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _testControlsItem;
     private readonly ToolStripMenuItem _buttonMapItem;
     private readonly ToolStripMenuItem _configureItem;
+    private readonly ToolStripMenuItem _taskAlertsItem;
+    private readonly ToolStripMenuItem _taskAlertsStatusItem;
     private readonly SynchronizationContext _uiContext;
+    private readonly TaskAlertCoordinator _taskAlerts;
+    private readonly TaskAlertPipeServer _taskAlertPipe;
+    private readonly LinkToolLedService _ledService;
+    private readonly CodexHookManager _hookManager;
+    private readonly string _hookRelayPath;
+    private readonly string _linkToolProfilePath;
+    private readonly GuardianController _guardian;
+    private readonly DeviceChangeMonitor _deviceChangeMonitor;
     private readonly Queue<string> _recentActivity = new();
     private CompanionWorker? _worker;
     private CompanionConfig? _activeConfig;
     private DryRunActivityForm? _activityForm;
     private ButtonMapForm? _buttonMapForm;
+    private TaskAlertsForm? _taskAlertsForm;
     private bool _configuring;
 
     public TrayApplicationContext(string configPath)
@@ -47,6 +61,35 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _cooperativeWindow = new CooperativeWindow("Joydex");
         _appIcon = AppIconFactory.Create();
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        _taskAlerts = new TaskAlertCoordinator(Path.Combine(dataDirectory, "task-alerts.json"));
+        _taskAlertPipe = new TaskAlertPipeServer(_taskAlerts, _log.Write);
+        var initialTaskAlerts = _taskAlerts.GetSnapshot();
+        _linkToolProfilePath = Path.Combine(dataDirectory, "joydex-linktool.led.json");
+        try
+        {
+            LinkToolProfileWriter.Write(_linkToolProfilePath);
+            _log.Write($"Joydex LinkTool profile written to {_linkToolProfilePath}.");
+        }
+        catch (Exception exception)
+        {
+            _log.Write($"Could not write the Joydex LinkTool profile: {exception.Message}");
+        }
+
+        _ledService = new LinkToolLedService(
+            new UdpLinkToolTelemetrySender(),
+            new VpcConflictDetector(),
+            _log.Write,
+            initialTaskAlerts);
+        _hookManager = new CodexHookManager(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".codex",
+            "hooks.json"));
+        _hookRelayPath = Path.Combine(AppContext.BaseDirectory, "Joydex.HookRelay.exe");
+        _guardian = new GuardianController(
+            Path.Combine(AppContext.BaseDirectory, "Joydex.Guardian.exe"),
+            _log.Write);
+        _deviceChangeMonitor = new DeviceChangeMonitor();
+        _deviceChangeMonitor.DevicesChanged += OnDevicesChanged;
 
         _statusItem = new ToolStripMenuItem("Starting…") { Enabled = false };
         _modeItem = new ToolStripMenuItem("Dry run", image: null, OnToggleDryRun)
@@ -60,6 +103,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             Enabled = false,
         };
+        _taskAlertsItem = new ToolStripMenuItem("Task alerts", image: null, OnToggleTaskAlerts)
+        {
+            CheckOnClick = false,
+            Checked = _taskAlerts.GetSnapshot().Enabled,
+        };
+        _taskAlertsStatusItem = new ToolStripMenuItem("Task alerts status...", image: null, OnTaskAlertsStatus);
         var reloadItem = new ToolStripMenuItem("Reload config", image: null, OnReloadConfig);
         var openConfigItem = new ToolStripMenuItem("Open config JSON (advanced)", image: null, (_, _) => OpenPath(_configPath));
         var openLogItem = new ToolStripMenuItem("Open log", image: null, (_, _) => OpenPath(_log.Path));
@@ -73,9 +122,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 {
                     _statusItem,
                     _modeItem,
+                    _taskAlertsItem,
                     new ToolStripSeparator(),
                     _testControlsItem,
                     _buttonMapItem,
+                    _taskAlertsStatusItem,
                     _configureItem,
                     reloadItem,
                     openConfigItem,
@@ -89,6 +140,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Visible = true,
         };
         _notifyIcon.DoubleClick += OnConfigure;
+
+        _taskAlerts.Changed += OnTaskAlertsChanged;
+        _ledService.StatusChanged += OnLedStatusChanged;
+        _ledService.ProfileDirtyChanged += OnProfileDirtyChanged;
+        _ledService.Apply(initialTaskAlerts);
+        _taskAlertPipe.Start();
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.SessionEnding += OnSessionEnding;
 
         var firstRun = !File.Exists(_configPath);
         StartWorker(showFirstRunNotice: firstRun);
@@ -104,6 +163,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     protected override void ExitThreadCore()
     {
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        SystemEvents.SessionEnding -= OnSessionEnding;
+        _deviceChangeMonitor.DevicesChanged -= OnDevicesChanged;
+        _deviceChangeMonitor.Dispose();
+        _taskAlertsForm?.Close();
+        _taskAlertsForm = null;
         _activityForm?.Close();
         _activityForm = null;
         if (_buttonMapForm is not null)
@@ -118,6 +183,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _worker.DisposeAsync().AsTask().GetAwaiter().GetResult();
             _worker = null;
         }
+
+        _taskAlertPipe.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _taskAlerts.Changed -= OnTaskAlertsChanged;
+        _ledService.StatusChanged -= OnLedStatusChanged;
+        _ledService.ProfileDirtyChanged -= OnProfileDirtyChanged;
+        _ledService.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        if (!_ledService.RestorePending)
+        {
+            _guardian.SignalCleanExit();
+        }
+
+        _guardian.Dispose();
+        _taskAlerts.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
         _keybindingService.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
@@ -275,6 +353,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _testControlsItem.Enabled = config.Safety.DryRun;
             _buttonMapItem.Enabled = true;
             _buttonMapForm?.UpdateConfig(config);
+            _buttonMapForm?.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
 
             var source = new DirectInputJoystickSource(_cooperativeWindow.Handle);
             var executor = new CodexActionExecutor(
@@ -283,7 +362,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _keybindingService,
                 config.OpenWorkingDirectory,
                 internalAction: OnInternalAction);
-            _worker = new CompanionWorker(config, source, executor, WriteActivity);
+            var taskAlertInput = new TaskAlertInputInterceptor(() => _taskAlerts.GetSnapshot().Assignments);
+            var taskAlertNavigator = new TaskDeepLinkNavigator(config.Safety, WriteActivity);
+            _worker = new CompanionWorker(
+                config,
+                source,
+                executor,
+                WriteActivity,
+                taskAlertInputInterceptor: taskAlertInput,
+                taskAlertNavigator: taskAlertNavigator,
+                acknowledgeTaskAlert: _taskAlerts.Acknowledge);
             _worker.StatusChanged += OnStatusChanged;
             _worker.Start();
 
@@ -382,12 +470,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
             if (_buttonMapForm is null || _buttonMapForm.IsDisposed)
             {
                 _buttonMapForm = new ButtonMapForm(_activeConfig, _buttonMapStatePath, _log.Write);
+                _buttonMapForm.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
                 _buttonMapForm.VisibleChanged += (_, _) =>
                     _buttonMapItem.Checked = _buttonMapForm is { Visible: true };
             }
             else
             {
                 _buttonMapForm.UpdateConfig(_activeConfig);
+                _buttonMapForm.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
             }
 
             _buttonMapForm.ShowReference();
@@ -452,6 +542,125 @@ internal sealed class TrayApplicationContext : ApplicationContext
             "Joydex configuration error",
             exception.Message,
             ToolTipIcon.Error);
+    }
+
+    private async void OnToggleTaskAlerts(object? sender, EventArgs eventArgs)
+    {
+        _taskAlertsItem.Enabled = false;
+        try
+        {
+            await SetTaskAlertsEnabledAsync(!_taskAlerts.GetSnapshot().Enabled);
+        }
+        catch (Exception exception)
+        {
+            _log.Write($"Could not change task-alert state: {exception.Message}");
+            _notifyIcon.ShowBalloonTip(5000, "Joydex task alerts", exception.Message, ToolTipIcon.Error);
+        }
+        finally
+        {
+            _taskAlertsItem.Enabled = true;
+            _taskAlertsItem.Checked = _taskAlerts.GetSnapshot().Enabled;
+        }
+    }
+
+    private void OnTaskAlertsStatus(object? sender, EventArgs eventArgs)
+    {
+        if (_taskAlertsForm is { IsDisposed: false })
+        {
+            _taskAlertsForm.Show();
+            _taskAlertsForm.BringToFront();
+            _taskAlertsForm.Activate();
+            return;
+        }
+
+        _taskAlertsForm = new TaskAlertsForm(
+            _taskAlerts,
+            _hookManager,
+            _hookRelayPath,
+            _linkToolProfilePath,
+            SetTaskAlertsEnabledAsync);
+        _taskAlertsForm.FormClosed += (_, _) => _taskAlertsForm = null;
+        _taskAlertsForm.Show();
+    }
+
+    private void OnTaskAlertsChanged(object? sender, TaskAlertSnapshot snapshot)
+    {
+        var assignmentSummary = snapshot.Assignments.Count == 0
+            ? "none"
+            : string.Join(
+                ',',
+                snapshot.Assignments.Select(assignment => $"B{assignment.Channel}={assignment.State}"));
+        _log.Write(
+            $"Task-alert snapshot enabled={snapshot.Enabled}; bank=M{snapshot.Bank}; assignments={assignmentSummary}; " +
+            $"dropped={snapshot.DroppedEventCount}.");
+
+        if (snapshot.Enabled && snapshot.Assignments.Count > 0)
+        {
+            _guardian.Start();
+            _guardian.SetRestoreRequired(true);
+        }
+
+        _ledService.Apply(snapshot);
+        _uiContext.Post(_ =>
+        {
+            _taskAlertsItem.Checked = snapshot.Enabled;
+            _buttonMapForm?.UpdateTaskAlerts(snapshot.Assignments);
+        }, null);
+    }
+
+    private void OnProfileDirtyChanged(object? sender, bool dirty) =>
+        _guardian.SetRestoreRequired(dirty);
+
+    private void OnLedStatusChanged(object? sender, string status)
+    {
+        if (status.Contains("pending", StringComparison.OrdinalIgnoreCase)
+            || status.Contains("inactive", StringComparison.OrdinalIgnoreCase))
+        {
+            _uiContext.Post(_ => _taskAlertsStatusItem.Text = $"Task alerts status... ({status})", null);
+        }
+        else
+        {
+            _uiContext.Post(_ => _taskAlertsStatusItem.Text = "Task alerts status...", null);
+        }
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs eventArgs)
+    {
+        if (eventArgs.Mode == PowerModes.Suspend)
+        {
+            _ledService.SetPaused(true);
+        }
+        else if (eventArgs.Mode == PowerModes.Resume)
+        {
+            _ledService.SetPaused(false);
+            _ledService.Apply(_taskAlerts.GetSnapshot());
+        }
+    }
+
+    private void OnSessionEnding(object sender, SessionEndingEventArgs eventArgs) =>
+        _ledService.SetPaused(true);
+
+    private void OnDevicesChanged(object? sender, EventArgs eventArgs)
+    {
+        _log.Write("Device-change notification; task-alert profile restore/replay requested.");
+        _ledService.RestoreAndReplay(_taskAlerts.GetSnapshot().Enabled);
+    }
+
+    private Task SetTaskAlertsEnabledAsync(bool enabled)
+    {
+        if (_taskAlerts.GetSnapshot().Enabled == enabled)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (!enabled)
+        {
+            _taskAlerts.SetEnabled(false);
+            return Task.CompletedTask;
+        }
+
+        _taskAlerts.SetEnabled(true);
+        return Task.CompletedTask;
     }
 
     private static void OpenPath(string path)
