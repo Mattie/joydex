@@ -52,7 +52,7 @@ This result replaces the direct-HID refresh loop. Joydex now emits one atomic te
 
 The earlier six persistent session slots were dropped. They required a calibration workflow and would have tied physical buttons to chats long after those chats stopped mattering.
 
-Joydex keeps ten stable runtime slots. Primary slots 1-4 use B1, B2, B4, and B5 across M2-M4. Overflow slots 5-10 use all six B-positions on M1. M5 never displays or routes a task alert, leaving all six controls available for ordinary commands. The Alpha remains global and shows the highest state across all ten assignments on every bank.
+Joydex keeps ten stable runtime slots. Primary slots 1-4 use B1, B2, B4, and B5 across M2-M4. Overflow slots 5-10 use all six B-positions on M1. M1 uses an off baseline, so unoccupied overflow slots are dark and the entire page is dark when no overflow task exists. M5 never displays or routes a task alert, leaving all six controls available for ordinary commands. The Alpha remains global and shows the highest state across all ten assignments on every bank.
 
 Any Codex task claims the lowest free slot. Slots do not move when another slot becomes free, so a remembered physical target stays stable. Another event from the same task updates its existing slot. When all ten slots are occupied, later events are dropped without a backlog or preemption. A dropped task can retry on its next lifecycle event after a slot becomes available.
 
@@ -144,7 +144,7 @@ Routing uses the existing foreground guard in explicit deep-link mode. A configu
 
 A successful shell navigation preserves running and approval assignments because opening the task is not evidence that the turn ended or the approval was resolved. Their white or yellow status stays visible and the occupied button continues to route to that task. Completed and fault assignments are terminal, so successful navigation acknowledges them, clears their overlay, and returns the button to its normal binding. A blocked or failed navigation keeps every state assigned.
 
-The button-map window paints primary overlays on M2-M4, overflow overlays on M1, and none on M5. The Task Alerts window separates primary and overflow slot labels and shows each control, state, color, session ID, and deep-link target.
+The button-map window paints primary overlays on M2-M4, overflow overlays on M1, and none on M5. The Task Alerts window separates primary and overflow slot labels and shows each control, state, color, session ID, and deep-link target. Its Event stream retains the last 100 received lifecycle events in memory with receive time, reducer result, slot, state, session ID, and turn ID. The header shows the physical bank, dropped-event count, and the exact primary, overflow, and Alpha telemetry values. This distinguishes a delayed Codex hook from a received event that Joydex dropped or reduced unexpectedly.
 
 ## Tray master switch
 
@@ -165,7 +165,7 @@ Joydex writes `joydex-linktool.led.json` beside its task-alert settings. The gen
 
 - primary state rules for B1, B2, B4, and B5, gated to M2-M4;
 - overflow state rules for B1-B6, gated to M1;
-- a baseline rule for each of M1-M5 on all six throttle LEDs, ordered after the alert rules;
+- a baseline rule for each of M1-M5 on all six throttle LEDs, ordered after the alert rules, with M1 explicitly black/off;
 - four priority rules for the Alpha grip;
 - no task-state rule gated to M5.
 
@@ -223,7 +223,7 @@ Automated tests do not write to the controllers. Completed canaries include hook
 
 1. Press B1-B6 in M1 through M5 and confirm the logical ranges in the table.
 2. Generate eleven task events. Confirm primary slots 1-4 fill first, overflow slots 5-10 fill next, and the eleventh event is dropped. Freeing a primary slot must not move an existing overflow assignment; a later event can claim the free primary slot.
-3. Load the generated 106-rule LinkTool profile. Confirm primary statuses appear on M2-M4, overflow statuses appear on M1, M5 shows only baseline colors, and Alpha shows the highest state globally. Completed for the M2 primary page, M1 overflow page, M5 isolation, and Global Alpha on 2026-07-18; M3 and M4 reuse the verified primary rules and bank gating.
+3. Load the generated 106-rule LinkTool profile. Confirm primary statuses appear on M2-M4, overflow statuses appear on M1, empty M1 slots are off, M5 shows only baseline colors, and Alpha shows the highest state globally. Completed for the M2 primary page, occupied M1 overflow page, M5 isolation, and Global Alpha on 2026-07-18; the empty-M1 clear check remains after the off-baseline update, and M3/M4 reuse the verified primary rules and bank gating.
 4. Press primary and overflow alerts from their intended banks. Successful navigation must preserve running/approval status and free completed/fault status. Buttons on other banks and simulator-blocked navigation must keep their expected assignment/binding behavior.
 5. Exercise tray disable, clean exit, and forced exit.
 

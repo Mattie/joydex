@@ -8,10 +8,30 @@ public sealed record TaskAlertSnapshot(
     IReadOnlyList<TaskAlertAssignment> Assignments,
     long DroppedEventCount,
     int Bank = 2,
-    bool BankAutomaticallyDetected = false);
+    bool BankAutomaticallyDetected = false,
+    IReadOnlyList<TaskAlertEventTrace>? RecentEvents = null);
+
+public enum TaskAlertEventResult
+{
+    Assigned,
+    Updated,
+    StopGrace,
+    Dropped,
+    Ignored,
+}
+
+public sealed record TaskAlertEventTrace(
+    DateTimeOffset ReceivedAt,
+    CodexLifecycleEvent Event,
+    string SessionId,
+    string? TurnId,
+    int? Slot,
+    TaskAlertState? State,
+    TaskAlertEventResult Result);
 
 public sealed class TaskAlertCoordinator : IAsyncDisposable
 {
+    private const int MaximumRecentEvents = 100;
     private readonly object _sync = new();
     private readonly string _preferencesPath;
     private readonly TaskAlertPool _pool;
@@ -23,6 +43,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
     });
     private readonly CancellationTokenSource _cancellation = new();
     private readonly SemaphoreSlim _eventSignal = new(0);
+    private readonly Queue<TaskAlertEventTrace> _recentEvents = new();
     private readonly Task _reducerTask;
     private TaskAlertPreferences _preferences;
     private int? _detectedBank;
@@ -161,9 +182,30 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             {
                 lock (_sync)
                 {
+                    var existing = _pool.Assignments.FirstOrDefault(assignment =>
+                        string.Equals(assignment.SessionId, taskEvent.SessionId, StringComparison.Ordinal));
                     var droppedBefore = _pool.DroppedEventCount;
-                    changed |= _pool.Apply(taskEvent);
-                    changed |= droppedBefore != _pool.DroppedEventCount;
+                    var applied = _pool.Apply(taskEvent);
+                    var dropped = droppedBefore != _pool.DroppedEventCount;
+                    var assignment = _pool.Assignments.FirstOrDefault(candidate =>
+                        string.Equals(candidate.SessionId, taskEvent.SessionId, StringComparison.Ordinal));
+                    AddRecentEventUnsafe(new TaskAlertEventTrace(
+                        taskEvent.ReceivedAt,
+                        taskEvent.Event,
+                        taskEvent.SessionId,
+                        taskEvent.TurnId,
+                        assignment?.Slot,
+                        assignment?.State,
+                        dropped
+                            ? TaskAlertEventResult.Dropped
+                            : !applied
+                                ? TaskAlertEventResult.Ignored
+                                : taskEvent.Event == CodexLifecycleEvent.Stop
+                                    ? TaskAlertEventResult.StopGrace
+                                    : existing is null
+                                        ? TaskAlertEventResult.Assigned
+                                        : TaskAlertEventResult.Updated));
+                    changed = true;
                 }
             }
 
@@ -184,7 +226,17 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         _pool.Assignments,
         _pool.DroppedEventCount,
         _detectedBank ?? _preferences.Bank,
-        _detectedBank is not null);
+        _detectedBank is not null,
+        [.. _recentEvents]);
+
+    private void AddRecentEventUnsafe(TaskAlertEventTrace trace)
+    {
+        _recentEvents.Enqueue(trace);
+        while (_recentEvents.Count > MaximumRecentEvents)
+        {
+            _recentEvents.Dequeue();
+        }
+    }
 
     private void RaiseChanged(TaskAlertSnapshot? snapshot)
     {

@@ -154,7 +154,7 @@ public static class LinkToolProfileWriter
     private static readonly IReadOnlyDictionary<int, VirpilLedColor> DefaultBankColors =
         new Dictionary<int, VirpilLedColor>
         {
-            [1] = new(0xFF, 0xFF, 0x00),
+            [1] = new(0x00, 0x00, 0x00),
             [2] = new(0x00, 0x00, 0xFF),
             [3] = new(0x00, 0xFF, 0x00),
             [4] = new(0xFF, 0x00, 0x00),
@@ -214,8 +214,9 @@ public static class LinkToolProfileWriter
         }
 
         // LinkTool resolves competing rules for one LED in profile order. Keep
-        // bank-gated state rules ahead of the always-matching baselines. M5 has
-        // baseline rules only, so every control on that page keeps its command.
+        // bank-gated state rules ahead of the always-matching baselines. M1's
+        // baseline is black so an empty overflow page is dark. M5 has baseline
+        // rules only, so every control on that page keeps its command.
         foreach (var channel in Enumerable.Range(1, 6))
         {
             foreach (var bank in Enumerable.Range(1, 5))

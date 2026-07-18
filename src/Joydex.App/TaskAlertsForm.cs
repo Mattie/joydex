@@ -14,7 +14,9 @@ internal sealed class TaskAlertsForm : Form
     private readonly CheckBox _enabled;
     private readonly Label _bank;
     private readonly Label _dropped;
+    private readonly Label _telemetry;
     private readonly DataGridView _assignments;
+    private readonly DataGridView _events;
     private readonly Label _hookStatus;
     private bool _updating;
 
@@ -35,8 +37,8 @@ internal sealed class TaskAlertsForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("Segoe UI", 9F);
-        MinimumSize = new Size(760, 470);
-        Size = new Size(900, 560);
+        MinimumSize = new Size(820, 520);
+        Size = new Size(1080, 680);
         ShowIcon = false;
 
         var layout = new TableLayoutPanel
@@ -131,6 +133,19 @@ internal sealed class TaskAlertsForm : Form
             Margin = new Padding(0, 5, 0, 0),
         };
         channelPanel.Controls.Add(_dropped);
+        channelPanel.Controls.Add(new Label
+        {
+            Text = "Telemetry:",
+            AutoSize = true,
+            Margin = new Padding(20, 5, 6, 0),
+        });
+        _telemetry = new Label
+        {
+            AutoSize = true,
+            Font = new Font("Consolas", 8.5F),
+            Margin = new Padding(0, 5, 0, 0),
+        };
+        channelPanel.Controls.Add(_telemetry);
 
         _assignments = new DataGridView
         {
@@ -150,6 +165,34 @@ internal sealed class TaskAlertsForm : Form
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Color", FillWeight = 55 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Session", FillWeight = 125 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Routing target", FillWeight = 210 });
+
+        _events = new DataGridView
+        {
+            Dock = DockStyle.Fill,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            AllowUserToResizeRows = false,
+            AutoGenerateColumns = false,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            ReadOnly = true,
+            RowHeadersVisible = false,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+        };
+        _events.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Received", FillWeight = 80 });
+        _events.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Event", FillWeight = 95 });
+        _events.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Result", FillWeight = 70 });
+        _events.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Slot", FillWeight = 42 });
+        _events.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "State", FillWeight = 60 });
+        _events.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Session", FillWeight = 150 });
+        _events.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Turn", FillWeight = 130 });
+
+        var viewer = new TabControl { Dock = DockStyle.Fill };
+        var currentTab = new TabPage("Current state");
+        currentTab.Controls.Add(_assignments);
+        var eventsTab = new TabPage("Event stream");
+        eventsTab.Controls.Add(_events);
+        viewer.TabPages.Add(currentTab);
+        viewer.TabPages.Add(eventsTab);
 
         var hooksPanel = new FlowLayoutPanel
         {
@@ -176,7 +219,7 @@ internal sealed class TaskAlertsForm : Form
 
         layout.Controls.Add(_enabled, 0, 0);
         layout.Controls.Add(channelPanel, 0, 1);
-        layout.Controls.Add(_assignments, 0, 2);
+        layout.Controls.Add(viewer, 0, 2);
         layout.Controls.Add(hooksPanel, 0, 3);
         Controls.Add(layout);
 
@@ -213,6 +256,13 @@ internal sealed class TaskAlertsForm : Form
                 ? $"M{snapshot.Bank} (automatic)"
                 : $"M{snapshot.Bank} (fallback)";
             _dropped.Text = snapshot.DroppedEventCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var telemetry = LinkToolTelemetryState.From(snapshot);
+            _telemetry.Text = $"P=[{telemetry.JoydexPrimaryB1State},{telemetry.JoydexPrimaryB2State}," +
+                $"{telemetry.JoydexPrimaryB4State},{telemetry.JoydexPrimaryB5State}] " +
+                $"O=[{telemetry.JoydexOverflowB1State},{telemetry.JoydexOverflowB2State}," +
+                $"{telemetry.JoydexOverflowB3State},{telemetry.JoydexOverflowB4State}," +
+                $"{telemetry.JoydexOverflowB5State},{telemetry.JoydexOverflowB6State}] " +
+                $"Alpha={telemetry.JoydexAlphaState}";
 
             _assignments.Rows.Clear();
             foreach (var assignment in snapshot.Assignments)
@@ -231,12 +281,29 @@ internal sealed class TaskAlertsForm : Form
                     assignment.SessionId,
                     TaskDeepLinkNavigator.BuildUri(assignment.SessionId));
             }
+
+            _events.Rows.Clear();
+            foreach (var trace in (snapshot.RecentEvents ?? []).Reverse())
+            {
+                _events.Rows.Add(
+                    trace.ReceivedAt.ToLocalTime().ToString("HH:mm:ss.fff", System.Globalization.CultureInfo.InvariantCulture),
+                    trace.Event,
+                    trace.Result,
+                    trace.Slot is { } slot ? DisplaySlot(slot) : "—",
+                    trace.State?.ToString().ToLowerInvariant() ?? "—",
+                    trace.SessionId,
+                    trace.TurnId ?? "—");
+            }
         }
         finally
         {
             _updating = false;
         }
     }
+
+    private static string DisplaySlot(int slot) => TaskAlertSlots.Page(slot) == TaskAlertPage.Primary
+        ? $"P{TaskAlertSlots.PageIndex(slot)}"
+        : $"O{TaskAlertSlots.PageIndex(slot)}";
 
     private void OnInstallHooks(object? sender, EventArgs eventArgs)
     {

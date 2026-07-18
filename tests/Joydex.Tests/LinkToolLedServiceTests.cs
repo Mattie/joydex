@@ -219,6 +219,16 @@ public sealed class LinkToolLedServiceTests
                 && rule.GetProperty("primaryValue").GetString() == "2"
                 && rule.GetProperty("colorOne").GetString() == "16711680"
                 && rule.GetProperty("priority").GetInt32() == 0);
+            foreach (var button in Enumerable.Range(1, 6))
+            {
+                Assert.Contains(rules, rule =>
+                    rule.GetProperty("comment").GetString() == $"Joydex M1 B{button} baseline"
+                    && rule.GetProperty("argument").GetString() == "JoydexBank"
+                    && rule.GetProperty("primaryValue").GetString() == "1"
+                    && rule.GetProperty("colorOne").GetString() == "0"
+                    && rule.GetProperty("priority").GetInt32() == 0);
+            }
+
             Assert.Contains(rules, rule =>
                 rule.GetProperty("comment").GetString() == "Joydex primary M2 B1 running"
                 && rule.GetProperty("argument").GetString() == "JoydexPrimaryB1State"
