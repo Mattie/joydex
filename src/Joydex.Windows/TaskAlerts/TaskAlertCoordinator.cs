@@ -8,7 +8,8 @@ public sealed record TaskAlertSnapshot(
     int[] Channels,
     IReadOnlyList<TaskAlertAssignment> Assignments,
     long DroppedEventCount,
-    int Bank = 2);
+    int Bank = 2,
+    bool BankAutomaticallyDetected = false);
 
 public sealed class TaskAlertCoordinator : IAsyncDisposable
 {
@@ -25,6 +26,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _eventSignal = new(0);
     private readonly Task _reducerTask;
     private TaskAlertPreferences _preferences;
+    private int? _detectedBank;
 
     public TaskAlertCoordinator(string preferencesPath)
     {
@@ -113,7 +115,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         RaiseChanged(snapshot);
     }
 
-    public void SetBank(int bank)
+    public void SetDetectedBank(int bank)
     {
         if (bank is < 1 or > 5)
         {
@@ -123,10 +125,9 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         TaskAlertSnapshot? snapshot = null;
         lock (_sync)
         {
-            if (_preferences.Bank != bank)
+            if (_detectedBank != bank)
             {
-                _preferences = _preferences with { Bank = bank };
-                TaskAlertPreferencesStore.Save(_preferencesPath, _preferences);
+                _detectedBank = bank;
                 snapshot = SnapshotUnsafe();
             }
         }
@@ -200,7 +201,8 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         [.. _preferences.Channels],
         _pool.Assignments,
         _pool.DroppedEventCount,
-        _preferences.Bank);
+        _detectedBank ?? _preferences.Bank,
+        _detectedBank is not null);
 
     private void RaiseChanged(TaskAlertSnapshot? snapshot)
     {

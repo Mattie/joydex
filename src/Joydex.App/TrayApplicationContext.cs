@@ -31,6 +31,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly SynchronizationContext _uiContext;
     private readonly TaskAlertCoordinator _taskAlerts;
     private readonly TaskAlertPipeServer _taskAlertPipe;
+    private readonly VirpilShiftModeMonitor _shiftModeMonitor;
     private readonly LinkToolLedService _ledService;
     private readonly CodexHookManager _hookManager;
     private readonly string _hookRelayPath;
@@ -63,6 +64,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         _taskAlerts = new TaskAlertCoordinator(Path.Combine(dataDirectory, "task-alerts.json"));
         _taskAlertPipe = new TaskAlertPipeServer(_taskAlerts, _log.Write);
+        _shiftModeMonitor = new VirpilShiftModeMonitor(
+            new VirpilShiftModeReader(),
+            _taskAlerts.SetDetectedBank,
+            _log.Write);
         var initialTaskAlerts = _taskAlerts.GetSnapshot();
         _linkToolProfilePath = Path.Combine(dataDirectory, "joydex-linktool.led.json");
         try
@@ -145,6 +150,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _ledService.StatusChanged += OnLedStatusChanged;
         _ledService.ProfileDirtyChanged += OnProfileDirtyChanged;
         _ledService.Apply(initialTaskAlerts);
+        _shiftModeMonitor.Start();
         _taskAlertPipe.Start();
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         SystemEvents.SessionEnding += OnSessionEnding;
@@ -184,6 +190,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _worker = null;
         }
 
+        _shiftModeMonitor.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _taskAlertPipe.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _taskAlerts.Changed -= OnTaskAlertsChanged;
         _ledService.StatusChanged -= OnLedStatusChanged;

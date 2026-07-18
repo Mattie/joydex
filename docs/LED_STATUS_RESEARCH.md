@@ -1,6 +1,6 @@
 # Joydex task-status LEDs and alert routing
 
-Status: implementation updated on 2026-07-18 for VIRPIL Controls LinkTool v3. Automated tests pass. The Windows Desktop `UserPromptSubmit` canary passes on the updated Codex package. The generated 50-rule LinkTool profile passes the full M2 white/yellow/green/red, Alpha, bank-baseline, and clear canary without flicker or a device-wide color reset. M2 B1 also passes physical interception and deep-link navigation. A hardware canary verified that a running assignment stays white and continues routing after successful navigation; completed and fault assignments acknowledge and restore immediately. The unchanged hook relay remains functional, but its p95 latency gate needs an idle-machine recheck after exceeding 25 ms under system load. Other-bank routing and overflow canaries are still pending.
+Status: implementation updated on 2026-07-18 for VIRPIL Controls LinkTool v3. Automated tests pass. The Windows Desktop `UserPromptSubmit` canary passes on the updated Codex package, including a fresh real prompt after the automatic-bank build was staged. The generated 50-rule LinkTool profile passes the full M2 white/yellow/green/red, Alpha, bank-baseline, and clear canary without flicker or a device-wide color reset. M2 B1 also passes physical interception and deep-link navigation. A hardware canary verified that a running assignment stays white and continues routing after successful navigation. Another canary changed M2 to M3 and back to M2 while B1 was running; B1 stayed white and the other buttons followed the physical bank colors automatically. Completed and fault assignments acknowledge and restore immediately. The unchanged hook relay remains functional, but its p95 latency gate needs an idle-machine recheck after exceeding 25 ms under system load. Other-bank button routing and overflow canaries are still pending.
 
 The Codex behavior was checked against the installed Windows package `OpenAI.Codex 26.715.3651.0`. The current hardware work uses VIRPIL Controls LinkTool v3.0 and the firmware/toolset installed on 2026-07-18. Earlier quick-utility experiments used VPC Software Suite `20220720`.
 
@@ -170,21 +170,21 @@ Joydex writes `joydex-linktool.led.json` beside its task-alert settings. The gen
 
 LinkTool offers no leave-current behavior for LEDs without rules: its fallback choices are firmware defaults, one configured color, or off. The initial 40-rule profile therefore turned unruled B3 and B6 yellow on M2. Baseline-only rules are the explicit compromise that preserves their bank-indicator colors without allowing task assignment or routing on those buttons.
 
-The Task Alerts window stores an explicit current bank, defaulting to M2. This keeps restoration deterministic during the first LinkTool release. Automatic physical mode detection remains a later canary because the selector's internal logical buttons overlap some shifted B-button numbers. Changing the selected bank sends a new atomic snapshot and makes LinkTool select the corresponding baseline rules.
+Joydex reads the throttle's current physical bank from VIRPIL's read-only software-link HID feature report. Report ID `4` contains the shift-channel mask in byte `2`; one active bit maps directly to M1-M5. The M2 hardware probe returned `0x02`. Empty, multi-channel, and out-of-range masks are ignored so a transient selector position cannot replace the last valid bank. The Task Alerts window shows the detected bank as automatic and retains the persisted M2 value only as a startup fallback if no valid report is available.
+
+The bank monitor polls every 200 ms, matching LinkTool's own default Shift Link interval, but emits only a change. A physical dial change updates `JoydexBank` in the next atomic telemetry snapshot, so LinkTool selects the new baseline while preserving every active task state on the same B-position. This path only calls HID `GetFeature`; it does not send a feature report or alter controller configuration.
 
 The serialized output worker enforces a 250 ms minimum interval, suppresses identical snapshots, and coalesces changes to the latest complete state. A snapshot contains `JoydexBank`, the four B-channel states, and the highest-priority Alpha state. Clearing an assignment sends state `0` while retaining `JoydexBank`, so the lower baseline rule takes over immediately. Joydex never issues a device-wide restore in this backend.
 
-An empty startup is hardware-silent. Joydex treats the persisted no-alert baseline as already satisfied and waits for a real alert, an explicit current-bank change, or cleanup of an alert it previously sent before publishing telemetry.
+On startup, Joydex compares the first automatically detected bank with the persisted fallback. If they differ, it sends one zero-alert snapshot so LinkTool selects the physical baseline. If they match, duplicate suppression keeps startup hardware-silent. Later telemetry is limited to task-state or physical-bank changes.
 
-The worker checks for a UDP listener on port 4123. If LinkTool is closed or stopped, the tray status reports `LinkTool inactive`; the latest state remains pending and is sent when the listener appears. External VPC setup, Shift, LED, test, and analysis tools pause Joydex telemetry. Resume, device reconnect, and wake replay one complete snapshot.
+The worker checks for a UDP listener on port 4123. If LinkTool is closed or stopped, the tray status reports `LinkTool inactive`; the latest state remains pending and is sent when the listener appears. Existing conflict, resume, and reconnect recovery remain best-effort safeguards, outside the requested v1 acceptance scope.
 
 The Alpha shows the highest active state:
 
 ```text
 fault > approval > completed > running > profile baseline
 ```
-
-On Windows suspend or session end, Joydex sends the no-alert snapshot when LinkTool is available. Resume rebuilds the current reducer snapshot. USB reconnect requests the same replay.
 
 Runtime output is limited to temporary LED commands. Joydex does not flash firmware, calibrate a device, write EEPROM, or edit a VPC profile.
 
@@ -209,7 +209,8 @@ These states resemble those shown by Codex Pets, but Joydex has no supported Pet
 | Pipe receiver and coordinator | `src/Joydex.Windows/TaskAlerts` |
 | Deep-link navigation | `TaskDeepLinkNavigator` |
 | Hook-file merge/remove | `CodexHookManager` |
-| LinkTool telemetry, profile generation, and conflict recovery | `LinkToolLedService` and `LinkToolTelemetry` |
+| Physical mode detection | `VirpilShiftModeReader` and `VirpilShiftModeMonitor` |
+| LinkTool telemetry and profile generation | `LinkToolLedService` and `LinkToolTelemetry` |
 | Crash cleanup | `src/Joydex.Guardian` |
 | Native hook command | `src/Joydex.HookRelay` |
 | Tray, status window, button-map overlay | `src/Joydex.App` |
@@ -217,13 +218,13 @@ These states resemble those shown by Codex Pets, but Joydex has no supported Pet
 
 ## Remaining operator canaries
 
-Automated tests do not write to the controllers. Completed canaries include hook trust and delivery, B1-B6 LED addressing, Alpha output, the official-utility/direct-HID comparison, and the M2 LinkTool baseline/alert/clear sequence.
+Automated tests do not write to the controllers. Completed canaries include hook trust and delivery, B1-B6 LED addressing, Alpha output, the official-utility/direct-HID comparison, the M2 LinkTool baseline/alert/clear sequence, and automatic M2/M3 bank tracking while an alert is active.
 
 1. Press B1-B6 in M1 through M5 and confirm the logical ranges in the table.
 2. Generate five task events. Confirm B1, B2, B4, and B5 fill in order, the fifth event is dropped, and a later event can claim a freed channel.
 3. Load the generated 50-rule LinkTool profile, enable profile autoload and LinkTool autostart, then confirm white, yellow, low green, and the reserved red test color on each enabled throttle channel and the Alpha while B3 and B6 retain their bank colors. Completed on M2.
 4. Press an alerting channel from several banks. Successful navigation must preserve running/approval status and free completed/fault status. Simulator-blocked navigation must leave every state assigned. M2 B1 navigation and running-state preservation are verified; the other states and banks still need operator canaries.
-5. Exercise tray disable, clean exit, forced exit, USB reconnect, and sleep/resume.
+5. Exercise tray disable, clean exit, and forced exit.
 
 Final acceptance means normal bindings return immediately after a terminal acknowledgement or disable, non-terminal assignments stay visible after navigation, both devices recover their profile colors, and Codex shows no visible delay attributable to Joydex.
 

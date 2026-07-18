@@ -13,7 +13,7 @@ internal sealed class TaskAlertsForm : Form
     private readonly Func<bool, Task> _setEnabled;
     private readonly CheckBox _enabled;
     private readonly Dictionary<int, CheckBox> _channels = [];
-    private readonly ComboBox _bank;
+    private readonly Label _bank;
     private readonly DataGridView _assignments;
     private readonly Label _hookStatus;
     private bool _updating;
@@ -114,18 +114,10 @@ internal sealed class TaskAlertsForm : Form
             AutoSize = true,
             Margin = new Padding(20, 5, 6, 0),
         });
-        _bank = new ComboBox
+        _bank = new Label
         {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 64,
-        };
-        _bank.Items.AddRange(["M1", "M2", "M3", "M4", "M5"]);
-        _bank.SelectedIndexChanged += (_, _) =>
-        {
-            if (!_updating && _bank.SelectedIndex >= 0)
-            {
-                _coordinator.SetBank(_bank.SelectedIndex + 1);
-            }
+            AutoSize = true,
+            Margin = new Padding(0, 5, 0, 0),
         };
         channelPanel.Controls.Add(_bank);
 
@@ -210,7 +202,9 @@ internal sealed class TaskAlertsForm : Form
                 pair.Value.Checked = snapshot.Channels.Contains(pair.Key);
             }
 
-            _bank.SelectedIndex = snapshot.Bank - 1;
+            _bank.Text = snapshot.BankAutomaticallyDetected
+                ? $"M{snapshot.Bank} (automatic)"
+                : $"M{snapshot.Bank} (fallback)";
 
             _assignments.Rows.Clear();
             foreach (var assignment in snapshot.Assignments)

@@ -13,10 +13,19 @@ internal static class Program
     public static async Task<int> Main(string[] args)
     {
         var command = args.FirstOrDefault()?.ToLowerInvariant() ?? "list";
-        if (command is not ("list" or "trace"))
+        if (command is not ("list" or "trace" or "shift"))
         {
             PrintUsage();
             return 64;
+        }
+
+        if (command == "shift")
+        {
+            using var reader = new Joydex.Windows.TaskAlerts.VirpilShiftModeReader();
+            var shiftMask = reader.ReadShiftMask();
+            var bank = Joydex.Windows.TaskAlerts.VirpilShiftModeReader.DecodeBank(shiftMask);
+            Console.WriteLine($"Shift mask: 0x{shiftMask:X2}; bank: {(bank is null ? "unknown" : $"M{bank}")}");
+            return bank is null ? 2 : 0;
         }
 
         using var window = new CooperativeWindow("Joydex Input Trace");
@@ -164,5 +173,6 @@ internal static class Program
     {
         Console.WriteLine("Joydex.Trace list");
         Console.WriteLine("Joydex.Trace trace [--name text] [--instance-guid guid] [--seconds 60] [--axis-threshold 512] [--warmup-ms 250]");
+        Console.WriteLine("Joydex.Trace shift");
     }
 }
