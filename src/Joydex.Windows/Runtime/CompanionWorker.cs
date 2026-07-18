@@ -16,7 +16,7 @@ public sealed class CompanionWorker(
     IInjectedKeyStateLifecycle? keyStateLifecycle = null,
     TaskAlertInputInterceptor? taskAlertInputInterceptor = null,
     ITaskAlertNavigator? taskAlertNavigator = null,
-    Func<int, string, bool>? acknowledgeTaskAlert = null) : IAsyncDisposable
+    Func<int, string, bool>? acknowledgeTerminalTaskAlert = null) : IAsyncDisposable
 {
     private readonly CompanionEngine _engine = new(config, taskAlertInputInterceptor);
     private readonly IInjectedKeyStateLifecycle _keyStateLifecycle = keyStateLifecycle ?? executor;
@@ -188,7 +188,7 @@ public sealed class CompanionWorker(
                         .ConfigureAwait(false);
                     if (navigated)
                     {
-                        acknowledgeTaskAlert?.Invoke(navigation.Channel, navigation.SessionId);
+                        acknowledgeTerminalTaskAlert?.Invoke(navigation.Channel, navigation.SessionId);
                     }
                 }
             }

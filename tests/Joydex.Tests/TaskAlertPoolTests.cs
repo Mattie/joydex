@@ -34,11 +34,46 @@ public sealed class TaskAlertPoolTests
 
         Assert.False(pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-b", Start)));
         Assert.Equal(1, pool.DroppedEventCount);
-        Assert.True(pool.Acknowledge(1, "session-a"));
+        pool.Apply(Event(CodexLifecycleEvent.Fault, "session-a", Start.AddMilliseconds(500)));
+        Assert.True(pool.AcknowledgeTerminal(1, "session-a"));
         Assert.Empty(pool.Assignments);
 
         Assert.True(pool.Apply(Event(CodexLifecycleEvent.PermissionRequest, "session-b", Start.AddSeconds(1))));
         Assert.Equal("session-b", Assert.Single(pool.Assignments).SessionId);
+    }
+
+    [Theory]
+    [InlineData(CodexLifecycleEvent.UserPromptSubmit, TaskAlertState.Running)]
+    [InlineData(CodexLifecycleEvent.PermissionRequest, TaskAlertState.Approval)]
+    public void NavigationDoesNotAcknowledgeNonTerminalAssignment(
+        CodexLifecycleEvent lifecycleEvent,
+        TaskAlertState expectedState)
+    {
+        var pool = new TaskAlertPool([1]);
+        pool.Apply(Event(lifecycleEvent, "session-a", Start));
+
+        Assert.False(pool.AcknowledgeTerminal(1, "session-a"));
+
+        var assignment = Assert.Single(pool.Assignments);
+        Assert.Equal("session-a", assignment.SessionId);
+        Assert.Equal(expectedState, assignment.State);
+    }
+
+    [Theory]
+    [InlineData(CodexLifecycleEvent.Stop, TaskAlertState.Completed)]
+    [InlineData(CodexLifecycleEvent.Fault, TaskAlertState.Fault)]
+    public void NavigationAcknowledgesTerminalAssignment(
+        CodexLifecycleEvent lifecycleEvent,
+        TaskAlertState expectedState)
+    {
+        var pool = new TaskAlertPool([1]);
+        pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-a", Start));
+        pool.Apply(Event(lifecycleEvent, "session-a", Start.AddSeconds(1)));
+        pool.Advance(Start.AddSeconds(2));
+        Assert.Equal(expectedState, Assert.Single(pool.Assignments).State);
+
+        Assert.True(pool.AcknowledgeTerminal(1, "session-a"));
+        Assert.Empty(pool.Assignments);
     }
 
     [Fact]

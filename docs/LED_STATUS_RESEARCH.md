@@ -1,6 +1,6 @@
 # Joydex task-status LEDs and alert routing
 
-Status: implementation updated on 2026-07-18 for VIRPIL Controls LinkTool v3. Automated tests pass. The Windows Desktop `UserPromptSubmit` canary passes on the updated Codex package. The generated 50-rule LinkTool profile passes the full M2 white/yellow/green/red, Alpha, bank-baseline, and clear canary without flicker or a device-wide color reset. M2 B1 also passes physical interception, deep-link navigation, acknowledgement, and immediate baseline restoration. The unchanged hook relay remains functional, but its p95 latency gate needs an idle-machine recheck after exceeding 25 ms under system load. Other-bank routing, overflow, and the remaining recovery canaries are still pending.
+Status: implementation updated on 2026-07-18 for VIRPIL Controls LinkTool v3. Automated tests pass. The Windows Desktop `UserPromptSubmit` canary passes on the updated Codex package. The generated 50-rule LinkTool profile passes the full M2 white/yellow/green/red, Alpha, bank-baseline, and clear canary without flicker or a device-wide color reset. M2 B1 also passes physical interception and deep-link navigation. A hardware canary verified that a running assignment stays white and continues routing after successful navigation; completed and fault assignments acknowledge and restore immediately. The unchanged hook relay remains functional, but its p95 latency gate needs an idle-machine recheck after exceeding 25 ms under system load. Other-bank routing and overflow canaries are still pending.
 
 The Codex behavior was checked against the installed Windows package `OpenAI.Codex 26.715.3651.0`. The current hardware work uses VIRPIL Controls LinkTool v3.0 and the firmware/toolset installed on 2026-07-18. Earlier quick-utility experiments used VPC Software Suite `20220720`.
 
@@ -142,7 +142,7 @@ codex://threads/<escaped-session-id>
 
 Routing uses the existing foreground guard in explicit deep-link mode. A configured simulator in the foreground still blocks it. Dry-run mode logs the target without navigating.
 
-A successful shell navigation acknowledges the assignment, restores the device profile, replays the remaining alerts, and returns the button to its normal binding. A blocked or failed navigation keeps the assignment armed.
+A successful shell navigation preserves running and approval assignments because opening the task is not evidence that the turn ended or the approval was resolved. Their white or yellow status stays visible and the occupied button continues to route to that task. Completed and fault assignments are terminal, so successful navigation acknowledges them, clears their overlay, and returns the button to its normal binding. A blocked or failed navigation keeps every state assigned.
 
 The button-map window paints active task overlays across every bank variant. The Task Alerts window shows each channel, state, color, session ID, and deep-link target.
 
@@ -222,10 +222,10 @@ Automated tests do not write to the controllers. Completed canaries include hook
 1. Press B1-B6 in M1 through M5 and confirm the logical ranges in the table.
 2. Generate five task events. Confirm B1, B2, B4, and B5 fill in order, the fifth event is dropped, and a later event can claim a freed channel.
 3. Load the generated 50-rule LinkTool profile, enable profile autoload and LinkTool autostart, then confirm white, yellow, low green, and the reserved red test color on each enabled throttle channel and the Alpha while B3 and B6 retain their bank colors. Completed on M2.
-4. Press an alerting channel from several banks. Successful navigation must free it; simulator-blocked navigation must leave it assigned. Completed for M2 B1; other banks and the blocked-navigation case remain.
+4. Press an alerting channel from several banks. Successful navigation must preserve running/approval status and free completed/fault status. Simulator-blocked navigation must leave every state assigned. M2 B1 navigation and running-state preservation are verified; the other states and banks still need operator canaries.
 5. Exercise tray disable, clean exit, forced exit, USB reconnect, and sleep/resume.
 
-Final acceptance means normal bindings return immediately after acknowledgement or disable, both devices recover their profile colors, and Codex shows no visible delay attributable to Joydex.
+Final acceptance means normal bindings return immediately after a terminal acknowledgement or disable, non-terminal assignments stay visible after navigation, both devices recover their profile colors, and Codex shows no visible delay attributable to Joydex.
 
 ## References
 

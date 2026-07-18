@@ -371,7 +371,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 WriteActivity,
                 taskAlertInputInterceptor: taskAlertInput,
                 taskAlertNavigator: taskAlertNavigator,
-                acknowledgeTaskAlert: _taskAlerts.Acknowledge);
+                acknowledgeTerminalTaskAlert: _taskAlerts.AcknowledgeTerminal);
             _worker.StatusChanged += OnStatusChanged;
             _worker.Start();
 

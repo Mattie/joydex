@@ -122,11 +122,12 @@ public sealed class TaskAlertPool
         return changed;
     }
 
-    public bool Acknowledge(int channel, string sessionId)
+    public bool AcknowledgeTerminal(int channel, string sessionId)
     {
         TaskAlertChannels.Validate(channel);
         if (!_assignments.TryGetValue(channel, out var assignment)
-            || !string.Equals(assignment.SessionId, sessionId, StringComparison.Ordinal))
+            || !string.Equals(assignment.SessionId, sessionId, StringComparison.Ordinal)
+            || assignment.State is not (TaskAlertState.Completed or TaskAlertState.Fault))
         {
             return false;
         }

@@ -134,12 +134,12 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         RaiseChanged(snapshot);
     }
 
-    public bool Acknowledge(int channel, string sessionId)
+    public bool AcknowledgeTerminal(int channel, string sessionId)
     {
         TaskAlertSnapshot? snapshot = null;
         lock (_sync)
         {
-            if (_pool.Acknowledge(channel, sessionId))
+            if (_pool.AcknowledgeTerminal(channel, sessionId))
             {
                 snapshot = SnapshotUnsafe();
             }
