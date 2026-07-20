@@ -18,18 +18,25 @@ My favorite bit is I can just flip a T3 switch and see a floating map of the thr
 
 ## What the experiment produced
 
-Joydex runs as a Windows tray app and reads one or more controllers through background, non-exclusive DirectInput. It leaves controller firmware and VPC profiles alone. The included mapping uses the CM3's shifted button ranges to expose Codex controls across three dial positions, while device-qualified bindings can also use a Virpil Alpha/WarBRD or another attached controller.
+Joydex runs as a Windows tray app and reads one or more controllers through background, non-exclusive DirectInput. It leaves controller firmware and VPC profiles alone. The included mapping uses the CM3's shifted button ranges to expose Codex controls across three dial positions, while device-qualified bindings can also use a VIRPIL Alpha/WarBRD or another attached controller.
 
 ```mermaid
 flowchart LR
-    A["CM3 button or encoder"] --> B["Buffered DirectInput events"]
+    A["Configured controller input"] --> B["Buffered DirectInput events"]
     B --> C["Binding and bank rules"]
     C --> D["Codex command ID"]
     D --> E["Current keybinding resolver"]
     E --> F["Windows SendInput"]
     F --> G["Codex desktop app"]
+    B --> P["Prompt picker"]
+    P --> F
+    B --> T["Task-alert deep link"]
+    T --> G
     H["Foreground and simulator guards"] --> F
+    H --> T
     I["Dry run"] --> C
+    I --> P
+    I --> T
 ```
 
 Screenshot of the UI bindings, but you can also just ask Codex to configure them for you if you wanted. UI is so much easier when it's just some "oh hey set M2 B3 to reject" and your agent does the rest.
@@ -67,20 +74,19 @@ Those cases are covered in the test suite. The code remains small enough to trac
 
 ## Included CM3 layout
 
-The starter profile follows the Codex Micro controls:
+The checked-in starter configuration follows the Codex Micro controls for a CM3 five-way shift profile:
 
 | CM3 control | Dial position | Role |
 | --- | --- | --- |
 | Base buttons B1-B6 | M2 | Reject, Fork, Plan, Approve, Open, Submit |
 | Base buttons B1-B6 | M3 | Plan, Back, Sidebar, Forward, New task, Skills |
-| Base buttons B1-B6 | M4 | Task slots 1-6 |
+| Base buttons B1-B6 | M4 | Agents 1-6 |
 | Grip encoder EN (EN3/EN2/EN1) | Any | Prompt 1 up/down; push inserts selected or default prompt |
 | Base encoder E1 | Any | Reasoning up/down; push toggles Fast mode |
 | Five-way hat | Any | Plan, Forward, Sidebar, Back |
 | Toggle T3 | Any | Hold the floating button map open |
-| Toggle T1 | Any | Hold the Alpha/WarBRD button map open |
 
-The floating map reads its labels from the active configuration, so remapped controls are reflected in the UI.
+The floating map reads its labels from the active configuration, so remapped controls are reflected in the UI. Additional controllers and their map controls can be added separately.
 
 ## Task-status LEDs
 
@@ -88,22 +94,35 @@ The LEDs turn the throttle into a ten-slot task monitor. Four primary tasks use 
 
 Dim gray means running, yellow means the task needs attention, and low green means completed. Red is reserved for a future fault source. Pressing an assigned button opens that Codex task. Running and attention states remain assigned after navigation; opening a completed task clears its slot and restores the button's normal binding.
 
-Joydex generates `%LOCALAPPDATA%\Joydex\joydex-linktool.led.json` for VIRPIL Controls LinkTool v3. Load that profile in LinkTool and keep its UDP listener on `127.0.0.1:4123` running. Joydex sends a complete snapshot whenever a task or physical mode changes, and LinkTool holds the matching colors. A read-only VIRPIL Software Link report tells Joydex which M1-M5 position is selected, so turning the dial switches LED pages without writing to controller firmware or profiles.
+### Quick start
+
+1. Connect the CM3 throttle and Alpha grip, then start Joydex.
+2. Open **Task alerts status...** from the Joydex tray. Choose **Show LED profile** and load the generated file in LinkTool.
+3. Keep LinkTool's telemetry listener running on `127.0.0.1:4123`.
+4. Choose **Install / Repair hooks**. Approve Codex's trust prompt if it appears, then confirm the window says `Hooks: installed`.
+5. Leave **Task alerts** checked in the tray menu.
+
+Joydex sends a complete snapshot whenever a task or physical mode changes, and LinkTool holds the matching colors. A read-only VIRPIL Software Link report tells Joydex which M1-M5 position is selected, so turning the dial switches LED pages without writing to controller firmware or profiles.
 
 Task assignments, completion deadlines, and privacy-preserving attention hashes are saved in `%LOCALAPPDATA%\Joydex\task-alert-state.json`. Prompt text, commands, and tool responses are never stored there. Active slots survive a Joydex restart, expired entries are discarded during restore, and turning Task alerts off clears the saved assignments. The tray's **Task alerts status...** window installs or repairs the Codex hooks and shows current assignments, exact LinkTool telemetry, and the last 100 lifecycle events. See [the LED status guide](docs/LED_STATUS.md) for setup, troubleshooting, and the full behavior.
 
 ## Prompt pickers and multiple controllers
 
-The tray's **Prompt pickers...** editor supports up to three named prompt lists. Each list has its own default entry and independently captured Up, Down, and Insert controls; those three controls can come from any configured DirectInput device. The first encoder detent opens the non-activating picker on its default, later detents wrap through the list, and Insert types at the current Codex caret. Each prompt can optionally run the resolved Codex Submit action immediately after insertion; this is off by default. A picker can also add **[Exit / Nevermind]** as its last item, which closes the overlay without typing or submitting. Escape or another controller button dismisses the picker.
+The tray's **Prompt pickers...** editor supports up to three named prompt lists. Each list has its own default entry and captured Up, Down, and Insert controls. The controls can come from any configured DirectInput device.
+
+- The first encoder detent opens the non-activating picker on its default. Later detents wrap through the list.
+- Insert types the selected prompt at the current Codex caret. A per-prompt option can run the resolved Codex Submit action afterward; it is off by default.
+- **[Exit / Nevermind]**, Escape, or another controller button closes the picker without typing or submitting.
 
 ![Joydex prompt-picker tab showing the default EN3, EN2, and EN1 controls](docs/images/joydex-prompt-pickers.png)
 
 Configured devices reconnect independently. Each supported device map has its own tray item, floating window position, and optional hold-to-show control from any configured controller. Configure it in **Configure Joydex → Button Maps**: select the target map row, choose its **Hold source**, click **Capture hold-to-show**, then move the control. The CM3 and Alpha/WarBRD maps can be visible at the same time.
 
+The checked-in [advanced configuration](config/joydex.advanced.example.json) is a sanitized copy of a working CM3 plus Alpha/WarBRD setup. It demonstrates two device profiles, cross-device map controls, two prompt pickers, custom task navigation, and two-notch scrolling. Its device GUIDs are removed and dry run is enabled. The prompt lists show one real workflow and are meant to be edited.
+
 ![Joydex Button Maps tab showing a CM3 hold-to-show control](docs/images/joydex-button-maps-configuration.png)
 
 ![Joydex Alpha/WarBRD floating button map](docs/images/joydex-alpha-button-map.png)
-
 
 ## Build and explore the source
 
@@ -117,14 +136,16 @@ dotnet build .\Joydex.sln --configuration Release
 dotnet test .\Joydex.sln --configuration Release --no-build
 ```
 
-For a dry-run source session, copy the example configuration to a scratch path and pass it to the app project:
+For a dry-run source session, copy the complete CM3 starter configuration to a scratch path and pass it to the app project:
 
 ```powershell
 $config = Join-Path $env:TEMP 'joydex-example.json'
 Copy-Item .\config\joydex.example.json $config
 dotnet run --project .\src\Joydex.App -- --config $config
 ```
-The example configuration selects the throttle by product name and omits machine-specific DirectInput GUIDs. Its `dryRun` setting is enabled. Raw control events appear in the test window without being sent to Codex.
+The scratch path keeps this run separate from `%LOCALAPPDATA%\Joydex\config.json`. The starter selects the throttle by product name and omits machine-specific DirectInput GUIDs. It includes the bindings and prompt picker shown above with `dryRun` enabled, so raw control events and resolved actions appear in the test window without being sent to Codex.
+
+To explore the two-controller version, copy `config\joydex.advanced.example.json` to the scratch path instead. Its broad `MT-50CM3` and `WarBRD` product-name selectors may need adjustment if more than one matching controller is attached.
 
 Use the tracer when adapting the example to another DirectInput profile:
 
@@ -141,19 +162,22 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 
 | Path | Purpose |
 | --- | --- |
-| `src/Joydex.Core` | Configuration, input snapshots, bank rules, and binding engine |
-| `src/Joydex.Windows` | DirectInput, Codex shortcut resolution, safety guards, and Windows input injection |
-| `src/Joydex.App` | Tray lifecycle, configuration UI, dry-run inspector, and button map |
+| `src/Joydex.Core` | Configuration, multi-device input models, bindings, prompt pickers, and task-alert state |
+| `src/Joydex.Windows` | DirectInput, shortcut resolution and injection, safety guards, task links, hooks, and LinkTool output |
+| `src/Joydex.App` | Tray lifecycle, configuration UI, dry-run inspector, prompt overlays, diagnostics, and button maps |
+| `src/Joydex.HookRelay` | Native hook command that forwards Codex lifecycle events to Joydex |
+| `src/Joydex.Guardian` | Crash cleanup for active task-status LEDs |
 | `tools/Joydex.Trace` | DirectInput discovery and event tracing |
 | `tests/Joydex.Tests` | Unit and Windows interop coverage |
 | `config/joydex.example.json` | Safe, machine-neutral starter configuration |
+| `config/joydex.advanced.example.json` | Sanitized two-controller working example |
 | `docs/` | Case study, images, and planning notes |
 
 ## Versions and Config
 
 Command IDs, Windows defaults, aliases, and precedence behavior were last checked on 2026-07-16 against OpenAI Codex package `26.707.12708.0`, bundled app `26.707.91948`, build `5440`.
 
-Source builds use `%LOCALAPPDATA%\Joydex\config.json`, with `JOYDEX_CONFIG` and `--config` available for alternate paths. The graphical editor is the normal way to change mappings. The checked-in [example configuration](config/joydex.example.json) is intended for dry-run exploration and contains no device GUIDs.
+Source builds use `%LOCALAPPDATA%\Joydex\config.json`, with `JOYDEX_CONFIG` and `--config` available for alternate paths. The graphical editor is the normal way to change mappings. Both checked-in example configurations are intended for dry-run exploration and contain no device GUIDs.
 
 ## License and trademarks
 

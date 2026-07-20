@@ -30,4 +30,13 @@
     <ProjectReference Include="..\..\src\Joydex.App\Joydex.App.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\config\joydex.example.json"
+          Link="config\joydex.example.json"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\config\joydex.advanced.example.json"
+          Link="config\joydex.advanced.example.json"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

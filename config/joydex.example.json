@@ -2,6 +2,22 @@
   "device": {
     "productNameContains": "VPC Throttle MT-50CM3"
   },
+  "devices": [
+    {
+      "id": "cm3",
+      "displayName": "VPC Throttle MT-50CM3",
+      "selector": {
+        "productNameContains": "VPC Throttle MT-50CM3"
+      },
+      "bankSelectors": {},
+      "buttonMapTemplate": "cm3",
+      "buttonMapHoldControl": {
+        "deviceId": "cm3",
+        "bank": "always",
+        "button": 36
+      }
+    }
+  ],
   "polling": {
     "connectWarmupMs": 250,
     "pollIntervalMs": 16,
@@ -18,6 +34,311 @@
     ],
     "simulatorProcessNames": []
   },
+  "openWorkingDirectory": {
+    "target": "vscode"
+  },
   "bankSelectors": {},
-  "bindings": []
+  "bindings": [
+    {
+      "name": "M2 B1 - reject",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 56,
+      "trigger": "press",
+      "action": "reject"
+    },
+    {
+      "name": "M2 B2 - fork-task",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 57,
+      "trigger": "press",
+      "action": "fork-task"
+    },
+    {
+      "name": "M2 B3 - plan-mode",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 58,
+      "trigger": "press",
+      "action": "plan-mode"
+    },
+    {
+      "name": "M2 B4 - approve",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 59,
+      "trigger": "press",
+      "action": "approve"
+    },
+    {
+      "name": "M2 B5 - open",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 60,
+      "trigger": "press",
+      "action": "open"
+    },
+    {
+      "name": "M2 B6 - submit",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 61,
+      "trigger": "press",
+      "action": "submit"
+    },
+    {
+      "name": "M3 B1 - plan-mode",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 62,
+      "trigger": "press",
+      "action": "plan-mode"
+    },
+    {
+      "name": "M3 B2 - navigate-back",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 63,
+      "trigger": "press",
+      "action": "navigate-back"
+    },
+    {
+      "name": "M3 B3 - toggle-sidebar",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 64,
+      "trigger": "press",
+      "action": "toggle-sidebar"
+    },
+    {
+      "name": "M3 B4 - navigate-forward",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 65,
+      "trigger": "press",
+      "action": "navigate-forward"
+    },
+    {
+      "name": "M3 B5 - new-task",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 66,
+      "trigger": "press",
+      "action": "new-task"
+    },
+    {
+      "name": "M3 B6 - open-skills",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 67,
+      "trigger": "press",
+      "action": "open-skills"
+    },
+    {
+      "name": "M4 B1 - agent-1",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 68,
+      "trigger": "press",
+      "action": "agent-1"
+    },
+    {
+      "name": "M4 B2 - agent-2",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 69,
+      "trigger": "press",
+      "action": "agent-2"
+    },
+    {
+      "name": "M4 B3 - agent-3",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 70,
+      "trigger": "press",
+      "action": "agent-3"
+    },
+    {
+      "name": "M4 B4 - agent-4",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 71,
+      "trigger": "press",
+      "action": "agent-4"
+    },
+    {
+      "name": "M4 B5 - agent-5",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 72,
+      "trigger": "press",
+      "action": "agent-5"
+    },
+    {
+      "name": "M4 B6 - agent-6",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 73,
+      "trigger": "press",
+      "action": "agent-6"
+    },
+    {
+      "name": "Hold-to-talk button",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 53,
+      "trigger": "press",
+      "action": "push-to-talk"
+    },
+    {
+      "name": "Hold-to-talk button release",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 53,
+      "trigger": "release",
+      "action": "push-to-talk"
+    },
+    {
+      "name": "T4 - Hold-to-talk",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 37,
+      "trigger": "press",
+      "action": "push-to-talk"
+    },
+    {
+      "name": "T4 - Hold-to-talk release",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 37,
+      "trigger": "release",
+      "action": "push-to-talk"
+    },
+    {
+      "name": "E2 right - Scroll down",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 54,
+      "trigger": "press",
+      "action": "scroll-down",
+      "wheelNotches": 1
+    },
+    {
+      "name": "E2 left - Scroll up",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 55,
+      "trigger": "press",
+      "action": "scroll-up",
+      "wheelNotches": 1
+    },
+    {
+      "name": "E1 push - Fast mode",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 50,
+      "trigger": "press",
+      "action": "fast-mode"
+    },
+    {
+      "name": "E1 counterclockwise - Reasoning down",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 51,
+      "trigger": "press",
+      "action": "reasoning-down"
+    },
+    {
+      "name": "E1 clockwise - Reasoning up",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 52,
+      "trigger": "press",
+      "action": "reasoning-up"
+    },
+    {
+      "name": "T7 up - Home",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 48,
+      "trigger": "press",
+      "action": "home"
+    },
+    {
+      "name": "T7 down - End",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 49,
+      "trigger": "press",
+      "action": "end"
+    },
+    {
+      "name": "Joystick up - Plan",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 9,
+      "trigger": "press",
+      "action": "plan-mode"
+    },
+    {
+      "name": "Joystick right - Forward",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 10,
+      "trigger": "press",
+      "action": "navigate-forward"
+    },
+    {
+      "name": "Joystick down - Sidebar",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 11,
+      "trigger": "press",
+      "action": "toggle-sidebar"
+    },
+    {
+      "name": "Joystick left - Back",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 12,
+      "trigger": "press",
+      "action": "navigate-back"
+    }
+  ],
+  "promptPickers": [
+    {
+      "id": "picker-1",
+      "name": "Quick prompts",
+      "prompts": [
+        "Explain what you're doing before you work on it.",
+        "Make it so.",
+        "How much work will this take?"
+      ],
+      "submitAfterInsert": [
+        false,
+        false,
+        false
+      ],
+      "includeExitOption": false,
+      "defaultPromptIndex": 1,
+      "controls": {
+        "up": {
+          "deviceId": "cm3",
+          "bank": "always",
+          "button": 3
+        },
+        "down": {
+          "deviceId": "cm3",
+          "bank": "always",
+          "button": 2
+        },
+        "insert": {
+          "deviceId": "cm3",
+          "bank": "always",
+          "button": 1
+        }
+      }
+    }
+  ]
 }

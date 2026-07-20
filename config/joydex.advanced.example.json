@@ -1,0 +1,440 @@
+{
+  "device": {
+    "productNameContains": "MT-50CM3"
+  },
+  "devices": [
+    {
+      "id": "cm3",
+      "displayName": "VPC MongoosT-50CM3",
+      "selector": {
+        "productNameContains": "MT-50CM3"
+      },
+      "bankSelectors": {},
+      "buttonMapTemplate": "cm3",
+      "buttonMapHoldControl": {
+        "deviceId": "cm3",
+        "bank": "always",
+        "button": 36
+      }
+    },
+    {
+      "id": "alpha-warbrd",
+      "displayName": "VPC Constellation Alpha / WarBRD",
+      "selector": {
+        "productNameContains": "WarBRD"
+      },
+      "bankSelectors": {},
+      "buttonMapTemplate": "alpha-warbrd",
+      "buttonMapHoldControl": {
+        "deviceId": "cm3",
+        "bank": "always",
+        "button": 34
+      }
+    }
+  ],
+  "polling": {
+    "connectWarmupMs": 250,
+    "pollIntervalMs": 16,
+    "reconnectIntervalMs": 2000,
+    "actionCooldownMs": 250,
+    "axisTraceThreshold": 512
+  },
+  "safety": {
+    "dryRun": true,
+    "requireCodexForeground": true,
+    "codexProcessNames": [
+      "ChatGPT",
+      "Codex"
+    ],
+    "simulatorProcessNames": []
+  },
+  "openWorkingDirectory": {
+    "target": "vscode"
+  },
+  "bankSelectors": {},
+  "bindings": [
+    {
+      "name": "E1 push - Fast mode",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 50,
+      "trigger": "press",
+      "action": "fast-mode",
+      "wheelNotches": 1
+    },
+    {
+      "name": "E1 counterclockwise - Reasoning down",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 51,
+      "trigger": "press",
+      "action": "reasoning-down",
+      "wheelNotches": 1
+    },
+    {
+      "name": "E1 clockwise - Reasoning up",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 52,
+      "trigger": "press",
+      "action": "reasoning-up",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M4 B1 - agent-1",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 68,
+      "trigger": "press",
+      "action": "agent-1",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M4 B2 - agent-2",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 69,
+      "trigger": "press",
+      "action": "agent-2",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M4 B3 - previous-task",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 70,
+      "trigger": "press",
+      "action": "previous-task",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M4 B4 - agent-4",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 71,
+      "trigger": "press",
+      "action": "agent-4",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M4 B5 - agent-5",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 72,
+      "trigger": "press",
+      "action": "agent-5",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M4 B6 - next-task",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 73,
+      "trigger": "press",
+      "action": "next-task",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M2 B1 - reject",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 56,
+      "trigger": "press",
+      "action": "reject",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M2 B2 - fork-task",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 57,
+      "trigger": "press",
+      "action": "fork-task",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M2 B3 - plan-mode",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 58,
+      "trigger": "press",
+      "action": "plan-mode",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M2 B4 - approve",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 59,
+      "trigger": "press",
+      "action": "approve",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M2 B5 - open",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 60,
+      "trigger": "press",
+      "action": "open",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M2 B6 - submit",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 61,
+      "trigger": "press",
+      "action": "submit",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M3 B1 - plan-mode",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 62,
+      "trigger": "press",
+      "action": "plan-mode",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M3 B2 - navigate-back",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 63,
+      "trigger": "press",
+      "action": "navigate-back",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M3 B3 - toggle-sidebar",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 64,
+      "trigger": "press",
+      "action": "toggle-sidebar",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M3 B4 - navigate-forward",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 65,
+      "trigger": "press",
+      "action": "navigate-forward",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M3 B5 - new-task",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 66,
+      "trigger": "press",
+      "action": "new-task",
+      "wheelNotches": 1
+    },
+    {
+      "name": "M3 B6 - open-skills",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 67,
+      "trigger": "press",
+      "action": "open-skills",
+      "wheelNotches": 1
+    },
+    {
+      "name": "Hold-to-talk button",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 53,
+      "trigger": "press",
+      "action": "push-to-talk",
+      "wheelNotches": 1
+    },
+    {
+      "name": "Hold-to-talk button release",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 53,
+      "trigger": "release",
+      "action": "push-to-talk",
+      "wheelNotches": 1
+    },
+    {
+      "name": "T4 - Hold-to-talk",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 37,
+      "trigger": "press",
+      "action": "push-to-talk",
+      "wheelNotches": 1
+    },
+    {
+      "name": "T4 - Hold-to-talk release",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 37,
+      "trigger": "release",
+      "action": "push-to-talk",
+      "wheelNotches": 1
+    },
+    {
+      "name": "E2 right - Scroll down",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 54,
+      "trigger": "press",
+      "action": "scroll-up",
+      "wheelNotches": 2
+    },
+    {
+      "name": "E2 left - Scroll up",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 55,
+      "trigger": "press",
+      "action": "scroll-down",
+      "wheelNotches": 2
+    },
+    {
+      "name": "T7 up - Home",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 48,
+      "trigger": "press",
+      "action": "home",
+      "wheelNotches": 1
+    },
+    {
+      "name": "T7 down - End",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 49,
+      "trigger": "press",
+      "action": "end",
+      "wheelNotches": 1
+    },
+    {
+      "name": "Joystick up - Plan",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 9,
+      "trigger": "press",
+      "action": "plan-mode",
+      "wheelNotches": 1
+    },
+    {
+      "name": "Joystick right - Forward",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 10,
+      "trigger": "press",
+      "action": "navigate-forward",
+      "wheelNotches": 1
+    },
+    {
+      "name": "Joystick down - Sidebar",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 11,
+      "trigger": "press",
+      "action": "toggle-sidebar",
+      "wheelNotches": 1
+    },
+    {
+      "name": "Joystick left - Back",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 12,
+      "trigger": "press",
+      "action": "navigate-back",
+      "wheelNotches": 1
+    },
+    {
+      "name": "T5 up - Forward",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 44,
+      "trigger": "press",
+      "action": "navigate-forward",
+      "wheelNotches": 1
+    },
+    {
+      "name": "T5 down - Back",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 45,
+      "trigger": "press",
+      "action": "navigate-back",
+      "wheelNotches": 1
+    }
+  ],
+  "promptPickers": [
+    {
+      "id": "picker-1",
+      "name": "Quick prompts",
+      "prompts": [
+        "Explain what you're doing before you work on it.",
+        "Make it so.",
+        "How much work will this take?"
+      ],
+      "submitAfterInsert": [
+        false,
+        true,
+        false
+      ],
+      "includeExitOption": true,
+      "defaultPromptIndex": 1,
+      "controls": {
+        "up": {
+          "deviceId": "cm3",
+          "bank": "always",
+          "button": 3
+        },
+        "down": {
+          "deviceId": "cm3",
+          "bank": "always",
+          "button": 2
+        },
+        "insert": {
+          "deviceId": "cm3",
+          "bank": "always",
+          "button": 1
+        }
+      }
+    },
+    {
+      "id": "picker-2",
+      "name": "Review and debug",
+      "prompts": [
+        "$ponytail-review-boss",
+        "Debug the issue and remedy the problem.",
+        "$critical-review"
+      ],
+      "submitAfterInsert": [
+        true,
+        true,
+        true
+      ],
+      "includeExitOption": true,
+      "defaultPromptIndex": 1,
+      "controls": {
+        "up": {
+          "deviceId": "alpha-warbrd",
+          "bank": "always",
+          "button": 24
+        },
+        "down": {
+          "deviceId": "alpha-warbrd",
+          "bank": "always",
+          "button": 23
+        },
+        "insert": {
+          "deviceId": "alpha-warbrd",
+          "bank": "always",
+          "button": 21
+        }
+      }
+    }
+  ]
+}
