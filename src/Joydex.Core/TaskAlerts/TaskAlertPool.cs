@@ -18,6 +18,92 @@ public sealed class TaskAlertPool
         .OrderBy(assignment => assignment.Slot)
         .ToArray();
 
+    /// <summary>Captures the state needed to restore assignments after restart.</summary>
+    public TaskAlertPoolState CaptureState() => new(
+        _assignments.Values
+            .OrderBy(assignment => assignment.Slot)
+            .Select(assignment =>
+            {
+                _pendingAttention.TryGetValue(assignment.SessionId, out var pending);
+                return new TaskAlertStoredAssignment(
+                    assignment.Slot,
+                    assignment.SessionId,
+                    assignment.TurnId,
+                    assignment.State,
+                    assignment.UpdatedAt,
+                    assignment.CompleteAfter,
+                    pending?.CaptureCorrelated() ?? [],
+                    pending?.UncorrelatedCount ?? 0);
+            })
+            .ToArray());
+
+    /// <summary>
+    /// Replaces current assignments from a validated, all-or-nothing restart snapshot.
+    /// </summary>
+    public void Restore(TaskAlertPoolState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        if (state.Assignments is null || state.Assignments.Length > TaskAlertSlots.All.Length)
+        {
+            throw new InvalidDataException("The task-alert state has an invalid assignment list.");
+        }
+
+        var restoredAssignments = new Dictionary<int, TaskAlertAssignment>();
+        var restoredPending = new Dictionary<string, PendingAttention>(StringComparer.Ordinal);
+        var sessions = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var stored in state.Assignments)
+        {
+            if (stored is null
+                || stored.Slot is < 1 or > 10
+                || string.IsNullOrWhiteSpace(stored.SessionId)
+                || !Enum.IsDefined(stored.State)
+                || stored.UpdatedAt == default
+                || stored.CompleteAfter is { } completeAfter
+                    && (completeAfter == default || completeAfter <= stored.UpdatedAt)
+                || !restoredAssignments.TryAdd(
+                    stored.Slot,
+                    new TaskAlertAssignment(
+                        stored.Slot,
+                        stored.SessionId,
+                        stored.TurnId,
+                        stored.State,
+                        stored.UpdatedAt,
+                        stored.CompleteAfter))
+                || !sessions.Add(stored.SessionId))
+            {
+                throw new InvalidDataException("The task-alert state contains an invalid assignment.");
+            }
+
+            var pending = PendingAttention.Restore(
+                stored.CorrelatedAttention,
+                stored.UncorrelatedAttentionCount);
+            if (pending.Any)
+            {
+                if (stored.State != TaskAlertState.Approval)
+                {
+                    throw new InvalidDataException(
+                        "Only approval assignments can contain pending attention state.");
+                }
+
+                restoredPending.Add(stored.SessionId, pending);
+            }
+        }
+
+        _assignments.Clear();
+        foreach (var pair in restoredAssignments)
+        {
+            _assignments.Add(pair.Key, pair.Value);
+        }
+
+        _pendingAttention.Clear();
+        foreach (var pair in restoredPending)
+        {
+            _pendingAttention.Add(pair.Key, pair.Value);
+        }
+
+        DroppedEventCount = 0;
+    }
+
     public bool Apply(TaskAlertEvent taskEvent)
     {
         ArgumentNullException.ThrowIfNull(taskEvent);
@@ -215,20 +301,52 @@ public sealed class TaskAlertPool
 
         public bool Any => _uncorrelated > 0 || _correlated.Count > 0;
 
+        public int UncorrelatedCount => _uncorrelated;
+
+        public TaskAlertCorrelationCount[] CaptureCorrelated() => _correlated
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => new TaskAlertCorrelationCount(pair.Key, pair.Value))
+            .ToArray();
+
+        public static PendingAttention Restore(
+            TaskAlertCorrelationCount[] correlations,
+            int uncorrelatedCount)
+        {
+            if (correlations is null || uncorrelatedCount < 0)
+            {
+                throw new InvalidDataException("The task-alert pending attention state is invalid.");
+            }
+
+            var pending = new PendingAttention { _uncorrelated = uncorrelatedCount };
+            foreach (var correlation in correlations)
+            {
+                if (correlation is null
+                    || correlation.Count <= 0
+                    || !IsSha256Hash(correlation.Key)
+                    || !pending._correlated.TryAdd(correlation.Key, correlation.Count))
+                {
+                    throw new InvalidDataException(
+                        "The task-alert state contains an invalid attention correlation.");
+                }
+            }
+
+            return pending;
+        }
+
         public void Add(string? key)
         {
-            if (string.IsNullOrWhiteSpace(key))
+            if (!IsSha256Hash(key))
             {
                 _uncorrelated++;
                 return;
             }
 
-            _correlated[key] = _correlated.GetValueOrDefault(key) + 1;
+            _correlated[key!] = _correlated.GetValueOrDefault(key!) + 1;
         }
 
         public bool Complete(string key)
         {
-            if (!_correlated.TryGetValue(key, out var count))
+            if (!IsSha256Hash(key) || !_correlated.TryGetValue(key, out var count))
             {
                 return false;
             }
@@ -244,5 +362,11 @@ public sealed class TaskAlertPool
 
             return true;
         }
+
+        private static bool IsSha256Hash(string? value) =>
+            value is { Length: 64 }
+            && value.All(character => character is >= '0' and <= '9'
+                or >= 'A' and <= 'F'
+                or >= 'a' and <= 'f');
     }
 }

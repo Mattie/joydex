@@ -33,6 +33,29 @@ public sealed record TaskAlertAssignment(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompleteAfter = null);
 
+/// <summary>
+/// Captures the task assignments and pending approval correlations that must
+/// survive a Joydex restart.
+/// </summary>
+public sealed record TaskAlertPoolState(TaskAlertStoredAssignment[] Assignments)
+{
+    public static TaskAlertPoolState Empty { get; } = new([]);
+}
+
+/// <summary>Represents one assignment and its restart-safe approval state.</summary>
+public sealed record TaskAlertStoredAssignment(
+    int Slot,
+    string SessionId,
+    string? TurnId,
+    TaskAlertState State,
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? CompleteAfter,
+    TaskAlertCorrelationCount[] CorrelatedAttention,
+    int UncorrelatedAttentionCount);
+
+/// <summary>Stores one privacy-preserving correlation hash and its pending count.</summary>
+public sealed record TaskAlertCorrelationCount(string Key, int Count);
+
 public enum TaskAlertPage
 {
     Primary,

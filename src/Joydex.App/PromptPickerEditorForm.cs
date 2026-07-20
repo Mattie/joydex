@@ -15,7 +15,7 @@ internal sealed class PromptPickerEditorForm : Form
     private readonly TextBox _pickerName = new() { Width = 260 };
     private readonly ListBox _promptList = new() { Dock = DockStyle.Fill };
     private readonly TextBox _promptText = new() { AcceptsReturn = true, Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
-    private readonly CheckBox _submitAfterInsertCheckBox = new() { AutoSize = true, Text = "Run Codex Submit after inserting" };
+    private readonly CheckBox _submitAfterInsertCheckBox = new() { AutoSize = true, Text = "After this prompt: run Codex Submit" };
     private readonly CheckBox _includeExitOptionCheckBox = new() { AutoSize = true, Text = "Add [Exit / Nevermind] as the last item" };
     private readonly Label _defaultLabel = new() { AutoSize = true };
     private readonly Dictionary<string, ComboBox> _controlDevices = [];
@@ -453,7 +453,7 @@ internal sealed class PromptPickerEditorForm : Form
         for (var index = 0; index < picker.Prompts.Count; index++)
         {
             var marker = index == picker.DefaultIndex ? "★ " : string.Empty;
-            var submitMarker = picker.SubmitAfterInsert[index] ? " [submits]" : string.Empty;
+            var submitMarker = picker.SubmitAfterInsert[index] ? " [+ Submit]" : string.Empty;
             _promptList.Items.Add(marker + picker.Prompts[index].Replace("\r\n", " ↵ ").Replace('\n', ' ') + submitMarker);
         }
 

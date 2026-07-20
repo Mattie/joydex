@@ -9,6 +9,7 @@ internal sealed record PromptPickerSnapshot(
     string PickerId,
     string PickerName,
     IReadOnlyList<string> Prompts,
+    IReadOnlyList<bool> SubmitAfterInsert,
     int SelectedIndex);
 
 /// <summary>Owns prompt selection state and the guarded insertion boundary.</summary>
@@ -161,10 +162,13 @@ internal sealed class PromptPickerCoordinator
         IReadOnlyList<string> entries = picker.IncludeExitOption
             ? [.. picker.Prompts, ExitOptionLabel]
             : picker.Prompts;
-        return new PromptPickerSnapshot(true, picker.Id, picker.Name, entries, _selectedIndex);
+        IReadOnlyList<bool> submitAfterInsert = picker.IncludeExitOption
+            ? [.. picker.SubmitAfterInsert, false]
+            : picker.SubmitAfterInsert;
+        return new PromptPickerSnapshot(true, picker.Id, picker.Name, entries, submitAfterInsert, _selectedIndex);
     }
 
-    private static PromptPickerSnapshot HiddenSnapshot() => new(false, string.Empty, string.Empty, [], 0);
+    private static PromptPickerSnapshot HiddenSnapshot() => new(false, string.Empty, string.Empty, [], [], 0);
 
     private void ResetLocked()
     {

@@ -206,6 +206,7 @@ public sealed class PromptPickerTests
         config.PromptPickers[0].SubmitAfterInsert[1] = true;
         var input = new RecordingInputSender();
         var submitted = false;
+        PromptPickerSnapshot? visibleSnapshot = null;
         var coordinator = new PromptPickerCoordinator(
             config,
             _ => { },
@@ -218,9 +219,18 @@ public sealed class PromptPickerTests
                 submitted = true;
                 return Task.CompletedTask;
             });
+        coordinator.Changed += (_, snapshot) =>
+        {
+            if (snapshot.Visible)
+            {
+                visibleSnapshot = snapshot;
+            }
+        };
 
+        await coordinator.HandleAsync(Request("picker-1", PromptPickerGesture.Down), CancellationToken.None);
         await coordinator.HandleAsync(Request("picker-1", PromptPickerGesture.Insert), CancellationToken.None);
 
+        Assert.Equal([false, true, false], Assert.IsType<PromptPickerSnapshot>(visibleSnapshot).SubmitAfterInsert);
         Assert.Equal("Make it so.", Assert.Single(input.Texts));
         Assert.True(submitted);
     }
@@ -277,6 +287,7 @@ public sealed class PromptPickerTests
         await coordinator.HandleAsync(Request("picker-1", PromptPickerGesture.Down), CancellationToken.None);
 
         Assert.Equal(PromptPickerCoordinator.ExitOptionLabel, snapshots[^1].Prompts[^1]);
+        Assert.False(snapshots[^1].SubmitAfterInsert[^1]);
         Assert.Equal(3, snapshots[^1].SelectedIndex);
 
         await coordinator.HandleAsync(Request("picker-1", PromptPickerGesture.Insert), CancellationToken.None);

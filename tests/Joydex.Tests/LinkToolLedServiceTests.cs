@@ -93,6 +93,28 @@ public sealed class LinkToolLedServiceTests
     }
 
     [Fact]
+    public async Task RestoredStartupForcesTheInitialAlertStateToHardware()
+    {
+        var sender = new RecordingSender();
+        var restored = Snapshot(new TaskAlertAssignment(
+            2,
+            "restored",
+            "turn",
+            TaskAlertState.Approval,
+            DateTimeOffset.UtcNow));
+        await using var service = new LinkToolLedService(
+            sender,
+            new FixedConflictDetector(false),
+            _ => { },
+            restored);
+
+        service.RestoreAndReplay(replay: true);
+
+        await WaitUntilAsync(() => sender.States.Count == 1, TimeSpan.FromSeconds(2));
+        Assert.Equal(2, sender.States[0].JoydexPrimaryB2State);
+    }
+
+    [Fact]
     public async Task ClearingAssignmentPublishesBaselineWithoutADeviceRestore()
     {
         var sender = new RecordingSender();

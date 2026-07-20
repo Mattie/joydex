@@ -48,15 +48,16 @@ public sealed class TaskAlertPipeServerTests
             server.Start();
 
             var now = DateTimeOffset.UtcNow;
+            var attentionKey = new string('C', 64);
             await SendPayloadAsync(pipeName, $$"""
-                {"event":"PermissionRequest","sessionId":"session","turnId":"turn","attentionKey":"key","receivedAtUnixMs":{{now.ToUnixTimeMilliseconds()}}}
+                {"event":"PermissionRequest","sessionId":"session","turnId":"turn","attentionKey":"{{attentionKey}}","receivedAtUnixMs":{{now.ToUnixTimeMilliseconds()}}}
                 """);
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Approval,
                 TimeSpan.FromSeconds(3));
 
             await SendPayloadAsync(pipeName, $$"""
-                {"event":"ToolCompleted","sessionId":"session","turnId":"turn","attentionKey":"key","receivedAtUnixMs":{{now.AddMilliseconds(1).ToUnixTimeMilliseconds()}}}
+                {"event":"ToolCompleted","sessionId":"session","turnId":"turn","attentionKey":"{{attentionKey}}","receivedAtUnixMs":{{now.AddMilliseconds(1).ToUnixTimeMilliseconds()}}}
                 """);
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Running,

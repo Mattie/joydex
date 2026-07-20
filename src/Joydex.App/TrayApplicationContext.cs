@@ -67,7 +67,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _cooperativeWindow = new CooperativeWindow("Joydex");
         _appIcon = AppIconFactory.Create();
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
-        _taskAlerts = new TaskAlertCoordinator(Path.Combine(dataDirectory, "task-alerts.json"));
+        _taskAlerts = new TaskAlertCoordinator(
+            Path.Combine(dataDirectory, "task-alerts.json"),
+            Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Joydex",
+                "task-alert-state.json"),
+            _log.Write);
         _taskAlertPipe = new TaskAlertPipeServer(_taskAlerts, _log.Write);
         _shiftModeMonitor = new VirpilShiftModeMonitor(
             new VirpilShiftModeReader(),
@@ -153,7 +159,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _taskAlerts.Changed += OnTaskAlertsChanged;
         _ledService.StatusChanged += OnLedStatusChanged;
         _ledService.ProfileDirtyChanged += OnProfileDirtyChanged;
-        _ledService.Apply(initialTaskAlerts);
+        if (initialTaskAlerts.Enabled && initialTaskAlerts.Assignments.Count > 0)
+        {
+            _guardian.Start();
+            _guardian.SetRestoreRequired(true);
+            _ledService.RestoreAndReplay(replay: true);
+        }
+        else
+        {
+            _ledService.Apply(initialTaskAlerts);
+        }
+
         _shiftModeMonitor.Start();
         _taskAlertPipe.Start();
         SystemEvents.PowerModeChanged += OnPowerModeChanged;

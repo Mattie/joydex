@@ -1,3 +1,4 @@
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 
 namespace Joydex.App;
@@ -6,51 +7,119 @@ internal sealed class PromptPickerOverlayForm : Form
 {
     private const int HotKeyId = 0x4A50;
     private const int WmHotKey = 0x0312;
+    private const int CsDropShadow = 0x00020000;
+    private const int DwmWindowCornerPreference = 33;
+    private const int DwmBorderColor = 34;
     private const uint ModNoRepeat = 0x4000;
-    private readonly Label _title = new();
+    private readonly FlowLayoutPanel _header = new();
+    private readonly Label _pickerName = new();
+    private readonly Label _hint = new();
     private readonly TableLayoutPanel _rows = new();
+    private readonly PromptPickerRow[] _rowControls = new PromptPickerRow[5];
+    private readonly TableLayoutPanel _footer = new();
+    private readonly Label _footerHint = new();
+    private readonly Label _position = new();
     private readonly System.Windows.Forms.Timer _foregroundTimer = new() { Interval = 250 };
     private readonly Func<bool> _codexStillForeground;
-    private readonly Font _normalFont = new("Segoe UI", 11F, FontStyle.Regular);
-    private readonly Font _selectedFont = new("Segoe UI Semibold", 11F, FontStyle.Bold);
+    private readonly Font _headerNameFont = new("Segoe UI Semibold", 14F, FontStyle.Regular);
+    private readonly Font _headerHintFont = new("Segoe UI", 12F, FontStyle.Regular);
+    private readonly Font _normalFont = new("Segoe UI", 13.5F, FontStyle.Regular);
+    private readonly Font _selectedFont = new("Segoe UI Semibold", 13.5F, FontStyle.Regular);
+    private readonly Font _glyphFont = new("Segoe UI", 12F, FontStyle.Regular);
+    private readonly Font _footerFont = new("Segoe UI", 11.5F, FontStyle.Regular);
     private bool _hotKeyRegistered;
 
     public PromptPickerOverlayForm(Func<bool> codexStillForeground)
     {
         _codexStillForeground = codexStillForeground;
         Text = "Joydex Prompt Picker";
-        Font = new Font("Segoe UI", 11F);
-        BackColor = Color.FromArgb(24, 27, 32);
+        Font = _normalFont;
+        BackColor = Color.FromArgb(32, 32, 32);
         ForeColor = Color.White;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(720, 330);
-        Padding = new Padding(14);
+        Size = new Size(728, 390);
+        Padding = new Padding(8);
 
-        _title.Dock = DockStyle.Top;
-        _title.Height = 42;
-        _title.Font = new Font("Segoe UI Semibold", 14F, FontStyle.Bold);
-        _title.TextAlign = ContentAlignment.MiddleLeft;
+        _header.Dock = DockStyle.Top;
+        _header.Height = 55;
+        _header.Padding = new Padding(16, 13, 0, 8);
+        _header.FlowDirection = FlowDirection.LeftToRight;
+        _header.WrapContents = false;
+        _header.BackColor = Color.Transparent;
+
+        _pickerName.AutoSize = true;
+        _pickerName.Font = _headerNameFont;
+        _pickerName.ForeColor = Color.White;
+        _pickerName.BackColor = Color.Transparent;
+        _pickerName.Margin = System.Windows.Forms.Padding.Empty;
+
+        _hint.AutoSize = true;
+        _hint.Text = "Insert to use · Esc cancels";
+        _hint.Font = _headerHintFont;
+        _hint.ForeColor = Color.FromArgb(110, 110, 110);
+        _hint.BackColor = Color.Transparent;
+        _hint.Margin = new Padding(16, 3, 0, 0);
+
+        _header.Controls.Add(_pickerName);
+        _header.Controls.Add(_hint);
+
         _rows.Dock = DockStyle.Fill;
-        _rows.Padding = new Padding(0, 8, 0, 0);
+        _rows.Padding = new Padding(8, 5, 8, 0);
+        _rows.BackColor = Color.Transparent;
         _rows.ColumnCount = 1;
+        _rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _rows.RowCount = 5;
+        _rows.GrowStyle = TableLayoutPanelGrowStyle.FixedSize;
         for (var index = 0; index < 5; index++)
         {
-            _rows.RowStyles.Add(new RowStyle(SizeType.Percent, 20F));
-            _rows.Controls.Add(new Label
+            _rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 49F));
+            var row = new PromptPickerRow(_normalFont, _selectedFont, _glyphFont)
             {
                 Dock = DockStyle.Fill,
-                AutoEllipsis = true,
-                Padding = new Padding(12, 5, 12, 5),
-                TextAlign = ContentAlignment.MiddleLeft,
-            }, 0, index);
+                Margin = new Padding(0, 0, 0, 3),
+            };
+            _rowControls[index] = row;
+            _rows.Controls.Add(row, 0, index);
         }
 
+        _footer.Dock = DockStyle.Bottom;
+        _footer.Height = 42;
+        _footer.Padding = new Padding(16, 1, 16, 0);
+        _footer.BackColor = Color.FromArgb(27, 27, 27);
+        _footer.ColumnCount = 2;
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _footer.RowCount = 1;
+        _footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        _footer.Paint += (_, eventArgs) =>
+        {
+            using var borderPen = new Pen(Color.FromArgb(51, 51, 51));
+            eventArgs.Graphics.DrawLine(borderPen, 0, 0, _footer.ClientSize.Width, 0);
+        };
+
+        _footerHint.Dock = DockStyle.Fill;
+        _footerHint.Text = "Roll to select Press to confirm";
+        _footerHint.Font = _footerFont;
+        _footerHint.ForeColor = Color.FromArgb(122, 122, 122);
+        _footerHint.TextAlign = ContentAlignment.MiddleLeft;
+        _footerHint.Margin = System.Windows.Forms.Padding.Empty;
+
+        _position.AutoSize = true;
+        _position.Dock = DockStyle.Fill;
+        _position.Font = _footerFont;
+        _position.ForeColor = Color.FromArgb(90, 90, 90);
+        _position.TextAlign = ContentAlignment.MiddleRight;
+        _position.Margin = System.Windows.Forms.Padding.Empty;
+
+        _footer.Controls.Add(_footerHint, 0, 0);
+        _footer.Controls.Add(_position, 1, 0);
+
         Controls.Add(_rows);
-        Controls.Add(_title);
+        Controls.Add(_footer);
+        Controls.Add(_header);
         _foregroundTimer.Tick += (_, _) =>
         {
             if (Visible && !_codexStillForeground())
@@ -71,9 +140,21 @@ internal sealed class PromptPickerOverlayForm : Form
             const int wsExToolWindow = 0x00000080;
             const int wsExNoActivate = 0x08000000;
             var parameters = base.CreateParams;
+            parameters.ClassStyle |= CsDropShadow;
             parameters.ExStyle |= wsExToolWindow | wsExNoActivate;
             return parameters;
         }
+    }
+
+    protected override void OnHandleCreated(EventArgs eventArgs)
+    {
+        base.OnHandleCreated(eventArgs);
+
+        var cornerPreference = 2; // DWMWCP_ROUND
+        DwmSetWindowAttribute(Handle, DwmWindowCornerPreference, ref cornerPreference, sizeof(int));
+
+        var borderColor = 0x00383838;
+        DwmSetWindowAttribute(Handle, DwmBorderColor, ref borderColor, sizeof(int));
     }
 
     public void Apply(PromptPickerSnapshot snapshot)
@@ -84,26 +165,27 @@ internal sealed class PromptPickerOverlayForm : Form
             return;
         }
 
-        _title.Text = $"{snapshot.PickerName}   ·   Press Insert to use   ·   Esc cancels";
+        _pickerName.Text = snapshot.PickerName;
+        _position.Text = $"{snapshot.SelectedIndex + 1} / {snapshot.Prompts.Count}";
         var visibleIndices = VisibleIndices(snapshot.Prompts.Count, snapshot.SelectedIndex);
         for (var row = 0; row < 5; row++)
         {
-            var label = (Label)_rows.Controls[row];
             if (row >= visibleIndices.Count)
             {
-                label.Text = string.Empty;
-                label.BackColor = BackColor;
-                label.ForeColor = Color.White;
+                _rowControls[row].SetContent(string.Empty, selected: false, isExit: false, submits: false);
                 continue;
             }
 
             var promptIndex = visibleIndices[row];
             var selected = promptIndex == snapshot.SelectedIndex;
             var prompt = snapshot.Prompts[promptIndex].Replace("\r\n", " ↵ ").Replace('\n', ' ');
-            label.Text = $"{(selected ? "▶" : " ")}  {prompt}";
-            label.BackColor = selected ? Color.FromArgb(36, 103, 180) : BackColor;
-            label.ForeColor = Color.White;
-            label.Font = selected ? _selectedFont : _normalFont;
+            var isExit = string.Equals(
+                snapshot.Prompts[promptIndex],
+                PromptPickerCoordinator.ExitOptionLabel,
+                StringComparison.Ordinal);
+            var submits = promptIndex < snapshot.SubmitAfterInsert.Count
+                && snapshot.SubmitAfterInsert[promptIndex];
+            _rowControls[row].SetContent(prompt, selected, isExit, submits);
         }
 
         PositionNearForegroundWindow();
@@ -148,8 +230,12 @@ internal sealed class PromptPickerOverlayForm : Form
         {
             HidePicker();
             _foregroundTimer.Dispose();
+            _headerNameFont.Dispose();
+            _headerHintFont.Dispose();
             _normalFont.Dispose();
             _selectedFont.Dispose();
+            _glyphFont.Dispose();
+            _footerFont.Dispose();
         }
 
         base.Dispose(disposing);
@@ -183,6 +269,147 @@ internal sealed class PromptPickerOverlayForm : Form
             Math.Max(area.Top, area.Bottom - Height - 120));
     }
 
+    private sealed class PromptPickerRow : Control
+    {
+        private const int CornerRadius = 7;
+        private readonly Font _normalFont;
+        private readonly Font _selectedFont;
+        private readonly Font _glyphFont;
+        private string _text = string.Empty;
+        private bool _selected;
+        private bool _isExit;
+        private bool _submits;
+
+        public PromptPickerRow(Font normalFont, Font selectedFont, Font glyphFont)
+        {
+            _normalFont = normalFont;
+            _selectedFont = selectedFont;
+            _glyphFont = glyphFont;
+            SetStyle(
+                ControlStyles.UserPaint
+                | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.SupportsTransparentBackColor,
+                true);
+            BackColor = Color.Transparent;
+        }
+
+        public void SetContent(string text, bool selected, bool isExit, bool submits)
+        {
+            if (string.Equals(_text, text, StringComparison.Ordinal)
+                && _selected == selected
+                && _isExit == isExit
+                && _submits == submits)
+            {
+                return;
+            }
+
+            _text = text;
+            _selected = selected;
+            _isExit = isExit;
+            _submits = submits;
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs eventArgs)
+        {
+            base.OnPaint(eventArgs);
+            if (string.IsNullOrEmpty(_text))
+            {
+                return;
+            }
+
+            eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            if (_selected)
+            {
+                var selectionBounds = new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
+                using var selectionPath = RoundedRectangle(selectionBounds, CornerRadius);
+                using var selectionBrush = new SolidBrush(Color.FromArgb(53, 53, 53));
+                eventArgs.Graphics.FillPath(selectionBrush, selectionPath);
+            }
+
+            const TextFormatFlags textFlags = TextFormatFlags.Left
+                | TextFormatFlags.VerticalCenter
+                | TextFormatFlags.EndEllipsis
+                | TextFormatFlags.NoPadding
+                | TextFormatFlags.SingleLine;
+            const string glyph = "▶";
+            var glyphSize = TextRenderer.MeasureText(glyph, _glyphFont, Size.Empty, TextFormatFlags.NoPadding);
+            var glyphBounds = new Rectangle(16, 0, glyphSize.Width, Height);
+            if (_selected)
+            {
+                TextRenderer.DrawText(
+                    eventArgs.Graphics,
+                    glyph,
+                    _glyphFont,
+                    glyphBounds,
+                    Color.FromArgb(76, 194, 255),
+                    textFlags);
+            }
+
+            const string submitMarker = "[+ Submit]";
+            var textLeft = glyphBounds.Right + 13;
+            var textRight = Width - 16;
+            if (_submits)
+            {
+                var markerSize = TextRenderer.MeasureText(
+                    submitMarker,
+                    _normalFont,
+                    Size.Empty,
+                    TextFormatFlags.NoPadding);
+                var markerBounds = new Rectangle(
+                    Math.Max(textLeft, textRight - markerSize.Width),
+                    0,
+                    markerSize.Width,
+                    Height);
+                TextRenderer.DrawText(
+                    eventArgs.Graphics,
+                    submitMarker,
+                    _normalFont,
+                    markerBounds,
+                    _selected ? Color.FromArgb(76, 194, 255) : Color.FromArgb(138, 138, 138),
+                    textFlags);
+                textRight = markerBounds.Left - 13;
+            }
+
+            var textBounds = new Rectangle(textLeft, 0, Math.Max(0, textRight - textLeft), Height);
+            var textColor = _selected
+                ? Color.White
+                : _isExit
+                    ? Color.FromArgb(138, 138, 138)
+                    : Color.FromArgb(207, 207, 207);
+            TextRenderer.DrawText(
+                eventArgs.Graphics,
+                _text,
+                _selected ? _selectedFont : _normalFont,
+                textBounds,
+                textColor,
+                textFlags);
+        }
+
+        private static GraphicsPath RoundedRectangle(Rectangle bounds, int radius)
+        {
+            var path = new GraphicsPath();
+            var diameter = radius * 2;
+            if (bounds.Width <= diameter || bounds.Height <= diameter)
+            {
+                path.AddRectangle(bounds);
+                return path;
+            }
+
+            var arc = new Rectangle(bounds.Location, new Size(diameter, diameter));
+            path.AddArc(arc, 180, 90);
+            arc.X = bounds.Right - diameter;
+            path.AddArc(arc, 270, 90);
+            arc.Y = bounds.Bottom - diameter;
+            path.AddArc(arc, 0, 90);
+            arc.X = bounds.Left;
+            path.AddArc(arc, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect
     {
@@ -206,4 +433,11 @@ internal sealed class PromptPickerOverlayForm : Form
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(IntPtr window, out NativeRect rectangle);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr window,
+        int attribute,
+        ref int attributeValue,
+        int attributeSize);
 }
