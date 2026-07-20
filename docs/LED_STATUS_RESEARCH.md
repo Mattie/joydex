@@ -1,10 +1,12 @@
-# Joydex task-status LEDs and alert routing
+# Joydex task-status LEDs: implementation research archive
 
-Status: implementation updated on 2026-07-18 for VIRPIL Controls LinkTool v3. The ten-slot reducer, bank-specific interception, 106-rule profile generation, M5 isolation, and legacy-settings migration pass automated tests. Hardware canaries pass for the complete M2 primary pattern, complete M1 overflow pattern, empty M1 off baseline, M5 baseline isolation, and Global Alpha across those banks. The Windows Desktop `UserPromptSubmit` canary passes on the updated Codex package, including a fresh real prompt after automatic bank detection was staged. The Task Alerts status viewer also reports the repaired canonical hooks as installed. Earlier canaries cover M2 deep-link routing, running-state preservation, and M2-M3-M2 bank following. The unchanged hook relay remains functional, but its p95 latency gate needs an idle-machine recheck after exceeding 25 ms under system load.
+> **Maintainer archive, recorded July 18-20, 2026.** This file preserves the experiments, compatibility findings, protocol details, benchmarks, and acceptance notes behind the LED integration. Dates and version numbers below describe the environment used for each finding. For current setup and behavior, read the [LED status guide](LED_STATUS.md).
+
+**Archived status (July 18, 2026):** implementation updated for VIRPIL Controls LinkTool v3. The ten-slot reducer, bank-specific interception, 106-rule profile generation, M5 isolation, and legacy-settings migration pass automated tests. Hardware canaries pass for the complete M2 primary pattern, complete M1 overflow pattern, empty M1 off baseline, M5 baseline isolation, and Global Alpha across those banks. The Windows Desktop `UserPromptSubmit` canary passes on the updated Codex package, including a fresh real prompt after automatic bank detection was staged. The Task Alerts status viewer also reports the repaired canonical hooks as installed. Earlier canaries cover M2 deep-link routing, running-state preservation, and M2-M3-M2 bank following. The unchanged hook relay remains functional, but its p95 latency gate needs an idle-machine recheck after exceeding 25 ms under system load.
 
 The Codex behavior was checked against the installed Windows package `OpenAI.Codex 26.715.3651.0`. The current hardware work uses VIRPIL Controls LinkTool v3.0 and the firmware/toolset installed on 2026-07-18. Earlier quick-utility experiments used VPC Software Suite `20220720`.
 
-## Hardware canary
+## Hardware canary (historical)
 
 The official `VPC_LED_Control.exe` changed temporary colors on both attached controllers:
 
@@ -58,7 +60,9 @@ Any Codex task claims the lowest free slot. Slots do not move when another slot 
 
 On M2-M4, B3 and B6 remain ordinary controls with baseline colors. On the dedicated M1 overflow page, they become overflow slots 7 and 10. An unoccupied slot always falls through to its ordinary binding.
 
-The master enabled flag and fallback bank live in `task-alerts.json` beside the normal Joydex configuration. Earlier per-channel settings are accepted during migration and ignored because the bank layout is now fixed. Writes use a flushed temporary file followed by atomic replacement. Live task assignments are memory-only and start empty after a restart.
+The master enabled flag and fallback bank live in `task-alerts.json` beside the normal Joydex configuration. Earlier per-channel settings are accepted during migration and ignored because the bank layout is now fixed. Live assignments, completion deadlines, and pending-attention counts are saved separately in `task-alert-state.json`. Correlated attention is stored as SHA-256 keys; prompt text, commands, patches, and tool responses are never written to this file. Both stores use a flushed temporary file followed by atomic replacement.
+
+When Joydex restarts with task alerts enabled, it restores the saved slot numbers and attention state, immediately expires stale leases, and resumes publishing the resulting LinkTool state. Invalid state is moved to a timestamped quarantine file so startup can continue empty. Disabling task alerts clears the saved assignments.
 
 ## Codex lifecycle hooks
 
@@ -82,7 +86,7 @@ Running assignments expire after 12 hours. Approval, completed, and fault assign
 
 `SessionStart` remains excluded because it does not supply a state needed by this design.
 
-### Installed Windows Desktop compatibility finding
+### Installed Windows Desktop compatibility finding (historical)
 
 The earlier `OpenAI.Codex 26.715.2305.0` package bundled `codex-cli 0.145.0-alpha.18`. Its app-server hook catalog reported all three Joydex handlers as enabled and trusted, with no discovery warnings or errors, but a temporary relay probe saw `Stop` launch while `UserPromptSubmit` never reached the relay. Direct invocation through the exact Windows `%COMSPEC% /C` command path succeeded, which isolated the failure to Codex's hook launch path. This matched the upstream Windows Desktop regression reported in [openai/codex#33564](https://github.com/openai/codex/issues/33564).
 
@@ -201,13 +205,13 @@ The packaged app starts `Joydex.Guardian.exe` once an alert overlay is active. T
 
 If LinkTool is already stopped during a crash, the firmware owns the LEDs and the lost UDP cleanup is harmless. A power loss can terminate both processes; reconnecting or power-cycling the devices remains the final recovery because Joydex never writes firmware, EEPROM, calibration, or the controller profile.
 
-## App-server note
+## App-server note (historical design constraint)
 
 Codex app-server exposes richer turn results and approval state when a client owns its stdio transport. The desktop app's process has private standard streams and no supported shared listener, so Joydex cannot passively subscribe to that instance. Starting a second app-server would observe a different runtime.
 
 These states resemble those shown by Codex Pets, but Joydex has no supported Pet integration.
 
-## Code map
+## Code map (implementation snapshot)
 
 | Area | Main implementation |
 | --- | --- |
@@ -223,7 +227,7 @@ These states resemble those shown by Codex Pets, but Joydex has no supported Pet
 | Tray, status window, button-map overlay | `src/Joydex.App` |
 | Packaged output | `scripts/Publish-Joydex.ps1` |
 
-## Remaining operator canaries
+## Development acceptance canaries (historical)
 
 Automated tests do not write to the controllers. Completed canaries include hook trust and delivery, B1-B6 LED addressing, Alpha output, the official-utility/direct-HID comparison, the M2 LinkTool baseline/alert/clear sequence, and automatic M2/M3 bank tracking while an alert is active.
 
@@ -244,3 +248,7 @@ Final acceptance means normal bindings return immediately after a terminal ackno
 - [VIRPIL VPC Software Setup 20230328 release notes](https://support.virpil.com/en/support/solutions/articles/47001241573-vpc-software-setup-version-20230328-)
 - [VLEDCONTROL direct-HID implementation](https://github.com/Nereid42/VLEDCONTROL)
 - [Reverse-engineered VIRPIL LED feature-report layout](https://gist.github.com/charliefoxtwo/d294636e322402d1ea4a0f7b7e8aa52c)
+
+![Joydex task-status LEDs active on the CM3 throttle](images/20260720_064606c.jpg)
+
+Here, agents 1, 3, and 4 are done (green), while agent 2 is running (white). A task waiting on me would be yellow. The blue buttons are ordinary controls I use often: Plan mode and Submit.

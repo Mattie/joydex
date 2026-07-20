@@ -82,6 +82,16 @@ The starter profile follows the Codex Micro controls:
 
 The floating map reads its labels from the active configuration, so remapped controls are reflected in the UI.
 
+## Task-status LEDs
+
+The LEDs turn the throttle into a ten-slot task monitor. Four primary tasks use B1, B2, B4, and B5 across M2-M4. Six overflow tasks use B1-B6 on M1, where every unassigned button stays dark. M5 remains available for ordinary commands. The Alpha grip LED shows the highest-priority state across all ten slots.
+
+Dim gray means running, yellow means the task needs attention, and low green means completed. Red is reserved for a future fault source. Pressing an assigned button opens that Codex task. Running and attention states remain assigned after navigation; opening a completed task clears its slot and restores the button's normal binding.
+
+Joydex generates `%LOCALAPPDATA%\Joydex\joydex-linktool.led.json` for VIRPIL Controls LinkTool v3. Load that profile in LinkTool and keep its UDP listener on `127.0.0.1:4123` running. Joydex sends a complete snapshot whenever a task or physical mode changes, and LinkTool holds the matching colors. A read-only VIRPIL Software Link report tells Joydex which M1-M5 position is selected, so turning the dial switches LED pages without writing to controller firmware or profiles.
+
+Task assignments, completion deadlines, and privacy-preserving attention hashes are saved in `%LOCALAPPDATA%\Joydex\task-alert-state.json`. Prompt text, commands, and tool responses are never stored there. Active slots survive a Joydex restart, expired entries are discarded during restore, and turning Task alerts off clears the saved assignments. The tray's **Task alerts status...** window installs or repairs the Codex hooks and shows current assignments, exact LinkTool telemetry, and the last 100 lifecycle events. See [the LED status guide](docs/LED_STATUS.md) for setup, troubleshooting, and the full behavior.
+
 ## Prompt pickers and multiple controllers
 
 The tray's **Prompt pickers...** editor supports up to three named prompt lists. Each list has its own default entry and independently captured Up, Down, and Insert controls; those three controls can come from any configured DirectInput device. The first encoder detent opens the non-activating picker on its default, later detents wrap through the list, and Insert types at the current Codex caret. Each prompt can optionally run the resolved Codex Submit action immediately after insertion; this is off by default. A picker can also add **[Exit / Nevermind]** as its last item, which closes the overlay without typing or submitting. Escape or another controller button dismisses the picker.
@@ -169,8 +179,6 @@ Next, map one normal button and one held control such as push-to-talk. Use the s
 
 Follow Gremlin's instructions for installing vJoy. You can skip HidHide at first because Codex does not read joystick input.
 
-### Can it support the VIRPIL LEDs
+### Can it support the VIRPIL LEDs?
 
-Gremlin can drive them, but you need Python scripts, so it doesn't really buy you anything there. Joydex supports ten stable task slots: four primary slots on B1, B2, B4, and B5 across M2-M4, plus six overflow slots on B1-B6 on M1. Unoccupied M1 overflow slots are dark, and M5 stays command-only. Alert buttons open the assigned Codex task. Running and approval states remain assigned after navigation; completed and fault states return to their ordinary binding after a successful handoff.
-
-Joydex sends one compact state snapshot to VIRPIL Controls LinkTool whenever a task or physical throttle bank changes. It reads M1-M5 through VIRPIL's read-only software-link feature report, so turning the mode dial automatically selects the matching LinkTool page. The generated profile gates primary rules to M2-M4, overflow rules to M1, and leaves M5 with baseline rules only. The Alpha remains global and shows the highest active state across all ten slots. The Task Alerts window includes current assignments, exact outgoing telemetry, and a recent hook-event stream for diagnosing delayed or missing status. See [the LED status research](docs/LED_STATUS_RESEARCH.md) for LinkTool setup, the hook design, safety behavior, and remaining hardware canaries.
+Yes. Joydex's built-in task-status LEDs are described above. Gremlin can also drive VIRPIL LEDs through Python scripts if a fixed keyboard profile is a better fit.
