@@ -22,10 +22,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly CooperativeWindow _cooperativeWindow;
     private readonly Icon _appIcon;
     private readonly NotifyIcon _notifyIcon;
-    private readonly ToolStripMenuItem _statusItem;
+    private readonly ToolStripMenuItem _controllersMenu;
     private readonly ToolStripMenuItem _modeItem;
     private readonly ToolStripMenuItem _testControlsItem;
-    private readonly ToolStripMenuItem _buttonMapsMenu;
+    private readonly ToolStripMenuItem _testingAdvancedMenu;
     private readonly ToolStripMenuItem _promptPickersItem;
     private readonly ToolStripMenuItem _configureItem;
     private readonly ToolStripMenuItem _taskAlertsItem;
@@ -42,6 +42,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly DeviceChangeMonitor _deviceChangeMonitor;
     private readonly Queue<string> _recentActivity = new();
     private readonly Dictionary<string, CompanionWorker> _workers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _deviceStatuses = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ToolStripMenuItem> _controllerItems = new(StringComparer.OrdinalIgnoreCase);
     private CompanionConfig? _activeConfig;
     private DryRunActivityForm? _activityForm;
     private readonly Dictionary<string, ButtonMapForm> _buttonMapForms = new(StringComparer.OrdinalIgnoreCase);
@@ -107,7 +109,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _deviceChangeMonitor = new DeviceChangeMonitor();
         _deviceChangeMonitor.DevicesChanged += OnDevicesChanged;
 
-        _statusItem = new ToolStripMenuItem("Starting…") { Enabled = false };
+        _controllersMenu = new ToolStripMenuItem("Controllers: Starting…") { Enabled = false };
         _modeItem = new ToolStripMenuItem("Dry run", image: null, OnToggleDryRun)
         {
             CheckOnClick = false,
@@ -115,7 +117,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         _testControlsItem = new ToolStripMenuItem("Test controls…", image: null, OnTestControls);
         _configureItem = new ToolStripMenuItem("Configure…", image: null, OnConfigure);
-        _buttonMapsMenu = new ToolStripMenuItem("Button maps") { Enabled = false };
         _promptPickersItem = new ToolStripMenuItem("Prompt pickers...", image: null, OnPromptPickers);
         _taskAlertsItem = new ToolStripMenuItem("Task alerts", image: null, OnToggleTaskAlerts)
         {
@@ -123,10 +124,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Checked = _taskAlerts.GetSnapshot().Enabled,
         };
         _taskAlertsStatusItem = new ToolStripMenuItem("Task alerts status...", image: null, OnTaskAlertsStatus);
-        var reloadItem = new ToolStripMenuItem("Reload config", image: null, OnReloadConfig);
-        var openConfigItem = new ToolStripMenuItem("Open config JSON (advanced)", image: null, (_, _) => OpenPath(_configPath));
+        var reloadItem = new ToolStripMenuItem("Reload configuration", image: null, OnReloadConfig);
+        var openConfigItem = new ToolStripMenuItem("Open config JSON...", image: null, (_, _) => OpenPath(_configPath));
         var openLogItem = new ToolStripMenuItem("Open log", image: null, (_, _) => OpenPath(_log.Path));
         var exitItem = new ToolStripMenuItem("Exit", image: null, (_, _) => ExitThread());
+        _testingAdvancedMenu = new ToolStripMenuItem("Testing / Advanced");
+        _testingAdvancedMenu.DropDownItems.AddRange([
+            _modeItem,
+            _testControlsItem,
+            new ToolStripSeparator(),
+            _taskAlertsStatusItem,
+            reloadItem,
+            openConfigItem,
+            openLogItem,
+        ]);
 
         _notifyIcon = new NotifyIcon
         {
@@ -134,18 +145,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 Items =
                 {
-                    _statusItem,
-                    _modeItem,
+                    _controllersMenu,
                     _taskAlertsItem,
                     new ToolStripSeparator(),
-                    _testControlsItem,
-                    _buttonMapsMenu,
-                    _promptPickersItem,
-                    _taskAlertsStatusItem,
                     _configureItem,
-                    reloadItem,
-                    openConfigItem,
-                    openLogItem,
+                    _promptPickersItem,
+                    new ToolStripSeparator(),
+                    _testingAdvancedMenu,
                     new ToolStripSeparator(),
                     exitItem,
                 },
@@ -372,9 +378,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _modeItem.Text = "Dry run";
             _modeItem.Checked = config.Safety.DryRun;
             _modeItem.Enabled = true;
-            _modeItem.ForeColor = config.Safety.DryRun ? Color.DarkGreen : Color.DarkRed;
+            _modeItem.ForeColor = SystemColors.ControlText;
             _testControlsItem.Enabled = config.Safety.DryRun;
-            ConfigureButtonMapMenu(config);
+            _testingAdvancedMenu.Text = config.Safety.DryRun
+                ? "Testing / Advanced (DRY RUN)"
+                : "Testing / Advanced";
+            ConfigureControllersMenu(config);
             foreach (var form in _buttonMapForms.Values)
             {
                 form.UpdateConfig(config);
@@ -433,7 +442,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     deviceId: device.Id,
                     promptPickerHandler: _promptPicker.HandleAsync,
                     buttonMapHandler: OnButtonMapVisibility);
-                worker.StatusChanged += (_, status) => OnDeviceStatusChanged(device.DisplayName, status);
+                worker.StatusChanged += (_, status) => OnDeviceStatusChanged(device.Id, status);
                 _workers[device.Id] = worker;
                 worker.Start();
             }
@@ -453,14 +462,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void OnDeviceStatusChanged(string deviceName, string status)
+    private void OnDeviceStatusChanged(string deviceId, string status)
     {
         _uiContext.Post(_ =>
         {
-            var display = $"{deviceName}: {status}";
-            _statusItem.Text = display;
-            _notifyIcon.Text = TruncateTooltip($"Joydex — {status}");
-            _activityForm?.SetConnectionStatus(display);
+            if (_activeConfig?.Devices.Any(device =>
+                    string.Equals(device.Id, deviceId, StringComparison.OrdinalIgnoreCase)) != true)
+            {
+                return;
+            }
+
+            _deviceStatuses[deviceId] = status;
+            UpdateControllerItem(deviceId);
+            UpdateControllerSummary();
         }, null);
     }
 
@@ -491,25 +505,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _activityForm.Append(message);
         }
 
-        _activityForm.SetConnectionStatus(_statusItem.Text ?? "Starting...");
+        _activityForm.SetConnectionStatus(_controllersMenu.Text ?? "Controllers: Starting...");
         _activityForm.Show();
     }
 
-    private void OnToggleButtonMap(object? sender, EventArgs eventArgs)
+    private void OnShowControllerMap(object? sender, EventArgs eventArgs)
     {
         if (sender is not ToolStripMenuItem { Tag: string deviceId })
         {
             return;
         }
 
-        if (_buttonMapForms.TryGetValue(deviceId, out var form) && form.Visible)
-        {
-            HideButtonMap(deviceId);
-        }
-        else
-        {
-            ShowButtonMap(deviceId);
-        }
+        ShowButtonMap(deviceId);
     }
 
     private void OnInternalAction(ActionRequest request)
@@ -612,22 +619,73 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void ConfigureButtonMapMenu(CompanionConfig config)
+    private void ConfigureControllersMenu(CompanionConfig config)
     {
-        _buttonMapsMenu.DropDownItems.Clear();
+        _controllersMenu.DropDownItems.Clear();
+        _controllerItems.Clear();
         _buttonMapItems.Clear();
-        foreach (var device in config.Devices.Where(device => device.ButtonMapTemplate is not null))
+        _deviceStatuses.Clear();
+
+        _controllersMenu.DropDownItems.Add(new ToolStripMenuItem("Select a controller to show its map")
         {
-            var item = new ToolStripMenuItem(device.DisplayName, image: null, OnToggleButtonMap)
+            Enabled = false,
+        });
+        _controllersMenu.DropDownItems.Add(new ToolStripSeparator());
+
+        foreach (var device in config.Devices)
+        {
+            const string initialStatus = "Starting...";
+            var hasMap = device.ButtonMapTemplate is not null;
+            var item = new ToolStripMenuItem(FormatControllerItem(device.DisplayName, initialStatus, hasMap))
             {
                 Tag = device.Id,
+                Enabled = hasMap,
                 Checked = _buttonMapForms.TryGetValue(device.Id, out var form) && form.Visible,
             };
-            _buttonMapsMenu.DropDownItems.Add(item);
-            _buttonMapItems[device.Id] = item;
+            if (hasMap)
+            {
+                item.Click += OnShowControllerMap;
+            }
+            _controllersMenu.DropDownItems.Add(item);
+            _controllerItems[device.Id] = item;
+            _deviceStatuses[device.Id] = initialStatus;
+            if (hasMap)
+            {
+                _buttonMapItems[device.Id] = item;
+            }
         }
 
-        _buttonMapsMenu.Enabled = _buttonMapsMenu.DropDownItems.Count > 0;
+        _controllersMenu.Enabled = config.Devices.Count > 0;
+        UpdateControllerSummary();
+    }
+
+    private void UpdateControllerItem(string deviceId)
+    {
+        if (_activeConfig is null || !_controllerItems.TryGetValue(deviceId, out var item))
+        {
+            return;
+        }
+
+        var device = _activeConfig.Devices.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, deviceId, StringComparison.OrdinalIgnoreCase));
+        if (device is null)
+        {
+            return;
+        }
+
+        _deviceStatuses.TryGetValue(deviceId, out var status);
+        item.Text = FormatControllerItem(device.DisplayName, status, device.ButtonMapTemplate is not null);
+    }
+
+    private void UpdateControllerSummary()
+    {
+        var total = _activeConfig?.Devices.Count ?? 0;
+        var statuses = _activeConfig?.Devices.Select(device =>
+                _deviceStatuses.TryGetValue(device.Id, out var status) ? status : string.Empty)
+            ?? [];
+        _controllersMenu.Text = FormatControllerSummary(total, statuses);
+        _notifyIcon.Text = TruncateTooltip($"Joydex - {_controllersMenu.Text}");
+        _activityForm?.SetConnectionStatus(_controllersMenu.Text);
     }
 
     private void DisposeStaleButtonMaps(CompanionConfig? previous, CompanionConfig current)
@@ -739,13 +797,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _log.Write($"Configuration error: {exception.Message}");
         _activeConfig = null;
-        _statusItem.Text = "Configuration error";
+        _controllersMenu.Text = "Controllers unavailable";
+        _controllersMenu.Enabled = false;
+        _controllersMenu.DropDownItems.Clear();
+        _controllerItems.Clear();
+        _buttonMapItems.Clear();
+        _deviceStatuses.Clear();
+        _notifyIcon.Text = "Joydex - Configuration error";
         _modeItem.Text = "Dry run unavailable";
         _modeItem.Checked = false;
         _modeItem.Enabled = false;
         _modeItem.ForeColor = Color.DarkRed;
         _testControlsItem.Enabled = false;
-        _buttonMapsMenu.Enabled = false;
+        _testingAdvancedMenu.Text = "Testing / Advanced";
         _notifyIcon.ShowBalloonTip(
             7000,
             "Joydex configuration error",
@@ -878,6 +942,39 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private static void OpenPath(string path)
     {
         Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+    }
+
+    internal static bool IsConnectedDeviceStatus(string? status) =>
+        !string.IsNullOrWhiteSpace(status)
+        && status.StartsWith("Connected", StringComparison.OrdinalIgnoreCase);
+
+    internal static string SummarizeDeviceStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return "Starting...";
+        }
+
+        var normalized = status.Trim();
+        if (!IsConnectedDeviceStatus(normalized))
+        {
+            return normalized;
+        }
+
+        var productSeparator = normalized.IndexOf(':');
+        return productSeparator >= 0 ? normalized[..productSeparator] : normalized;
+    }
+
+    internal static string FormatControllerItem(string displayName, string? status, bool hasMap)
+    {
+        var suffix = hasMap ? string.Empty : " (No map)";
+        return $"{displayName}: {SummarizeDeviceStatus(status)}{suffix}";
+    }
+
+    internal static string FormatControllerSummary(int total, IEnumerable<string> statuses)
+    {
+        var connected = statuses.Count(IsConnectedDeviceStatus);
+        return $"Controllers: {connected}/{total} Connected";
     }
 
     private static string TruncateTooltip(string value) => value.Length <= 63 ? value : value[..63];
