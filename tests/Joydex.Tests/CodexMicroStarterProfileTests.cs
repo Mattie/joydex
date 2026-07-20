@@ -11,19 +11,28 @@ public sealed class CodexMicroStarterProfileTests
         var profile = CodexMicroStarterProfile.Create(Cm3ModeDialProfile.FiveWayShift);
 
         Assert.Empty(profile.BankSelectors);
-        AssertBinding(profile, button: 56, action: "fast-mode");
+        AssertBinding(profile, button: 56, action: "reject");
+        AssertBinding(profile, button: 57, action: "fork-task");
+        AssertBinding(profile, button: 58, action: "plan-mode");
+        AssertBinding(profile, button: 59, action: "approve");
+        AssertBinding(profile, button: 60, action: "open");
         AssertBinding(profile, button: 61, action: "submit");
         AssertBinding(profile, button: 62, action: "plan-mode");
         AssertBinding(profile, button: 67, action: "open-skills");
         AssertBinding(profile, button: 68, action: "agent-1");
         AssertBinding(profile, button: 73, action: "agent-6");
-        AssertBinding(profile, button: 52, action: "reasoning-up");
-        AssertBinding(profile, button: 51, action: "reasoning-down");
         AssertBinding(profile, button: 54, action: "scroll-down");
         AssertBinding(profile, button: 55, action: "scroll-up");
         AssertBinding(profile, button: 48, action: "home");
         AssertBinding(profile, button: 49, action: "end");
-        Assert.DoesNotContain(profile.Bindings, binding => binding.Button == 50);
+        AssertBinding(profile, button: 50, action: "fast-mode");
+        AssertBinding(profile, button: 51, action: "reasoning-down");
+        AssertBinding(profile, button: 52, action: "reasoning-up");
+        var picker = Assert.Single(profile.PromptPickers);
+        Assert.Equal(3, picker.Controls.Up.Button);
+        Assert.Equal(2, picker.Controls.Down.Button);
+        Assert.Equal(1, picker.Controls.Insert.Button);
+        Assert.Equal("Make it so.", picker.Prompts[picker.DefaultPromptIndex]);
         Assert.All(profile.Bindings, binding => Assert.Equal(CompanionConfig.AlwaysBank, binding.Bank));
     }
 
@@ -38,13 +47,12 @@ public sealed class CodexMicroStarterProfileTests
         Assert.Contains(profile.Bindings, binding =>
             binding.Bank == "M2 Commands"
             && binding.Button == 42
-            && binding.Action == "fast-mode");
+            && binding.Action == "reject");
     }
 
     [Theory]
     [InlineData(37)]
     [InlineData(53)]
-    [InlineData(60)]
     public void HoldToTalkControlsHavePressAndReleaseBindings(int button)
     {
         var profile = CodexMicroStarterProfile.Create(Cm3ModeDialProfile.FiveWayShift);
@@ -60,17 +68,11 @@ public sealed class CodexMicroStarterProfileTests
     }
 
     [Fact]
-    public void T3ShowsAndHidesTheButtonMap()
+    public void ButtonMapUsesTheDedicatedMapHoldConfiguration()
     {
         var profile = CodexMicroStarterProfile.Create(Cm3ModeDialProfile.FiveWayShift);
-        var bindings = profile.Bindings
-            .Where(binding => binding.Action == "button-map" && binding.Button == 36)
-            .ToArray();
 
-        Assert.Collection(
-            bindings,
-            binding => Assert.Equal("press", binding.Trigger),
-            binding => Assert.Equal("release", binding.Trigger));
+        Assert.DoesNotContain(profile.Bindings, binding => binding.Action == "button-map");
     }
 
     private static void AssertBinding(StarterProfile profile, int button, string action) =>

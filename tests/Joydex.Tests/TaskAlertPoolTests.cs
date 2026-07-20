@@ -26,6 +26,100 @@ public sealed class TaskAlertPoolTests
             second => Assert.Equal(2, second.Slot));
     }
 
+    [Theory]
+    [InlineData(CodexLifecycleEvent.PermissionRequest)]
+    [InlineData(CodexLifecycleEvent.UserInputRequest)]
+    public void MatchingToolCompletionClearsAttention(CodexLifecycleEvent attentionEvent)
+    {
+        var pool = new TaskAlertPool();
+        pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-a", Start));
+        pool.Apply(Event(attentionEvent, "session-a", Start.AddSeconds(1), "tool-a"));
+
+        Assert.True(pool.Apply(Event(
+            CodexLifecycleEvent.ToolCompleted,
+            "session-a",
+            Start.AddSeconds(2),
+            "tool-a")));
+
+        Assert.Equal(TaskAlertState.Running, Assert.Single(pool.Assignments).State);
+    }
+
+    [Fact]
+    public void UnrelatedParallelToolCompletionLeavesAttentionActive()
+    {
+        var pool = new TaskAlertPool();
+        pool.Apply(Event(
+            CodexLifecycleEvent.PermissionRequest,
+            "session-a",
+            Start,
+            "approval-tool"));
+
+        Assert.False(pool.Apply(Event(
+            CodexLifecycleEvent.ToolCompleted,
+            "session-a",
+            Start.AddSeconds(1),
+            "parallel-tool")));
+        Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
+    }
+
+    [Fact]
+    public void AttentionClearsOnlyAfterEveryParallelToolCompletes()
+    {
+        var pool = new TaskAlertPool();
+        pool.Apply(Event(CodexLifecycleEvent.PermissionRequest, "session-a", Start, "tool-a"));
+        pool.Apply(Event(
+            CodexLifecycleEvent.PermissionRequest,
+            "session-a",
+            Start.AddSeconds(1),
+            "tool-b"));
+
+        pool.Apply(Event(CodexLifecycleEvent.ToolCompleted, "session-a", Start.AddSeconds(2), "tool-a"));
+        Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
+
+        pool.Apply(Event(CodexLifecycleEvent.ToolCompleted, "session-a", Start.AddSeconds(3), "tool-b"));
+        Assert.Equal(TaskAlertState.Running, Assert.Single(pool.Assignments).State);
+    }
+
+    [Fact]
+    public void DuplicateAttentionKeysRequireMatchingCompletionCount()
+    {
+        var pool = new TaskAlertPool();
+        pool.Apply(Event(CodexLifecycleEvent.PermissionRequest, "session-a", Start, "same-tool"));
+        pool.Apply(Event(
+            CodexLifecycleEvent.PermissionRequest,
+            "session-a",
+            Start.AddSeconds(1),
+            "same-tool"));
+
+        pool.Apply(Event(
+            CodexLifecycleEvent.ToolCompleted,
+            "session-a",
+            Start.AddSeconds(2),
+            "same-tool"));
+        Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
+
+        pool.Apply(Event(
+            CodexLifecycleEvent.ToolCompleted,
+            "session-a",
+            Start.AddSeconds(3),
+            "same-tool"));
+        Assert.Equal(TaskAlertState.Running, Assert.Single(pool.Assignments).State);
+    }
+
+    [Fact]
+    public void UncorrelatedAttentionKeepsCurrentFallbackBehavior()
+    {
+        var pool = new TaskAlertPool();
+        pool.Apply(Event(CodexLifecycleEvent.PermissionRequest, "session-a", Start));
+
+        Assert.False(pool.Apply(Event(
+            CodexLifecycleEvent.ToolCompleted,
+            "session-a",
+            Start.AddSeconds(1),
+            "tool-a")));
+        Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
+    }
+
     [Fact]
     public void DropsOverflowWithoutBacklogAndAllowsLaterRetry()
     {
@@ -137,5 +231,11 @@ public sealed class TaskAlertPoolTests
     private static TaskAlertEvent Event(
         CodexLifecycleEvent lifecycleEvent,
         string sessionId,
-        DateTimeOffset at) => new(lifecycleEvent, sessionId, "turn-1", at);
+        DateTimeOffset at,
+        string? attentionKey = null) => new(
+            lifecycleEvent,
+            sessionId,
+            "turn-1",
+            at,
+            attentionKey);
 }

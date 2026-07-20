@@ -128,6 +128,7 @@ public sealed class TaskAlertPipeServer(
                     || string.IsNullOrWhiteSpace(message.SessionId)
                     || message.SessionId.Length > 512
                     || message.TurnId?.Length > 512
+                    || message.AttentionKey?.Length > 128
                     || !Enum.TryParse<CodexLifecycleEvent>(message.Event, ignoreCase: false, out var lifecycleEvent))
                 {
                     return;
@@ -135,6 +136,8 @@ public sealed class TaskAlertPipeServer(
 
                 if (lifecycleEvent is not (CodexLifecycleEvent.UserPromptSubmit
                     or CodexLifecycleEvent.PermissionRequest
+                    or CodexLifecycleEvent.UserInputRequest
+                    or CodexLifecycleEvent.ToolCompleted
                     or CodexLifecycleEvent.Stop))
                 {
                     return;
@@ -149,7 +152,8 @@ public sealed class TaskAlertPipeServer(
                     lifecycleEvent,
                     message.SessionId,
                     message.TurnId,
-                    receivedAt));
+                    receivedAt,
+                    message.AttentionKey));
             }
             catch (Exception exception) when (exception is IOException
                 or JsonException
@@ -168,5 +172,6 @@ public sealed class TaskAlertPipeServer(
         [property: JsonPropertyName("event")] string Event,
         [property: JsonPropertyName("sessionId")] string SessionId,
         [property: JsonPropertyName("turnId")] string? TurnId,
+        [property: JsonPropertyName("attentionKey")] string? AttentionKey,
         [property: JsonPropertyName("receivedAtUnixMs")] long ReceivedAtUnixMs);
 }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Joydex.Core.Config;
 using Joydex.Core.Mapping;
+using Joydex.Core.Runtime;
 using Joydex.Core.TaskAlerts;
 using Joydex.Windows.Actions;
 using Joydex.Windows.Input;
@@ -24,7 +25,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _modeItem;
     private readonly ToolStripMenuItem _testControlsItem;
-    private readonly ToolStripMenuItem _buttonMapItem;
+    private readonly ToolStripMenuItem _buttonMapsMenu;
+    private readonly ToolStripMenuItem _promptPickersItem;
     private readonly ToolStripMenuItem _configureItem;
     private readonly ToolStripMenuItem _taskAlertsItem;
     private readonly ToolStripMenuItem _taskAlertsStatusItem;
@@ -39,10 +41,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly GuardianController _guardian;
     private readonly DeviceChangeMonitor _deviceChangeMonitor;
     private readonly Queue<string> _recentActivity = new();
-    private CompanionWorker? _worker;
+    private readonly Dictionary<string, CompanionWorker> _workers = new(StringComparer.OrdinalIgnoreCase);
     private CompanionConfig? _activeConfig;
     private DryRunActivityForm? _activityForm;
-    private ButtonMapForm? _buttonMapForm;
+    private readonly Dictionary<string, ButtonMapForm> _buttonMapForms = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ToolStripMenuItem> _buttonMapItems = new(StringComparer.OrdinalIgnoreCase);
+    private PromptPickerCoordinator? _promptPicker;
+    private PromptPickerOverlayForm? _promptOverlay;
     private TaskAlertsForm? _taskAlertsForm;
     private bool _configuring;
 
@@ -104,10 +109,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         _testControlsItem = new ToolStripMenuItem("Test controls…", image: null, OnTestControls);
         _configureItem = new ToolStripMenuItem("Configure…", image: null, OnConfigure);
-        _buttonMapItem = new ToolStripMenuItem("Button map...", image: null, OnToggleButtonMap)
-        {
-            Enabled = false,
-        };
+        _buttonMapsMenu = new ToolStripMenuItem("Button maps") { Enabled = false };
+        _promptPickersItem = new ToolStripMenuItem("Prompt pickers...", image: null, OnPromptPickers);
         _taskAlertsItem = new ToolStripMenuItem("Task alerts", image: null, OnToggleTaskAlerts)
         {
             CheckOnClick = false,
@@ -130,7 +133,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     _taskAlertsItem,
                     new ToolStripSeparator(),
                     _testControlsItem,
-                    _buttonMapItem,
+                    _buttonMapsMenu,
+                    _promptPickersItem,
                     _taskAlertsStatusItem,
                     _configureItem,
                     reloadItem,
@@ -177,18 +181,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _taskAlertsForm = null;
         _activityForm?.Close();
         _activityForm = null;
-        if (_buttonMapForm is not null)
+        foreach (var form in _buttonMapForms.Values)
         {
-            _buttonMapForm.SaveWindowState();
-            _buttonMapForm.Dispose();
-            _buttonMapForm = null;
+            form.SaveWindowState();
+            form.Dispose();
         }
+        _buttonMapForms.Clear();
+        _promptOverlay?.Dispose();
+        _promptOverlay = null;
 
-        if (_worker is not null)
+        foreach (var worker in _workers.Values)
         {
-            _worker.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            _worker = null;
+            worker.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
+        _workers.Clear();
 
         _shiftModeMonitor.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _taskAlertPipe.DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -218,13 +224,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             CloseActivityForm();
-            HideButtonMap();
+            HideAllButtonMaps();
+            _promptPicker?.Dismiss();
             _recentActivity.Clear();
-            if (_worker is not null)
-            {
-                await _worker.DisposeAsync();
-                _worker = null;
-            }
+            await StopWorkersAsync();
 
             StartWorker(showFirstRunNotice: false);
             if (_activeConfig?.Safety.DryRun == true)
@@ -253,6 +256,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var updated = new CompanionConfig
             {
                 Device = current.Device,
+                Devices = current.Devices,
                 Polling = current.Polling,
                 Safety = new SafetyOptions
                 {
@@ -264,17 +268,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 OpenWorkingDirectory = current.OpenWorkingDirectory,
                 BankSelectors = current.BankSelectors,
                 Bindings = current.Bindings,
+                PromptPickers = current.PromptPickers,
             };
 
             ConfigStore.Save(_configPath, updated);
             CloseActivityForm();
-            HideButtonMap();
+            HideAllButtonMaps();
+            _promptPicker?.Dismiss();
             _recentActivity.Clear();
-            if (_worker is not null)
-            {
-                await _worker.DisposeAsync();
-                _worker = null;
-            }
+            await StopWorkersAsync();
 
             StartWorker(showFirstRunNotice: false);
             if (enableDryRun && _activeConfig?.Safety.DryRun == true)
@@ -305,13 +307,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             CloseActivityForm();
-            HideButtonMap();
+            HideAllButtonMaps();
+            _promptPicker?.Dismiss();
             _recentActivity.Clear();
-            if (_worker is not null)
-            {
-                await _worker.DisposeAsync();
-                _worker = null;
-            }
+            await StopWorkersAsync();
 
             using var form = new ConfigurationForm(_configPath, _windowStatePath, _cooperativeWindow.Handle);
             var result = form.ShowDialog();
@@ -336,7 +335,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         finally
         {
-            if (_worker is null)
+            if (_workers.Count == 0)
             {
                 StartWorker(showFirstRunNotice: false);
             }
@@ -352,35 +351,76 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             var config = ConfigStore.LoadOrCreate(_configPath);
+            DisposeStaleButtonMaps(_activeConfig, config);
             _activeConfig = config;
             _modeItem.Text = "Dry run";
             _modeItem.Checked = config.Safety.DryRun;
             _modeItem.Enabled = true;
             _modeItem.ForeColor = config.Safety.DryRun ? Color.DarkGreen : Color.DarkRed;
             _testControlsItem.Enabled = config.Safety.DryRun;
-            _buttonMapItem.Enabled = true;
-            _buttonMapForm?.UpdateConfig(config);
-            _buttonMapForm?.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
+            ConfigureButtonMapMenu(config);
+            foreach (var form in _buttonMapForms.Values)
+            {
+                form.UpdateConfig(config);
+                form.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
+            }
 
-            var source = new DirectInputJoystickSource(_cooperativeWindow.Handle);
-            var executor = new CodexActionExecutor(
+            var promptSubmitExecutor = new CodexActionExecutor(
                 config.Safety,
                 WriteActivity,
                 _keybindingService,
-                config.OpenWorkingDirectory,
-                internalAction: OnInternalAction);
-            var taskAlertInput = new TaskAlertInputInterceptor(() => _taskAlerts.GetSnapshot().Assignments);
-            var taskAlertNavigator = new TaskDeepLinkNavigator(config.Safety, WriteActivity);
-            _worker = new CompanionWorker(
+                config.OpenWorkingDirectory);
+            _promptPicker = new PromptPickerCoordinator(
                 config,
-                source,
-                executor,
                 WriteActivity,
-                taskAlertInputInterceptor: taskAlertInput,
-                taskAlertNavigator: taskAlertNavigator,
-                acknowledgeTerminalTaskAlert: _taskAlerts.AcknowledgeTerminal);
-            _worker.StatusChanged += OnStatusChanged;
-            _worker.Start();
+                _uiContext,
+                submit: async (request, cancellationToken) =>
+                {
+                    await promptSubmitExecutor.ExecuteAsync(
+                        new ActionRequest(
+                            "Prompt picker submit",
+                            CompanionConfig.AlwaysBank,
+                            request.Button,
+                            "press",
+                            CodexAction.Submit,
+                            DateTimeOffset.UtcNow,
+                            DeviceId: request.DeviceId),
+                        cancellationToken).ConfigureAwait(false);
+                });
+            _promptOverlay ??= new PromptPickerOverlayForm(() => _promptPicker?.CodexStillForeground() == true);
+            _promptOverlay.DismissRequested -= OnPromptOverlayDismissRequested;
+            _promptOverlay.DismissRequested += OnPromptOverlayDismissRequested;
+            _promptPicker.Changed += (_, snapshot) => _promptOverlay.Apply(snapshot);
+
+            var taskAlertNavigator = new TaskDeepLinkNavigator(config.Safety, WriteActivity);
+            foreach (var device in config.Devices)
+            {
+                var source = new DirectInputJoystickSource(_cooperativeWindow.Handle);
+                var executor = new CodexActionExecutor(
+                    config.Safety,
+                    WriteActivity,
+                    _keybindingService,
+                    config.OpenWorkingDirectory,
+                    internalAction: OnInternalAction);
+                var isCm3 = string.Equals(device.ButtonMapTemplate, "cm3", StringComparison.OrdinalIgnoreCase);
+                var taskAlertInput = isCm3
+                    ? new TaskAlertInputInterceptor(() => _taskAlerts.GetSnapshot().Assignments)
+                    : null;
+                var worker = new CompanionWorker(
+                    config,
+                    source,
+                    executor,
+                    WriteActivity,
+                    taskAlertInputInterceptor: taskAlertInput,
+                    taskAlertNavigator: isCm3 ? taskAlertNavigator : null,
+                    acknowledgeTerminalTaskAlert: isCm3 ? _taskAlerts.AcknowledgeTerminal : null,
+                    deviceId: device.Id,
+                    promptPickerHandler: _promptPicker.HandleAsync,
+                    buttonMapHandler: OnButtonMapVisibility);
+                worker.StatusChanged += (_, status) => OnDeviceStatusChanged(device.DisplayName, status);
+                _workers[device.Id] = worker;
+                worker.Start();
+            }
 
             if (showFirstRunNotice)
             {
@@ -397,13 +437,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void OnStatusChanged(object? sender, string status)
+    private void OnDeviceStatusChanged(string deviceName, string status)
     {
         _uiContext.Post(_ =>
         {
-            _statusItem.Text = status;
+            var display = $"{deviceName}: {status}";
+            _statusItem.Text = display;
             _notifyIcon.Text = TruncateTooltip($"Joydex — {status}");
-            _activityForm?.SetConnectionStatus(status);
+            _activityForm?.SetConnectionStatus(display);
         }, null);
     }
 
@@ -440,13 +481,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnToggleButtonMap(object? sender, EventArgs eventArgs)
     {
-        if (_buttonMapForm is { Visible: true })
+        if (sender is not ToolStripMenuItem { Tag: string deviceId })
         {
-            HideButtonMap();
+            return;
+        }
+
+        if (_buttonMapForms.TryGetValue(deviceId, out var form) && form.Visible)
+        {
+            HideButtonMap(deviceId);
         }
         else
         {
-            ShowButtonMap();
+            ShowButtonMap(deviceId);
         }
     }
 
@@ -456,16 +502,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             if (string.Equals(request.Trigger, "release", StringComparison.OrdinalIgnoreCase))
             {
-                HideButtonMap();
+                HideButtonMap(request.DeviceId);
             }
             else
             {
-                ShowButtonMap();
+                ShowButtonMap(request.DeviceId);
             }
         }, null);
     }
 
-    private void ShowButtonMap()
+    private void ShowButtonMap(string deviceId)
     {
         if (_activeConfig is null)
         {
@@ -474,21 +520,36 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            if (_buttonMapForm is null || _buttonMapForm.IsDisposed)
+            var device = _activeConfig.Devices.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id, deviceId, StringComparison.OrdinalIgnoreCase));
+            if (device?.ButtonMapTemplate is null)
             {
-                _buttonMapForm = new ButtonMapForm(_activeConfig, _buttonMapStatePath, _log.Write);
-                _buttonMapForm.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
-                _buttonMapForm.VisibleChanged += (_, _) =>
-                    _buttonMapItem.Checked = _buttonMapForm is { Visible: true };
-            }
-            else
-            {
-                _buttonMapForm.UpdateConfig(_activeConfig);
-                _buttonMapForm.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
+                return;
             }
 
-            _buttonMapForm.ShowReference();
-            _buttonMapItem.Checked = true;
+            if (!_buttonMapForms.TryGetValue(deviceId, out var form) || form.IsDisposed)
+            {
+                var statePath = GetButtonMapStatePath(deviceId);
+                form = new ButtonMapForm(_activeConfig, deviceId, statePath, _log.Write);
+                form.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
+                var capturedId = deviceId;
+                form.VisibleChanged += (_, _) =>
+                {
+                    if (_buttonMapItems.TryGetValue(capturedId, out var item))
+                    {
+                        item.Checked = _buttonMapForms.TryGetValue(capturedId, out var current) && current.Visible;
+                    }
+                };
+                _buttonMapForms[deviceId] = form;
+            }
+
+            form.UpdateConfig(_activeConfig);
+            form.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
+            form.ShowReference();
+            if (_buttonMapItems.TryGetValue(deviceId, out var menuItem))
+            {
+                menuItem.Checked = true;
+            }
         }
         catch (Exception exception)
         {
@@ -501,10 +562,135 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void HideButtonMap()
+    private void HideButtonMap(string deviceId)
     {
-        _buttonMapForm?.HideReference();
-        _buttonMapItem.Checked = false;
+        if (_buttonMapForms.TryGetValue(deviceId, out var form))
+        {
+            form.HideReference();
+        }
+        if (_buttonMapItems.TryGetValue(deviceId, out var item))
+        {
+            item.Checked = false;
+        }
+    }
+
+    private string GetButtonMapStatePath(string deviceId)
+    {
+        var dataDirectory = Path.GetFullPath(Path.GetDirectoryName(_buttonMapStatePath)!);
+        var statePath = Path.GetFullPath(Path.Combine(dataDirectory, $"button-map-{deviceId}-window.json"));
+        var directoryPrefix = dataDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        if (!statePath.StartsWith(directoryPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException($"Device ID '{deviceId}' produced an unsafe button-map state path.");
+        }
+
+        return statePath;
+    }
+
+    private void HideAllButtonMaps()
+    {
+        foreach (var deviceId in _buttonMapForms.Keys.ToArray())
+        {
+            HideButtonMap(deviceId);
+        }
+    }
+
+    private void ConfigureButtonMapMenu(CompanionConfig config)
+    {
+        _buttonMapsMenu.DropDownItems.Clear();
+        _buttonMapItems.Clear();
+        foreach (var device in config.Devices.Where(device => device.ButtonMapTemplate is not null))
+        {
+            var item = new ToolStripMenuItem(device.DisplayName, image: null, OnToggleButtonMap)
+            {
+                Tag = device.Id,
+                Checked = _buttonMapForms.TryGetValue(device.Id, out var form) && form.Visible,
+            };
+            _buttonMapsMenu.DropDownItems.Add(item);
+            _buttonMapItems[device.Id] = item;
+        }
+
+        _buttonMapsMenu.Enabled = _buttonMapsMenu.DropDownItems.Count > 0;
+    }
+
+    private void DisposeStaleButtonMaps(CompanionConfig? previous, CompanionConfig current)
+    {
+        foreach (var deviceId in _buttonMapForms.Keys.ToArray())
+        {
+            var oldDevice = previous?.Devices.FirstOrDefault(device =>
+                string.Equals(device.Id, deviceId, StringComparison.OrdinalIgnoreCase));
+            var newDevice = current.Devices.FirstOrDefault(device =>
+                string.Equals(device.Id, deviceId, StringComparison.OrdinalIgnoreCase));
+            var mustRecreate = oldDevice is null
+                || newDevice is null
+                || !string.Equals(oldDevice.ButtonMapTemplate, newDevice.ButtonMapTemplate, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(oldDevice.DisplayName, newDevice.DisplayName, StringComparison.Ordinal);
+            if (!mustRecreate)
+            {
+                continue;
+            }
+
+            var form = _buttonMapForms[deviceId];
+            form.SaveWindowState();
+            form.Dispose();
+            _buttonMapForms.Remove(deviceId);
+        }
+    }
+
+    private void OnButtonMapVisibility(ButtonMapVisibilityRequest request) =>
+        _uiContext.Post(_ =>
+        {
+            if (request.Visible) ShowButtonMap(request.DeviceId);
+            else HideButtonMap(request.DeviceId);
+        }, null);
+
+    private void OnPromptOverlayDismissRequested(object? sender, EventArgs eventArgs) =>
+        _promptPicker?.Dismiss();
+
+    private async void OnPromptPickers(object? sender, EventArgs eventArgs)
+    {
+        if (_configuring)
+        {
+            return;
+        }
+
+        _configuring = true;
+        _promptPickersItem.Enabled = false;
+        try
+        {
+            _promptPicker?.Dismiss();
+            await StopWorkersAsync();
+            using var form = new PromptPickerEditorForm(_configPath, _cooperativeWindow.Handle);
+            var result = form.ShowDialog();
+            StartWorker(showFirstRunNotice: false);
+            if (result == DialogResult.OK)
+            {
+                _notifyIcon.ShowBalloonTip(3500, "Joydex prompt pickers", "Prompt pickers and device maps were reloaded.", ToolTipIcon.Info);
+            }
+        }
+        catch (Exception exception)
+        {
+            HandleConfigurationError(exception);
+        }
+        finally
+        {
+            if (_workers.Count == 0)
+            {
+                StartWorker(showFirstRunNotice: false);
+            }
+            _configuring = false;
+            _promptPickersItem.Enabled = true;
+        }
+    }
+
+    private async Task StopWorkersAsync()
+    {
+        foreach (var worker in _workers.Values)
+        {
+            await worker.DisposeAsync();
+        }
+        _workers.Clear();
     }
 
     private void WriteActivity(string message)
@@ -543,7 +729,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _modeItem.Enabled = false;
         _modeItem.ForeColor = Color.DarkRed;
         _testControlsItem.Enabled = false;
-        _buttonMapItem.Enabled = false;
+        _buttonMapsMenu.Enabled = false;
         _notifyIcon.ShowBalloonTip(
             7000,
             "Joydex configuration error",
@@ -611,7 +797,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _uiContext.Post(_ =>
         {
             _taskAlertsItem.Checked = snapshot.Enabled;
-            _buttonMapForm?.UpdateTaskAlerts(snapshot.Assignments);
+            foreach (var form in _buttonMapForms.Values)
+            {
+                form.UpdateTaskAlerts(snapshot.Assignments);
+            }
         }, null);
     }
 

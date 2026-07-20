@@ -13,16 +13,24 @@ public enum JoydexHookState
 public sealed class CodexHookManager(string hooksPath)
 {
     public const string StatusMarker = "Joydex task status";
-    private static readonly string[] SupportedEvents = ["UserPromptSubmit", "PermissionRequest", "Stop"];
+    public const int TimeoutSeconds = 5;
+    private static readonly HookDefinition[] SupportedHooks =
+    [
+        new("UserPromptSubmit"),
+        new("PermissionRequest"),
+        new("PreToolUse", "^request_user_input$"),
+        new("PostToolUse", "^(Bash|apply_patch|request_user_input|mcp__.*)$"),
+        new("Stop"),
+    ];
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public JoydexHookState Inspect(string relayPath)
     {
         var root = LoadRoot();
         var expectedCommand = BuildCommand(relayPath);
-        var matches = SupportedEvents.Count(eventName => EventHasExactHandler(root, eventName, expectedCommand));
+        var matches = SupportedHooks.Count(hook => EventHasExactHandler(root, hook, expectedCommand));
         var joydexHandlers = EnumerateHandlers(root).Count(IsJoydexHandler);
-        if (matches == SupportedEvents.Length && joydexHandlers == SupportedEvents.Length)
+        if (matches == SupportedHooks.Length && joydexHandlers == SupportedHooks.Length)
         {
             return JoydexHookState.Installed;
         }
@@ -48,29 +56,34 @@ public sealed class CodexHookManager(string hooksPath)
         }
 
         var command = BuildCommand(relayPath);
-        foreach (var eventName in SupportedEvents)
+        foreach (var hook in SupportedHooks)
         {
-            var eventGroups = hooks[eventName] as JsonArray;
+            var eventGroups = hooks[hook.EventName] as JsonArray;
             if (eventGroups is null)
             {
                 eventGroups = [];
-                hooks[eventName] = eventGroups;
+                hooks[hook.EventName] = eventGroups;
             }
 
-            eventGroups.Add(new JsonObject
+            var handler = new JsonObject
             {
-                ["hooks"] = new JsonArray
-                {
-                    new JsonObject
-                    {
-                        ["type"] = "command",
-                        ["command"] = command,
-                        ["commandWindows"] = command,
-                        ["timeout"] = 1,
-                        ["statusMessage"] = StatusMarker,
-                    },
-                },
-            });
+                ["type"] = "command",
+                ["command"] = command,
+                ["commandWindows"] = command,
+                ["timeout"] = TimeoutSeconds,
+                ["statusMessage"] = StatusMarker,
+            };
+
+            var group = new JsonObject
+            {
+                ["hooks"] = new JsonArray { handler },
+            };
+            if (hook.Matcher is not null)
+            {
+                group["matcher"] = hook.Matcher;
+            }
+
+            eventGroups.Add(group);
         }
 
         SaveRoot(root);
@@ -179,13 +192,24 @@ public sealed class CodexHookManager(string hooksPath)
     private static bool HasAnyJoydexHandler(JsonObject root) =>
         EnumerateHandlers(root).Any(IsJoydexHandler);
 
-    private static bool EventHasExactHandler(JsonObject root, string eventName, string command) =>
-        EnumerateHandlers(root, eventName).Any(handler =>
-            IsJoydexHandler(handler)
-            && string.Equals(GetString(handler?["type"]), "command", StringComparison.Ordinal)
-            && string.Equals(GetString(handler?["command"]), command, StringComparison.Ordinal)
-            && string.Equals(GetString(handler?["commandWindows"]), command, StringComparison.Ordinal)
-            && GetInt32(handler?["timeout"]) == 1);
+    private static bool EventHasExactHandler(JsonObject root, HookDefinition hook, string command)
+    {
+        if (root["hooks"]?[hook.EventName] is not JsonArray groups)
+        {
+            return false;
+        }
+
+        return groups.OfType<JsonObject>().Any(group =>
+            string.Equals(GetString(group["matcher"]), hook.Matcher, StringComparison.Ordinal)
+            && group["hooks"] is JsonArray handlers
+            && handlers.Any(handler =>
+                IsJoydexHandler(handler)
+                && string.Equals(GetString(handler?["type"]), "command", StringComparison.Ordinal)
+                && string.Equals(GetString(handler?["command"]), command, StringComparison.Ordinal)
+                && string.Equals(GetString(handler?["commandWindows"]), command, StringComparison.Ordinal)
+                && GetInt32(handler?["timeout"]) == TimeoutSeconds
+                && handler?["async"] is null));
+    }
 
     private static bool IsJoydexHandler(JsonNode? handler) =>
         handler is JsonObject
@@ -232,4 +256,6 @@ public sealed class CodexHookManager(string hooksPath)
         var fullPath = Path.GetFullPath(relayPath);
         return fullPath.Any(char.IsWhiteSpace) ? $"\"{fullPath}\"" : fullPath;
     }
+
+    private sealed record HookDefinition(string EventName, string? Matcher = null);
 }

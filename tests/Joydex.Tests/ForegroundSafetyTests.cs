@@ -179,6 +179,8 @@ public sealed class ForegroundSafetyTests
     {
         public Task SendSequenceAsync(KeySequence sequence, CancellationToken cancellationToken) => Task.CompletedTask;
 
+        public Task SendTextAsync(string text, CancellationToken cancellationToken) => Task.CompletedTask;
+
         public void HoldChord(KeyChord chord)
         {
         }

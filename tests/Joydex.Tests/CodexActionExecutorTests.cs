@@ -599,6 +599,8 @@ public sealed class CodexActionExecutorTests
             return Task.CompletedTask;
         }
 
+        public Task SendTextAsync(string text, CancellationToken cancellationToken) => Task.CompletedTask;
+
         public void HoldChord(KeyChord chord)
         {
             HoldAttempts++;

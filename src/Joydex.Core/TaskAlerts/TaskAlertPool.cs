@@ -7,6 +7,8 @@ public sealed class TaskAlertPool
     public static readonly TimeSpan AttentionLease = TimeSpan.FromHours(24);
 
     private readonly Dictionary<int, TaskAlertAssignment> _assignments = [];
+    private readonly Dictionary<string, PendingAttention> _pendingAttention =
+        new(StringComparer.Ordinal);
 
     public bool Enabled { get; private set; } = true;
 
@@ -27,6 +29,13 @@ public sealed class TaskAlertPool
         Advance(taskEvent.ReceivedAt);
         var existing = _assignments.Values.FirstOrDefault(candidate =>
             string.Equals(candidate.SessionId, taskEvent.SessionId, StringComparison.Ordinal));
+        if (taskEvent.Event == CodexLifecycleEvent.ToolCompleted)
+        {
+            return existing is not null
+                && taskEvent.ReceivedAt >= existing.UpdatedAt
+                && ApplyToolCompletion(existing, taskEvent);
+        }
+
         if (existing is null)
         {
             var slot = TaskAlertSlots.All
@@ -50,6 +59,13 @@ public sealed class TaskAlertPool
             return false;
         }
 
+        if (taskEvent.Event is CodexLifecycleEvent.PermissionRequest
+                or CodexLifecycleEvent.UserInputRequest
+            && !string.Equals(existing.TurnId, taskEvent.TurnId, StringComparison.Ordinal))
+        {
+            _pendingAttention.Remove(taskEvent.SessionId);
+        }
+
         var updated = taskEvent.Event switch
         {
             CodexLifecycleEvent.UserPromptSubmit => existing with
@@ -59,7 +75,7 @@ public sealed class TaskAlertPool
                 UpdatedAt = taskEvent.ReceivedAt,
                 CompleteAfter = null,
             },
-            CodexLifecycleEvent.PermissionRequest => existing with
+            CodexLifecycleEvent.PermissionRequest or CodexLifecycleEvent.UserInputRequest => existing with
             {
                 TurnId = taskEvent.TurnId,
                 State = TaskAlertState.Approval,
@@ -81,6 +97,20 @@ public sealed class TaskAlertPool
             },
             _ => throw new ArgumentOutOfRangeException(nameof(taskEvent)),
         };
+
+        if (taskEvent.Event == CodexLifecycleEvent.UserPromptSubmit)
+        {
+            _pendingAttention.Remove(taskEvent.SessionId);
+        }
+        else if (taskEvent.Event is CodexLifecycleEvent.PermissionRequest
+                     or CodexLifecycleEvent.UserInputRequest)
+        {
+            GetPendingAttention(taskEvent.SessionId).Add(taskEvent.AttentionKey);
+        }
+        else if (taskEvent.Event is CodexLifecycleEvent.Stop or CodexLifecycleEvent.Fault)
+        {
+            _pendingAttention.Remove(taskEvent.SessionId);
+        }
 
         _assignments[updated.Slot] = updated;
         return true;
@@ -108,6 +138,7 @@ public sealed class TaskAlertPool
             if (now - assignment.UpdatedAt >= lease)
             {
                 _assignments.Remove(pair.Key);
+                _pendingAttention.Remove(assignment.SessionId);
                 changed = true;
             }
         }
@@ -125,6 +156,7 @@ public sealed class TaskAlertPool
             return false;
         }
 
+        _pendingAttention.Remove(assignment.SessionId);
         return _assignments.Remove(slot);
     }
 
@@ -137,7 +169,80 @@ public sealed class TaskAlertPool
 
         Enabled = enabled;
         _assignments.Clear();
+        _pendingAttention.Clear();
         return true;
     }
 
+    private bool ApplyToolCompletion(TaskAlertAssignment existing, TaskAlertEvent taskEvent)
+    {
+        if (string.IsNullOrWhiteSpace(taskEvent.AttentionKey)
+            || !_pendingAttention.TryGetValue(taskEvent.SessionId, out var pending)
+            || !pending.Complete(taskEvent.AttentionKey))
+        {
+            return false;
+        }
+
+        if (!pending.Any)
+        {
+            _pendingAttention.Remove(taskEvent.SessionId);
+        }
+
+        _assignments[existing.Slot] = existing with
+        {
+            TurnId = taskEvent.TurnId,
+            State = pending.Any ? TaskAlertState.Approval : TaskAlertState.Running,
+            UpdatedAt = taskEvent.ReceivedAt,
+            CompleteAfter = null,
+        };
+        return true;
+    }
+
+    private PendingAttention GetPendingAttention(string sessionId)
+    {
+        if (!_pendingAttention.TryGetValue(sessionId, out var pending))
+        {
+            pending = new PendingAttention();
+            _pendingAttention.Add(sessionId, pending);
+        }
+
+        return pending;
+    }
+
+    private sealed class PendingAttention
+    {
+        private readonly Dictionary<string, int> _correlated = new(StringComparer.Ordinal);
+        private int _uncorrelated;
+
+        public bool Any => _uncorrelated > 0 || _correlated.Count > 0;
+
+        public void Add(string? key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                _uncorrelated++;
+                return;
+            }
+
+            _correlated[key] = _correlated.GetValueOrDefault(key) + 1;
+        }
+
+        public bool Complete(string key)
+        {
+            if (!_correlated.TryGetValue(key, out var count))
+            {
+                return false;
+            }
+
+            if (count == 1)
+            {
+                _correlated.Remove(key);
+            }
+            else
+            {
+                _correlated[key] = count - 1;
+            }
+
+            return true;
+        }
+    }
 }

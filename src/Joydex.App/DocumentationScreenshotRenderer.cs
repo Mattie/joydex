@@ -57,6 +57,23 @@ internal static class DocumentationScreenshotRenderer
                     Path.Combine(outputDirectory, "joydex-configuration.png"));
             }
 
+            foreach (var (tab, fileName) in new[]
+            {
+                ("Prompt Pickers", "joydex-prompt-pickers.png"),
+                ("Button Maps", "joydex-button-maps-configuration.png"),
+                ("General", "joydex-general-configuration.png"),
+            })
+            {
+                using var configuration = new ConfigurationForm(
+                    configPath,
+                    configurationStatePath,
+                    cooperativeWindow.Handle,
+                    documentationMode: true);
+                configuration.Size = new Size(1500, 1000);
+                configuration.SelectTabForDocumentation(tab);
+                RenderForm(configuration, Path.Combine(outputDirectory, fileName));
+            }
+
             using (var activity = new DryRunActivityForm(config))
             {
                 activity.SetConnectionStatus("Connected to VPC Throttle MT-50CM3 (documentation sample).");
@@ -74,6 +91,13 @@ internal static class DocumentationScreenshotRenderer
             preview.Save(
                 Path.Combine(outputDirectory, "joydex-button-map.png"),
                 System.Drawing.Imaging.ImageFormat.Png);
+
+            var alphaConfig = CreateAlphaDocumentationConfig();
+            using var alphaMap = new ButtonMapCanvas(alphaConfig, "alpha-warbrd");
+            using var alphaPreview = alphaMap.RenderPreview(new Size(1600, 1014));
+            alphaPreview.Save(
+                Path.Combine(outputDirectory, "joydex-alpha-button-map.png"),
+                System.Drawing.Imaging.ImageFormat.Png);
         }
         finally
         {
@@ -86,13 +110,89 @@ internal static class DocumentationScreenshotRenderer
         }
     }
 
+    private static CompanionConfig CreateAlphaDocumentationConfig()
+    {
+        var cm3Selector = new DeviceSelector { ProductNameContains = "LEFT VPC MongoosT-50CM3" };
+        var alphaSelector = new DeviceSelector { ProductNameContains = "RIGHT VPC Stick WarBRD" };
+        return new CompanionConfig
+        {
+            Device = cm3Selector,
+            Devices =
+            [
+                new DeviceProfile
+                {
+                    Id = "cm3",
+                    DisplayName = "LEFT VPC MongoosT-50CM3",
+                    Selector = cm3Selector,
+                    ButtonMapTemplate = "cm3",
+                },
+                new DeviceProfile
+                {
+                    Id = "alpha-warbrd",
+                    DisplayName = "RIGHT VPC Stick WarBRD",
+                    Selector = alphaSelector,
+                    ButtonMapTemplate = "alpha-warbrd",
+                },
+            ],
+            Bindings =
+            [
+                new ButtonBinding { Name = "Back", DeviceId = "alpha-warbrd", Bank = "always", Button = 7, Action = "navigate-back" },
+                new ButtonBinding { Name = "Forward", DeviceId = "alpha-warbrd", Bank = "always", Button = 8, Action = "navigate-forward" },
+            ],
+            PromptPickers =
+            [
+                CompanionConfigNormalizer.CreateDefaultPicker("cm3"),
+                new PromptPickerConfig
+                {
+                    Id = "picker-2",
+                    Name = "Review and debug",
+                    Prompts = ["$ponytail-review-boss", "Debug the issue and remedy the problem.", "$critical-review"],
+                    SubmitAfterInsert = [true, true, true],
+                    IncludeExitOption = true,
+                    DefaultPromptIndex = 1,
+                    Controls = new PromptPickerControls
+                    {
+                        Up = CompanionConfigNormalizer.Control("alpha-warbrd", 24),
+                        Down = CompanionConfigNormalizer.Control("alpha-warbrd", 23),
+                        Insert = CompanionConfigNormalizer.Control("alpha-warbrd", 21),
+                    },
+                },
+            ],
+        };
+    }
+
     private static CompanionConfig CreateDocumentationConfig()
     {
         var profile = CodexMicroStarterProfile.Create(Cm3ModeDialProfile.FiveWayShift);
+        var cm3Selector = new DeviceSelector { ProductNameContains = "VPC Throttle MT-50CM3" };
+        var alphaSelector = new DeviceSelector { ProductNameContains = "RIGHT VPC Stick WarBRD" };
         return new CompanionConfig
         {
+            Device = cm3Selector,
+            Devices =
+            [
+                new DeviceProfile
+                {
+                    Id = "cm3",
+                    DisplayName = "VPC Throttle MT-50CM3",
+                    Selector = cm3Selector,
+                    ButtonMapTemplate = "cm3",
+                    ButtonMapHoldControl = CompanionConfigNormalizer.Control("cm3", 36),
+                },
+                new DeviceProfile
+                {
+                    Id = "alpha-warbrd",
+                    DisplayName = "RIGHT VPC Stick WarBRD",
+                    Selector = alphaSelector,
+                    ButtonMapTemplate = "alpha-warbrd",
+                    ButtonMapHoldControl = CompanionConfigNormalizer.Control("cm3", 34),
+                },
+            ],
             BankSelectors = new Dictionary<string, int>(profile.BankSelectors, StringComparer.OrdinalIgnoreCase),
-            Bindings = profile.Bindings.ToList(),
+            Bindings = profile.Bindings
+                .Where(binding => !string.Equals(binding.Action, "button-map", StringComparison.OrdinalIgnoreCase))
+                .ToList(),
+            PromptPickers = profile.PromptPickers.ToList(),
         };
     }
 
@@ -105,9 +205,10 @@ internal static class DocumentationScreenshotRenderer
         Application.DoEvents();
         form.PerformLayout();
 
-        using var bitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+        using var bitmap = new Bitmap(form.Width, form.Height);
         form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
         bitmap.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
         form.Close();
     }
+
 }

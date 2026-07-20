@@ -18,7 +18,7 @@ My favorite bit is I can just flip a T3 switch and see a floating map of the thr
 
 ## What the experiment produced
 
-Joydex runs as a Windows tray app and reads a VPC Throttle MT-50CM3 through background, non-exclusive DirectInput. It leaves the throttle firmware and VPC profile alone. The included mapping uses the CM3's shifted button ranges to expose Codex controls across three dial positions.
+Joydex runs as a Windows tray app and reads one or more controllers through background, non-exclusive DirectInput. It leaves controller firmware and VPC profiles alone. The included mapping uses the CM3's shifted button ranges to expose Codex controls across three dial positions, while device-qualified bindings can also use a Virpil Alpha/WarBRD or another attached controller.
 
 ```mermaid
 flowchart LR
@@ -35,6 +35,10 @@ flowchart LR
 Screenshot of the UI bindings, but you can also just ask Codex to configure them for you if you wanted. UI is so much easier when it's just some "oh hey set M2 B3 to reject" and your agent does the rest.
 
 ![Joydex configuration window showing the CM3 device and action mappings](docs/images/joydex-configuration.png)
+
+The configuration window keeps bindings, prompt pickers, button maps, and general settings on separate tabs. Software banks live under **General → Advanced** because they are only needed for hardware modes that reuse logical button numbers.
+
+![Joydex General tab showing Safety and Open plus collapsed advanced software banks](docs/images/joydex-general-configuration.png)
 
 FWIW, the checked-in code demonstrates:
 
@@ -67,14 +71,28 @@ The starter profile follows the Codex Micro controls:
 
 | CM3 control | Dial position | Role |
 | --- | --- | --- |
-| Base buttons B1-B6 | M2 | Fast, Approve, Reject, Fork, Push-to-talk, Submit |
+| Base buttons B1-B6 | M2 | Reject, Fork, Plan, Approve, Open, Submit |
 | Base buttons B1-B6 | M3 | Plan, Back, Sidebar, Forward, New task, Skills |
 | Base buttons B1-B6 | M4 | Task slots 1-6 |
-| Base encoder E1 | Any | Reasoning down/up; push unused |
+| Grip encoder EN (EN3/EN2/EN1) | Any | Prompt 1 up/down; push inserts selected or default prompt |
+| Base encoder E1 | Any | Reasoning up/down; push toggles Fast mode |
 | Five-way hat | Any | Plan, Forward, Sidebar, Back |
 | Toggle T3 | Any | Hold the floating button map open |
+| Toggle T1 | Any | Hold the Alpha/WarBRD button map open |
 
 The floating map reads its labels from the active configuration, so remapped controls are reflected in the UI.
+
+## Prompt pickers and multiple controllers
+
+The tray's **Prompt pickers...** editor supports up to three named prompt lists. Each list has its own default entry and independently captured Up, Down, and Insert controls; those three controls can come from any configured DirectInput device. The first encoder detent opens the non-activating picker on its default, later detents wrap through the list, and Insert types at the current Codex caret. Each prompt can optionally run the resolved Codex Submit action immediately after insertion; this is off by default. A picker can also add **[Exit / Nevermind]** as its last item, which closes the overlay without typing or submitting. Escape or another controller button dismisses the picker.
+
+![Joydex prompt-picker tab showing the default EN3, EN2, and EN1 controls](docs/images/joydex-prompt-pickers.png)
+
+Configured devices reconnect independently. Each supported device map has its own tray item, floating window position, and optional hold-to-show control from any configured controller. Configure it in **Configure Joydex → Button Maps**: select the target map row, choose its **Hold source**, click **Capture hold-to-show**, then move the control. The CM3 and Alpha/WarBRD maps can be visible at the same time.
+
+![Joydex Button Maps tab showing a CM3 hold-to-show control](docs/images/joydex-button-maps-configuration.png)
+
+![Joydex Alpha/WarBRD floating button map](docs/images/joydex-alpha-button-map.png)
 
 
 ## Build and explore the source

@@ -1,5 +1,6 @@
 using System.IO.Pipes;
 using System.Text;
+using Joydex.Core.TaskAlerts;
 using Joydex.Windows.TaskAlerts;
 
 namespace Joydex.Tests;
@@ -34,7 +35,48 @@ public sealed class TaskAlertPipeServerTests
         }
     }
 
+    [Fact]
+    public async Task CarriesAttentionKeyFromPermissionToToolCompletion()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-pipe-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
+            var pipeName = $"Joydex.Tests.{Guid.NewGuid():N}";
+            await using var server = new TaskAlertPipeServer(coordinator, _ => { }, pipeName);
+            server.Start();
+
+            var now = DateTimeOffset.UtcNow;
+            await SendPayloadAsync(pipeName, $$"""
+                {"event":"PermissionRequest","sessionId":"session","turnId":"turn","attentionKey":"key","receivedAtUnixMs":{{now.ToUnixTimeMilliseconds()}}}
+                """);
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Approval,
+                TimeSpan.FromSeconds(3));
+
+            await SendPayloadAsync(pipeName, $$"""
+                {"event":"ToolCompleted","sessionId":"session","turnId":"turn","attentionKey":"key","receivedAtUnixMs":{{now.AddMilliseconds(1).ToUnixTimeMilliseconds()}}}
+                """);
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Running,
+                TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static async Task SendAsync(string pipeName, int index)
+    {
+        var payload = $$"""
+            {"event":"UserPromptSubmit","sessionId":"session-{{index}}","turnId":"turn-{{index}}","receivedAtUnixMs":{{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}}}
+            """;
+        await SendPayloadAsync(pipeName, payload);
+    }
+
+    private static async Task SendPayloadAsync(string pipeName, string payload)
     {
         await using var client = new NamedPipeClientStream(
             ".",
@@ -42,9 +84,6 @@ public sealed class TaskAlertPipeServerTests
             PipeDirection.Out,
             PipeOptions.Asynchronous);
         await client.ConnectAsync(2000);
-        var payload = $$"""
-            {"event":"UserPromptSubmit","sessionId":"session-{{index}}","turnId":"turn-{{index}}","receivedAtUnixMs":{{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}}}
-            """;
         var bytes = Encoding.UTF8.GetBytes(payload);
         await client.WriteAsync(bytes);
     }

@@ -6,6 +6,12 @@ public sealed class CompanionConfig
 
     public DeviceSelector Device { get; init; } = new();
 
+    /// <summary>
+    /// Configured DirectInput devices. Older configurations use <see cref="Device"/> and are
+    /// normalized to a single primary profile when loaded.
+    /// </summary>
+    public List<DeviceProfile> Devices { get; init; } = [];
+
     public PollingOptions Polling { get; init; } = new();
 
     public SafetyOptions Safety { get; init; } = new();
@@ -20,7 +26,66 @@ public sealed class CompanionConfig
 
     public List<ButtonBinding> Bindings { get; init; } = [];
 
+    public List<PromptPickerConfig> PromptPickers { get; init; } = [];
+
     public static CompanionConfig CreateSafeDefault() => new();
+}
+
+public sealed class DeviceProfile
+{
+    public required string Id { get; init; }
+
+    public required string DisplayName { get; init; }
+
+    public DeviceSelector Selector { get; init; } = new();
+
+    public Dictionary<string, int> BankSelectors { get; init; } = [];
+
+    /// <summary>Known map template ID, such as "cm3" or "alpha-warbrd".</summary>
+    public string? ButtonMapTemplate { get; init; }
+
+    /// <summary>Device-qualified control that shows this device's map while held.</summary>
+    public DeviceControlReference? ButtonMapHoldControl { get; init; }
+
+    /// <summary>Legacy same-device hold button; normalized into <see cref="ButtonMapHoldControl"/>.</summary>
+    public int? ButtonMapHoldButton { get; init; }
+}
+
+public sealed class PromptPickerConfig
+{
+    public required string Id { get; init; }
+
+    public required string Name { get; init; }
+
+    public List<string> Prompts { get; init; } = [];
+
+    /// <summary>Per-prompt flags, aligned by index with <see cref="Prompts"/>.</summary>
+    public List<bool> SubmitAfterInsert { get; init; } = [];
+
+    /// <summary>Adds a final picker item that closes the overlay without inserting text.</summary>
+    public bool IncludeExitOption { get; init; }
+
+    public int DefaultPromptIndex { get; init; }
+
+    public PromptPickerControls Controls { get; init; } = new();
+}
+
+public sealed class PromptPickerControls
+{
+    public DeviceControlReference Up { get; init; } = new();
+
+    public DeviceControlReference Down { get; init; } = new();
+
+    public DeviceControlReference Insert { get; init; } = new();
+}
+
+public sealed class DeviceControlReference
+{
+    public string DeviceId { get; init; } = string.Empty;
+
+    public string Bank { get; init; } = CompanionConfig.AlwaysBank;
+
+    public int Button { get; init; }
 }
 
 public sealed class DeviceSelector
@@ -72,6 +137,9 @@ public sealed class ButtonBinding
     public const int MaximumWheelNotches = 100;
 
     public required string Name { get; init; }
+
+    /// <summary>Device profile ID. Empty legacy values target the primary device.</summary>
+    public string? DeviceId { get; init; }
 
     public required string Bank { get; init; }
 

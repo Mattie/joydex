@@ -12,7 +12,8 @@ public enum Cm3ModeDialProfile
 public sealed record StarterProfile(
     Cm3ModeDialProfile DialProfile,
     IReadOnlyDictionary<string, int> BankSelectors,
-    IReadOnlyList<ButtonBinding> Bindings);
+    IReadOnlyList<ButtonBinding> Bindings,
+    IReadOnlyList<PromptPickerConfig> PromptPickers);
 
 public static class CodexMicroStarterProfile
 {
@@ -20,7 +21,7 @@ public static class CodexMicroStarterProfile
         ["agent-1", "agent-2", "agent-3", "agent-4", "agent-5", "agent-6"];
 
     private static readonly string[] CommandActions =
-        ["fast-mode", "approve", "reject", "fork-task", "push-to-talk", "submit"];
+        ["reject", "fork-task", "plan-mode", "approve", "open", "submit"];
 
     private static readonly string[] WorkflowActions =
         ["plan-mode", "navigate-back", "toggle-sidebar", "navigate-forward", "new-task", "open-skills"];
@@ -58,16 +59,15 @@ public static class CodexMicroStarterProfile
             AddBank(bindings, CompanionConfig.AlwaysBank, 68, AgentActions, "M4");
         }
 
-        AddBinding(bindings, "Reasoning clockwise", CompanionConfig.AlwaysBank, 52, "reasoning-up");
-        AddBinding(bindings, "Reasoning counter-clockwise", CompanionConfig.AlwaysBank, 51, "reasoning-down");
         AddBinding(bindings, "Hold-to-talk button", CompanionConfig.AlwaysBank, 53, "push-to-talk");
         AddBinding(bindings, "Hold-to-talk button release", CompanionConfig.AlwaysBank, 53, "push-to-talk", "release");
         AddBinding(bindings, "T4 - Hold-to-talk", CompanionConfig.AlwaysBank, 37, "push-to-talk");
         AddBinding(bindings, "T4 - Hold-to-talk release", CompanionConfig.AlwaysBank, 37, "push-to-talk", "release");
-        AddBinding(bindings, "T3 - Show button map", CompanionConfig.AlwaysBank, 36, "button-map");
-        AddBinding(bindings, "T3 - Hide button map", CompanionConfig.AlwaysBank, 36, "button-map", "release");
         AddBinding(bindings, "E2 right - Scroll down", CompanionConfig.AlwaysBank, 54, "scroll-down");
         AddBinding(bindings, "E2 left - Scroll up", CompanionConfig.AlwaysBank, 55, "scroll-up");
+        AddBinding(bindings, "E1 push - Fast mode", CompanionConfig.AlwaysBank, 50, "fast-mode");
+        AddBinding(bindings, "E1 counterclockwise - Reasoning down", CompanionConfig.AlwaysBank, 51, "reasoning-down");
+        AddBinding(bindings, "E1 clockwise - Reasoning up", CompanionConfig.AlwaysBank, 52, "reasoning-up");
         AddBinding(bindings, "T7 up - Home", CompanionConfig.AlwaysBank, 48, "home");
         AddBinding(bindings, "T7 down - End", CompanionConfig.AlwaysBank, 49, "end");
         AddBinding(bindings, "Joystick up - Plan", CompanionConfig.AlwaysBank, 9, "plan-mode");
@@ -75,7 +75,11 @@ public static class CodexMicroStarterProfile
         AddBinding(bindings, "Joystick down - Sidebar", CompanionConfig.AlwaysBank, 11, "toggle-sidebar");
         AddBinding(bindings, "Joystick left - Back", CompanionConfig.AlwaysBank, 12, "navigate-back");
 
-        return new StarterProfile(dialProfile, selectors, bindings);
+        return new StarterProfile(
+            dialProfile,
+            selectors,
+            bindings,
+            [CompanionConfigNormalizer.CreateDefaultPicker(CompanionConfigNormalizer.PrimaryDeviceId)]);
     }
 
     private static void AddBank(
@@ -117,6 +121,7 @@ public static class CodexMicroStarterProfile
         bindings.Add(new ButtonBinding
         {
             Name = name,
+            DeviceId = CompanionConfigNormalizer.PrimaryDeviceId,
             Bank = bank,
             Button = button,
             Trigger = trigger,

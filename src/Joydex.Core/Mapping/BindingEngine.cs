@@ -10,11 +10,21 @@ public sealed record ActionRequest(
     string Trigger,
     CodexAction Action,
     DateTimeOffset RequestedAt,
-    int WheelNotches = ButtonBinding.DefaultWheelNotches);
+    int WheelNotches = ButtonBinding.DefaultWheelNotches,
+    string DeviceId = CompanionConfigNormalizer.PrimaryDeviceId);
 
-public sealed class BindingEngine(CompanionConfig config)
+public sealed class BindingEngine
 {
+    private readonly CompanionConfig _config;
+    private readonly string _deviceId;
     private readonly Dictionary<string, DateTimeOffset> _lastDispatch = new(StringComparer.OrdinalIgnoreCase);
+
+    public BindingEngine(CompanionConfig config, string? deviceId = null)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        _config = CompanionConfigNormalizer.Normalize(config);
+        _deviceId = deviceId ?? _config.Devices[0].Id;
+    }
 
     public IReadOnlyList<ActionRequest> Resolve(
         JoystickSnapshot snapshot,
@@ -41,7 +51,9 @@ public sealed class BindingEngine(CompanionConfig config)
             }
 
             var button = inputEvent.DisplayIndex;
-            var bindings = config.Bindings.Where(candidate =>
+            var bindings = _config.Bindings.Where(candidate =>
+                string.Equals(candidate.DeviceId, _deviceId, StringComparison.OrdinalIgnoreCase)
+                &&
                 (string.Equals(candidate.Bank, CompanionConfig.AlwaysBank, StringComparison.OrdinalIgnoreCase)
                     || activeBank is not null
                     && string.Equals(candidate.Bank, activeBank, StringComparison.OrdinalIgnoreCase))
@@ -60,7 +72,7 @@ public sealed class BindingEngine(CompanionConfig config)
                     or CodexAction.ScrollUp
                     or CodexAction.ScrollDown
                     ? 0
-                    : config.Polling.ActionCooldownMs;
+                    : _config.Polling.ActionCooldownMs;
                 if (_lastDispatch.TryGetValue(binding.Name, out var last)
                     && now - last < TimeSpan.FromMilliseconds(cooldownMs))
                 {
@@ -75,7 +87,8 @@ public sealed class BindingEngine(CompanionConfig config)
                     trigger,
                     action,
                     now,
-                    binding.WheelNotches));
+                    binding.WheelNotches,
+                    _deviceId));
             }
         }
 
@@ -86,7 +99,10 @@ public sealed class BindingEngine(CompanionConfig config)
 
     public string? ResolveActiveBank(JoystickSnapshot snapshot)
     {
-        var activeBanks = config.BankSelectors
+        var selectors = _config.Devices.FirstOrDefault(device =>
+            string.Equals(device.Id, _deviceId, StringComparison.OrdinalIgnoreCase))?.BankSelectors
+            ?? new Dictionary<string, int>();
+        var activeBanks = selectors
             .Where(pair => pair.Value > 0
                 && pair.Value <= snapshot.Buttons.Length
                 && snapshot.Buttons[pair.Value - 1])

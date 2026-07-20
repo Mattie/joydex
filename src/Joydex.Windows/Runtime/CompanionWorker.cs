@@ -16,9 +16,18 @@ public sealed class CompanionWorker(
     IInjectedKeyStateLifecycle? keyStateLifecycle = null,
     TaskAlertInputInterceptor? taskAlertInputInterceptor = null,
     ITaskAlertNavigator? taskAlertNavigator = null,
-    Func<int, string, bool>? acknowledgeTerminalTaskAlert = null) : IAsyncDisposable
+    Func<int, string, bool>? acknowledgeTerminalTaskAlert = null,
+    string? deviceId = null,
+    Func<PromptPickerRequest, CancellationToken, Task>? promptPickerHandler = null,
+    Action<ButtonMapVisibilityRequest>? buttonMapHandler = null) : IAsyncDisposable
 {
-    private readonly CompanionEngine _engine = new(config, taskAlertInputInterceptor);
+    private readonly CompanionEngine _engine = new(config, taskAlertInputInterceptor, deviceId);
+    private readonly DeviceSelector _deviceSelector = CompanionConfigNormalizer.Normalize(config).Devices
+        .First(device => string.Equals(
+            device.Id,
+            deviceId ?? CompanionConfigNormalizer.Normalize(config).Devices[0].Id,
+            StringComparison.OrdinalIgnoreCase))
+        .Selector;
     private readonly IInjectedKeyStateLifecycle _keyStateLifecycle = keyStateLifecycle ?? executor;
     private CancellationTokenSource? _cancellation;
     private Task? _runTask;
@@ -124,7 +133,7 @@ public sealed class CompanionWorker(
         {
             if (source.ConnectedDevice is null)
             {
-                if (source.TryConnect(config.Device, out var connectionMessage))
+                if (source.TryConnect(_deviceSelector, out var connectionMessage))
                 {
                     _engine.Reset();
                     log(connectionMessage);
@@ -142,7 +151,7 @@ public sealed class CompanionWorker(
                 }
                 else
                 {
-                    SetStatus("Waiting for throttle");
+                    SetStatus("Waiting for controller");
                     await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
@@ -156,7 +165,7 @@ public sealed class CompanionWorker(
                 }
 
                 _engine.Reset();
-                SetStatus("Throttle disconnected");
+                SetStatus("Controller disconnected");
                 await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -174,8 +183,36 @@ public sealed class CompanionWorker(
                     };
                     if (trigger is not null)
                     {
-                        log($"INPUT {trigger} from throttle/button {inputEvent.DisplayIndex}");
+                        log($"INPUT {trigger} from controller/button {inputEvent.DisplayIndex}");
                     }
+                }
+            }
+
+            if (promptPickerHandler is not null)
+            {
+                foreach (var request in result.PromptPickerRequests)
+                {
+                    try
+                    {
+                        await promptPickerHandler(request, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        log($"Prompt picker {request.PickerId} {request.Gesture} failed: {exception.Message}");
+                        SetStatus("Prompt picker failed; see log");
+                    }
+                }
+            }
+
+            if (buttonMapHandler is not null)
+            {
+                foreach (var request in result.ButtonMapVisibilityRequests)
+                {
+                    buttonMapHandler(request);
                 }
             }
 

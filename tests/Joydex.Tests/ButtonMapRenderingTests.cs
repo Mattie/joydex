@@ -15,6 +15,7 @@ public sealed class ButtonMapRenderingTests
             [79] = new(3053, 2188, 209, 110),
             [53] = new(1366, 2327, 388, 59),
             [49] = new(160, 2285, 375, 65),
+            [34] = new(2040, 2003, 375, 65),
         };
 
     [Fact]
@@ -69,6 +70,16 @@ public sealed class ButtonMapRenderingTests
 
         Assert.NotNull(loaded);
         Assert.Equal(new Size(3300, 2550), loaded.Size);
+    }
+
+    [Fact]
+    public void AlphaWarbrdTemplateIsPackagedAtItsAuditedSize()
+    {
+        var packagedPath = Path.Combine(AppContext.BaseDirectory, "Assets", "alpha-warbrd-button-map.png");
+
+        Assert.True(File.Exists(packagedPath), $"Missing packaged Alpha/WarBRD map at {packagedPath}.");
+        using var loaded = new Bitmap(packagedPath);
+        Assert.Equal(new Size(1180, 748), loaded.Size);
     }
 
     [Fact]

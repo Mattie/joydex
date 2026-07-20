@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Joydex.Core.TaskAlerts;
 
 return HookRelay.Run(args);
 
@@ -23,11 +24,22 @@ internal static partial class HookRelay
             turnId = input?.TurnId;
             if (!string.IsNullOrWhiteSpace(sessionId) && IsSupportedEvent(eventName))
             {
+                var relayEvent = MapRelayEvent(eventName!, input?.ToolName);
+                if (relayEvent is null)
+                {
+                    return 0;
+                }
+
                 TrySend(
                     GetPipeName(args),
-                    eventName!,
+                    relayEvent,
                     sessionId,
                     turnId,
+                    AttentionCorrelation.Create(
+                        sessionId,
+                        turnId,
+                        input?.ToolName,
+                        input?.ToolInput ?? default),
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             }
         }
@@ -49,6 +61,7 @@ internal static partial class HookRelay
         string eventName,
         string sessionId,
         string? turnId,
+        string? attentionKey,
         long receivedAtUnixMs)
     {
         try
@@ -83,6 +96,15 @@ internal static partial class HookRelay
                 writer.WriteString("turnId", turnId);
             }
 
+            if (attentionKey is null)
+            {
+                writer.WriteNull("attentionKey");
+            }
+            else
+            {
+                writer.WriteString("attentionKey", attentionKey);
+            }
+
             writer.WriteNumber("receivedAtUnixMs", receivedAtUnixMs);
             writer.WriteEndObject();
             writer.Flush();
@@ -107,7 +129,16 @@ internal static partial class HookRelay
     }
 
     private static bool IsSupportedEvent(string? value) => value is
-        "UserPromptSubmit" or "PermissionRequest" or "Stop";
+        "UserPromptSubmit" or "PermissionRequest" or "PreToolUse" or "PostToolUse" or "Stop";
+
+    private static string? MapRelayEvent(string eventName, string? toolName) => eventName switch
+    {
+        "PreToolUse" when string.Equals(toolName, "request_user_input", StringComparison.Ordinal) =>
+            "UserInputRequest",
+        "PreToolUse" => null,
+        "PostToolUse" => "ToolCompleted",
+        _ => eventName,
+    };
 
     [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     private static partial SafeFileHandle CreateFile(
@@ -123,7 +154,9 @@ internal static partial class HookRelay
 internal sealed record HookInput(
     [property: JsonPropertyName("hook_event_name")] string? HookEventName,
     [property: JsonPropertyName("session_id")] string? SessionId,
-    [property: JsonPropertyName("turn_id")] string? TurnId);
+    [property: JsonPropertyName("turn_id")] string? TurnId,
+    [property: JsonPropertyName("tool_name")] string? ToolName,
+    [property: JsonPropertyName("tool_input")] JsonElement ToolInput);
 
 [JsonSerializable(typeof(HookInput))]
 internal sealed partial class HookJsonContext : JsonSerializerContext;

@@ -233,13 +233,18 @@ public sealed class LinkToolLedServiceTests
                 rule.GetProperty("comment").GetString() == "Joydex primary M2 B1 running"
                 && rule.GetProperty("argument").GetString() == "JoydexPrimaryB1State"
                 && rule.GetProperty("primaryValue").GetString() == "1"
-                && rule.GetProperty("colorOne").GetString() == "16777215"
+                && rule.GetProperty("colorOne").GetString() == "5592405"
                 && rule.GetProperty("priority").GetInt32() == 100
                 && HasCondition(rule, "JoydexBank", "2"));
             Assert.Contains(rules, rule =>
                 rule.GetProperty("comment").GetString() == "Joydex overflow M1 B3 running"
                 && rule.GetProperty("argument").GetString() == "JoydexOverflowB3State"
+                && rule.GetProperty("colorOne").GetString() == "5592405"
                 && HasCondition(rule, "JoydexBank", "1"));
+            Assert.Contains(rules, rule =>
+                rule.GetProperty("comment").GetString() == "Joydex Alpha running"
+                && rule.GetProperty("argument").GetString() == "JoydexAlphaState"
+                && rule.GetProperty("colorOne").GetString() == "5592405");
             Assert.DoesNotContain(rules, rule =>
                 rule.GetProperty("comment").GetString()?.Contains("M5", StringComparison.Ordinal) == true
                 && rule.GetProperty("priority").GetInt32() == 100);

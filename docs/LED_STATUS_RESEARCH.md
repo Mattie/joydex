@@ -62,43 +62,47 @@ The master enabled flag and fallback bank live in `task-alerts.json` beside the 
 
 ## Codex lifecycle hooks
 
-Joydex installs only three handlers:
+Joydex installs five handlers:
 
 | Hook | State |
 | --- | --- |
-| `UserPromptSubmit` | Running, steady white `FF FF FF` |
-| `PermissionRequest` | Approval needed, steady yellow `FF FF 00` |
+| `UserPromptSubmit` | Running, steady dim gray `55 55 55` |
+| `PermissionRequest` | Approval or safety decision observed, steady yellow `FF FF 00` |
+| `PreToolUse` matching `^request_user_input$` | Explicit question or plan feedback needed, steady yellow `FF FF 00` |
+| `PostToolUse` matching approval-capable tools | Matching attention request resolved; returns to running when none remain |
 | `Stop` | Completed after a one-second continuation grace, steady low green `00 40 00` |
 
 Red `FF 00 00` is reserved for a future fault source. Hooks do not reliably distinguish a failed task from a completed one, so the current hook path never invents a failure state.
 
 The one-second Stop grace prevents a green flash when another handler or automatic continuation starts a new turn. A later running or approval event for that session cancels the pending completion.
 
+Permission and explicit-input events carry a SHA-256 attention key derived from the session, turn, tool name, and canonical tool input. Joydex counts pending keys per task. A successful `PostToolUse` removes only its matching key, so an unrelated parallel tool cannot clear a real approval. The completion matcher covers `Bash`, `apply_patch`, `request_user_input`, and `mcp__*`; other tool families keep the existing fallback. Current Codex builds skip command hooks marked `async`, so this completion handler is synchronous and narrowly matched to limit added tool latency. If no key is available, the tool fails, or the action is declined, the task keeps the previous yellow-until-`Stop` behavior.
+
 Running assignments expire after 12 hours. Approval, completed, and fault assignments expire after 24 hours. These leases recover a slot after a lost event without creating a short timer that interrupts real work.
 
-`SessionStart` and `PostToolUse` were left out. They add relay launches without supplying a state needed by this design.
+`SessionStart` remains excluded because it does not supply a state needed by this design.
 
 ### Installed Windows Desktop compatibility finding
 
 The earlier `OpenAI.Codex 26.715.2305.0` package bundled `codex-cli 0.145.0-alpha.18`. Its app-server hook catalog reported all three Joydex handlers as enabled and trusted, with no discovery warnings or errors, but a temporary relay probe saw `Stop` launch while `UserPromptSubmit` never reached the relay. Direct invocation through the exact Windows `%COMSPEC% /C` command path succeeded, which isolated the failure to Codex's hook launch path. This matched the upstream Windows Desktop regression reported in [openai/codex#33564](https://github.com/openai/codex/issues/33564).
 
-After updating to `OpenAI.Codex 26.715.3651.0`, the same metadata-only probe captured two consecutive real `UserPromptSubmit` invocations with session and turn fields present, and both named-pipe writes reached Joydex. The handler's outer timeout remained one second throughout this canary. The updated package still bundles `codex-cli 0.145.0-alpha.18`, so the observed fix is associated with the Windows Desktop package rather than a CLI version change. The supported three-hook design now works without a `PreToolUse` fallback.
+After updating to `OpenAI.Codex 26.715.3651.0`, the same metadata-only probe captured two consecutive real `UserPromptSubmit` invocations with session and turn fields present, and both named-pipe writes reached Joydex. The handler's outer timeout remained one second throughout this canary. The updated package still bundles `codex-cli 0.145.0-alpha.18`, so the observed fix is associated with the Windows Desktop package rather than a CLI version change. The then-current three-hook design worked without a `PreToolUse` fallback.
 
 ### Relay protocol
 
-`Joydex.HookRelay.exe` is a NativeAOT `win-x64` executable. Its source-generated streaming parser materializes only `hook_event_name`, `session_id`, and `turn_id`. Prompt text, tool input, transcript paths, and assistant messages are skipped instead of being retained in the relay.
+`Joydex.HookRelay.exe` is a NativeAOT `win-x64` executable. Its source-generated parser reads `hook_event_name`, `session_id`, `turn_id`, `tool_name`, and `tool_input`. Tool input is canonicalized in memory only long enough to calculate the attention key. Raw commands, patches, prompts, tool responses, transcript paths, and assistant messages are never sent to Joydex or retained by the relay.
 
 For supported events it writes one compact JSON object to `Joydex.TaskAlerts.v1`:
 
 ```json
-{"event":"PermissionRequest","sessionId":"...","turnId":"...","receivedAtUnixMs":1784300000000}
+{"event":"PermissionRequest","sessionId":"...","turnId":"...","attentionKey":"A SHA-256 hex digest","receivedAtUnixMs":1784300000000}
 ```
 
-The relay makes one immediate named-pipe open inside a 20 ms connection budget and never retries. It uses `CreateFileW` directly because `NamedPipeClientStream.Connect(0)` still waits for a Windows pipe-default timeout when every instance is busy. A missing or busy Joydex instance is a successful no-op. `Stop` writes the protocol-required `{}` response to stdout. The other two hooks write nothing. Every path exits with code zero.
+The relay makes one immediate named-pipe open inside a 20 ms connection budget and never retries. It uses `CreateFileW` directly because `NamedPipeClientStream.Connect(0)` still waits for a Windows pipe-default timeout when every instance is busy. A missing or busy Joydex instance is a successful no-op. `Stop` writes the protocol-required `{}` response to stdout. The other hooks write nothing. Every path exits with code zero.
 
 The long-running receiver uses `PipeOptions.CurrentUserOnly`, accepts simultaneous pipe clients, and rejects messages over 16 KiB. It places validated events onto one reducer queue. It does not wait for routing or VIRPIL output.
 
-Normal-payload benchmarks produced:
+The original lifecycle-payload benchmarks produced:
 
 | Receiver state | Samples | p50 | p95 | Maximum |
 | --- | ---: | ---: | ---: | ---: |
@@ -108,13 +112,15 @@ Normal-payload benchmarks produced:
 
 The required gate is p95 at most 25 ms and maximum at most 75 ms.
 
+The benchmark now defaults to an 8 KiB correlated `PostToolUse` payload and accepts `-PayloadKind Lifecycle` for a no-hash baseline. A 2026-07-18 comparison while total CPU was sampled at 88-97% was intentionally treated as inconclusive: both the deployed relay and the staged no-hash lifecycle path missed the historical p95 gate. In the staged build, correlation added about 5 ms to median present-receiver latency, and every measured invocation remained below 152 ms. The five-second hook timeout provides substantial headroom, but the strict latency gate still needs a quiescent-host rerun before using those loaded measurements as a new baseline.
+
 Hooks were not installed during that benchmark.
 
 ### Installation and removal
 
 The Task Alerts window has `Install / Repair hooks` and `Remove hooks` controls. Installation appends one marked Joydex handler to each supported event. Existing ErrorHelp, request-timer, and unknown handlers remain byte-for-byte equivalent JSON values, although formatting may change when the file is rewritten.
 
-Repair removes stale handlers carrying Joydex's marker and writes the current absolute relay path to both `command` and Codex's Windows-specific `commandWindows` field. Paths without whitespace are left unquoted so `%COMSPEC% /C` receives the executable name directly. Removal deletes only the marked handlers. The outer Codex timeout is one second; the relay's own connection deadline is much shorter.
+Repair removes stale handlers carrying Joydex's marker and writes the current absolute relay path to both `command` and Codex's Windows-specific `commandWindows` field. Paths without whitespace are left unquoted so `%COMSPEC% /C` receives the executable name directly. Removal deletes only the marked handlers. The outer Codex timeout is five seconds to tolerate transient process-launch contention; the relay's own connection deadline is much shorter.
 
 Codex may ask the operator to trust the new handler definitions. Joydex does not edit Codex's trust state.
 

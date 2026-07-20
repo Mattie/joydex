@@ -118,6 +118,47 @@ public sealed class KeyboardInjectionInteropTests
     }
 
     [Fact]
+    public async Task TextSenderUsesUnicodeAndShiftEnterForMultilineText()
+    {
+        var sink = new RecordingSink();
+        var sender = new WindowsInputSender(sink, new RecordingDelay());
+
+        await sender.SendTextAsync("A\U0001F600\nB", CancellationToken.None);
+
+        Assert.Equal(3, sink.Batches.Count);
+        Assert.Collection(
+            sink.Batches[0],
+            input => AssertUnicodeEvent(input, WindowsInputEventKind.UnicodeKeyDown, 'A'),
+            input => AssertUnicodeEvent(input, WindowsInputEventKind.UnicodeKeyUp, 'A'),
+            input => AssertUnicodeEvent(input, WindowsInputEventKind.UnicodeKeyDown, '\uD83D'),
+            input => AssertUnicodeEvent(input, WindowsInputEventKind.UnicodeKeyUp, '\uD83D'),
+            input => AssertUnicodeEvent(input, WindowsInputEventKind.UnicodeKeyDown, '\uDE00'),
+            input => AssertUnicodeEvent(input, WindowsInputEventKind.UnicodeKeyUp, '\uDE00'));
+        Assert.Collection(
+            sink.Batches[1],
+            input => AssertEvent(input, WindowsInputEventKind.KeyDown, 0x10),
+            input => AssertEvent(input, WindowsInputEventKind.KeyDown, 0x0D),
+            input => AssertEvent(input, WindowsInputEventKind.KeyUp, 0x0D),
+            input => AssertEvent(input, WindowsInputEventKind.KeyUp, 0x10));
+        Assert.DoesNotContain(
+            sink.Batches.SelectMany(batch => batch),
+            input => input.VirtualKey == 0x0D && input.Kind == WindowsInputEventKind.UnicodeKeyDown);
+    }
+
+    [Fact]
+    public async Task TextSenderStopsWhenAUnicodeBatchFails()
+    {
+        var sink = new FailingSink(failOnCall: 2);
+        var sender = new WindowsInputSender(sink, new RecordingDelay());
+        var text = new string('x', 257);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => sender.SendTextAsync(text, CancellationToken.None));
+
+        Assert.Equal(2, sink.CallCount);
+    }
+
+    [Fact]
     public void MouseWheelInputUsesTheWindowsWheelFlagAndSignedDelta()
     {
         var inputType = typeof(NativeWindowsInputSink).GetNestedType("Input", BindingFlags.NonPublic);
@@ -147,6 +188,12 @@ public sealed class KeyboardInjectionInteropTests
         Assert.Equal(virtualKey, input.VirtualKey);
     }
 
+    private static void AssertUnicodeEvent(WindowsInputEvent input, WindowsInputEventKind kind, char scanCode)
+    {
+        Assert.Equal(kind, input.Kind);
+        Assert.Equal((ushort)scanCode, input.ScanCode);
+    }
+
     private sealed class RecordingSink : IWindowsInputSink
     {
         public List<WindowsInputEvent[]> Batches { get; } = [];
@@ -162,6 +209,20 @@ public sealed class KeyboardInjectionInteropTests
         {
             Delays.Add(milliseconds);
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FailingSink(int failOnCall) : IWindowsInputSink
+    {
+        public int CallCount { get; private set; }
+
+        public void Send(IReadOnlyList<WindowsInputEvent> events)
+        {
+            CallCount++;
+            if (CallCount == failOnCall)
+            {
+                throw new InvalidOperationException("Injected input failure.");
+            }
         }
     }
 }

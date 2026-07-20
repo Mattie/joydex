@@ -9,29 +9,35 @@ internal sealed class ConfigurationForm : Form
 {
     private readonly string _configPath;
     private readonly string _windowStatePath;
+    private readonly IntPtr _cooperativeWindowHandle;
     private readonly CompanionConfig _originalConfig;
     private readonly DirectInputJoystickSource _source;
     private readonly InputEventDetector _detector;
     private readonly System.Windows.Forms.Timer _pollTimer;
     private readonly bool _documentationMode;
     private readonly ComboBox _deviceCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly Label _connectionLabel = new() { AutoSize = true, Text = "Looking for throttle..." };
+    private readonly Label _connectionLabel = new() { AutoSize = true, Text = "Looking for controller..." };
     private readonly Label _inputLabel = new() { AutoSize = true, Text = "Held buttons: none" };
     private readonly Label _captureLabel = new() { AutoSize = true, ForeColor = Color.DarkBlue, Text = "Select a row and choose Capture." };
     private readonly DataGridView _bankGrid = CreateGrid();
     private readonly DataGridView _bindingGrid = CreateGrid();
+    private readonly DataGridView _buttonMapGrid = CreateGrid();
     private readonly CheckBox _dryRunCheckBox = new() { AutoSize = true, Text = "Dry run (log actions without sending them)" };
     private readonly TextBox _simulatorProcessesTextBox = new() { Dock = DockStyle.Fill };
     private readonly ComboBox _openTargetCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Button _captureBankButton = new() { AutoSize = true, Text = "Capture selector" };
     private readonly Button _captureBindingButton = new() { AutoSize = true, Text = "Capture action button" };
+    private readonly Button _captureMapHoldButton = new() { AutoSize = true, Text = "Capture hold-to-show" };
     private readonly Button _cancelCaptureButton = new() { AutoSize = true, Text = "Cancel capture", Visible = false };
     private readonly Button _loadDefaultsButton = new() { AutoSize = true, Text = "Load Codex Micro defaults" };
+    private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
     private CaptureTarget? _captureTarget;
     private JoystickSnapshot? _lastSnapshot;
     private DateTimeOffset _captureReadyAt;
     private DateTimeOffset _nextReconnectAt;
     private string? _loadWarning;
+    private DirectInputDeviceInfo? _captureReturnDevice;
+    private PromptPickerEditorForm? _promptPickerEditor;
 
     public ConfigurationForm(
         string configPath,
@@ -41,6 +47,7 @@ internal sealed class ConfigurationForm : Form
     {
         _configPath = configPath;
         _windowStatePath = windowStatePath;
+        _cooperativeWindowHandle = cooperativeWindowHandle;
         _documentationMode = documentationMode;
         try
         {
@@ -105,6 +112,8 @@ internal sealed class ConfigurationForm : Form
         _pollTimer.Stop();
         _pollTimer.Dispose();
         _source.Dispose();
+        _promptPickerEditor?.Close();
+        _promptPickerEditor?.Dispose();
         base.OnFormClosed(eventArgs);
     }
 
@@ -140,16 +149,38 @@ internal sealed class ConfigurationForm : Form
         {
             ColumnCount = 1,
             Dock = DockStyle.Fill,
-            Padding = new Padding(12),
-            RowCount = 6,
+            RowCount = 2,
         };
-        main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
-        main.RowStyles.Add(new RowStyle(SizeType.Percent, 34));
-        main.RowStyles.Add(new RowStyle(SizeType.Percent, 66));
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 140));
+        main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         main.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
 
+        _tabs.TabPages.Add(BuildBindingsPage());
+        _tabs.TabPages.Add(BuildPromptPickersPage());
+        _tabs.TabPages.Add(BuildButtonMapsPage());
+        _tabs.TabPages.Add(BuildGeneralPage());
+        main.Controls.Add(_tabs, 0, 0);
+        main.Controls.Add(BuildFooter(), 0, 1);
+        var outer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12) };
+        outer.Controls.Add(main);
+        Controls.Add(outer);
+    }
+
+    internal void SelectTabForDocumentation(string tabText)
+    {
+        var tab = _tabs.TabPages.Cast<TabPage>()
+            .FirstOrDefault(candidate => string.Equals(candidate.Text, tabText, StringComparison.Ordinal));
+        if (tab is not null)
+        {
+            _tabs.SelectedTab = tab;
+        }
+    }
+
+    private TabPage BuildBindingsPage()
+    {
+        var page = new TabPage("Bindings") { Padding = new Padding(10) };
+        var layout = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Fill, RowCount = 2 };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var introduction = new FlowLayoutPanel
         {
             AutoSize = true,
@@ -166,26 +197,88 @@ internal sealed class ConfigurationForm : Form
         });
         _loadDefaultsButton.Click += (_, _) => LoadStarterProfile();
         introduction.Controls.Add(_loadDefaultsButton);
-        main.Controls.Add(introduction, 0, 0);
-        main.Controls.Add(BuildDeviceGroup(), 0, 1);
-        main.Controls.Add(BuildBankGroup(), 0, 2);
-        main.Controls.Add(BuildBindingGroup(), 0, 3);
-        main.Controls.Add(BuildSafetyGroup(), 0, 4);
-        main.Controls.Add(BuildFooter(), 0, 5);
-        Controls.Add(main);
+        layout.Controls.Add(introduction, 0, 0);
+        layout.Controls.Add(BuildBindingGroup(), 0, 1);
+        page.Controls.Add(layout);
+        return page;
+    }
+
+    private TabPage BuildPromptPickersPage()
+    {
+        var page = new TabPage("Prompt Pickers") { Padding = new Padding(2) };
+        _promptPickerEditor = new PromptPickerEditorForm(_configPath, _cooperativeWindowHandle, pickerOnly: true);
+        page.Controls.Add(_promptPickerEditor.EmbeddedPickerPage);
+        return page;
+    }
+
+    private TabPage BuildButtonMapsPage()
+    {
+        var page = new TabPage("Button Maps") { Padding = new Padding(10) };
+        var layout = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Fill, RowCount = 2 };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.Controls.Add(new Label
+        {
+            AutoSize = true,
+            Padding = new Padding(0, 0, 0, 8),
+            Text = "Choose a map template and optionally capture a physical button that shows the map while held.",
+        }, 0, 0);
+        layout.Controls.Add(BuildButtonMapGroup(), 0, 1);
+        page.Controls.Add(layout);
+        return page;
+    }
+
+    private TabPage BuildGeneralPage()
+    {
+        var page = new TabPage("General") { Padding = new Padding(10) };
+        var layout = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Fill, RowCount = 4 };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 125));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.Controls.Add(BuildDeviceGroup(), 0, 0);
+        layout.Controls.Add(BuildSafetyGroup(), 0, 1);
+
+        var bankGroup = BuildBankGroup();
+        bankGroup.Visible = _originalConfig.BankSelectors.Count > 0;
+        var advanced = new Button
+        {
+            AutoSize = true,
+            FlatStyle = FlatStyle.Flat,
+            Margin = new Padding(0, 12, 0, 6),
+            Text = bankGroup.Visible ? "▼ Advanced" : "▶ Advanced",
+        };
+        advanced.Click += (_, _) =>
+        {
+            bankGroup.Visible = !bankGroup.Visible;
+            advanced.Text = bankGroup.Visible ? "▼ Advanced" : "▶ Advanced";
+        };
+        var advancedBar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
+        advancedBar.Controls.Add(advanced);
+        advancedBar.Controls.Add(new Label
+        {
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(12, 20, 0, 0),
+            Text = "Software banks are only needed when one controller reuses the same logical buttons in several hardware modes.",
+        });
+        layout.Controls.Add(advancedBar, 0, 2);
+        layout.Controls.Add(bankGroup, 0, 3);
+        page.Controls.Add(layout);
+        return page;
     }
 
     private Control BuildDeviceGroup()
     {
-        var group = new GroupBox { Dock = DockStyle.Fill, Text = "Throttle" };
+        var group = new GroupBox { Dock = DockStyle.Fill, Text = "Controller" };
         var layout = new TableLayoutPanel
         {
             ColumnCount = 2,
             Dock = DockStyle.Fill,
             Padding = new Padding(8, 4, 8, 4),
-            RowCount = 4,
+            RowCount = 3,
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.Controls.Add(new Label { Anchor = AnchorStyles.Left, AutoSize = true, Text = "Device" }, 0, 0);
         layout.Controls.Add(_deviceCombo, 1, 0);
@@ -193,12 +286,6 @@ internal sealed class ConfigurationForm : Form
         layout.Controls.Add(_connectionLabel, 1, 1);
         layout.Controls.Add(new Label { Anchor = AnchorStyles.Left, AutoSize = true, Text = "Live input" }, 0, 2);
         layout.Controls.Add(_inputLabel, 1, 2);
-        layout.Controls.Add(new Label { Anchor = AnchorStyles.Left, AutoSize = true, Text = "Capture" }, 0, 3);
-        var captureStatus = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false };
-        captureStatus.Controls.Add(_captureLabel);
-        _cancelCaptureButton.Click += (_, _) => CancelCapture();
-        captureStatus.Controls.Add(_cancelCaptureButton);
-        layout.Controls.Add(captureStatus, 1, 3);
         group.Controls.Add(layout);
         return group;
     }
@@ -245,6 +332,15 @@ internal sealed class ConfigurationForm : Form
             FillWeight = 24,
             HeaderText = "Label",
             Name = "BindingName",
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+        });
+        _bindingGrid.Columns.Add(new DataGridViewComboBoxColumn
+        {
+            DataSource = _originalConfig.Devices.Select(device => device.Id).ToArray(),
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            FillWeight = 15,
+            HeaderText = "Device",
+            Name = "BindingDevice",
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
         _bindingGrid.Columns.Add(new DataGridViewTextBoxColumn
@@ -325,6 +421,7 @@ internal sealed class ConfigurationForm : Form
                 .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
             var index = _bindingGrid.Rows.Add(
                 $"binding-{_bindingGrid.Rows.Count + 1}",
+                _originalConfig.Devices[0].Id,
                 bank,
                 null,
                 "press",
@@ -335,7 +432,13 @@ internal sealed class ConfigurationForm : Form
         };
         var remove = new Button { AutoSize = true, Text = "Remove binding" };
         remove.Click += (_, _) => RemoveCurrentRow(_bindingGrid);
-        _captureBindingButton.Click += (_, _) => BeginCapture(_bindingGrid, "BindingButton", "Press the throttle button for this Codex action.");
+        _captureBindingButton.Click += (_, _) =>
+        {
+            if (SelectBindingRowDeviceForCapture())
+            {
+                BeginCapture(_bindingGrid, "BindingButton", "Press the controller button for this Codex action.");
+            }
+        };
 
         return BuildGridGroup("Bindings", _bindingGrid, add, remove, _captureBindingButton);
     }
@@ -368,17 +471,104 @@ internal sealed class ConfigurationForm : Form
         }
     }
 
+    private Control BuildButtonMapGroup()
+    {
+        _buttonMapGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            FillWeight = 14,
+            HeaderText = "Device ID",
+            Name = "MapDeviceId",
+            ReadOnly = true,
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+        });
+        _buttonMapGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            FillWeight = 28,
+            HeaderText = "Controller",
+            Name = "MapDeviceName",
+            ReadOnly = true,
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+        });
+        var template = new DataGridViewComboBoxColumn
+        {
+            FillWeight = 16,
+            HeaderText = "Map template",
+            Name = "MapTemplate",
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+        };
+        template.Items.AddRange("", "cm3", "alpha-warbrd");
+        _buttonMapGrid.Columns.Add(template);
+        _buttonMapGrid.Columns.Add(new DataGridViewComboBoxColumn
+        {
+            DataSource = _originalConfig.Devices.Select(device => device.Id).ToArray(),
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            FillWeight = 22,
+            HeaderText = "Hold source",
+            Name = "MapHoldDevice",
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+        });
+        _buttonMapGrid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            FillWeight = 20,
+            HeaderText = "Hold-to-show button",
+            Name = "MapHold",
+            ReadOnly = true,
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+        });
+
+        _captureMapHoldButton.Click += (_, _) =>
+        {
+            if (_buttonMapGrid.CurrentRow is null)
+            {
+                MessageBox.Show(this, "Select a controller row first.", "Capture map control");
+                return;
+            }
+
+            var sourceDeviceId = Convert.ToString(_buttonMapGrid.CurrentRow.Cells["MapHoldDevice"].Value);
+            if (SelectConfiguredDeviceForCapture(sourceDeviceId))
+            {
+                BeginCapture(
+                    _buttonMapGrid,
+                    "MapHold",
+                    "Move the physical control that should hold the selected button map open.");
+            }
+        };
+        var clear = new Button { AutoSize = true, Text = "Clear hold control" };
+        clear.Click += (_, _) =>
+        {
+            CancelCapture();
+            if (_buttonMapGrid.CurrentRow is not null)
+            {
+                _buttonMapGrid.CurrentRow.Cells["MapHold"].Value = null;
+            }
+        };
+
+        return BuildGridGroup("Button maps", _buttonMapGrid, _captureMapHoldButton, clear);
+    }
+
     private Control BuildSafetyGroup()
     {
-        var group = new GroupBox { Dock = DockStyle.Fill, Text = "Safety and Open" };
+        var group = new GroupBox
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top,
+            Text = "Safety and Open",
+        };
         var layout = new TableLayoutPanel
         {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 2,
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
             Padding = new Padding(8, 4, 8, 4),
             RowCount = 4,
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
+        for (var row = 0; row < 4; row++)
+        {
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        }
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.Controls.Add(_dryRunCheckBox, 0, 0);
         layout.SetColumnSpan(_dryRunCheckBox, 2);
@@ -406,15 +596,32 @@ internal sealed class ConfigurationForm : Form
         var save = new Button { AutoSize = true, Text = "Save and close" };
         save.Click += OnSave;
         var cancel = new Button { AutoSize = true, DialogResult = DialogResult.Cancel, Text = "Cancel" };
-        var footer = new FlowLayoutPanel
+        _cancelCaptureButton.Click += (_, _) => CancelCapture();
+        var captureStatus = new FlowLayoutPanel
         {
+            AutoSize = true,
             Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(0, 8, 0, 0),
             WrapContents = false,
         };
-        footer.Controls.Add(save);
-        footer.Controls.Add(cancel);
+        captureStatus.Controls.Add(_captureLabel);
+        captureStatus.Controls.Add(_cancelCaptureButton);
+
+        var commands = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            Padding = new Padding(0, 4, 0, 0),
+            WrapContents = false,
+        };
+        commands.Controls.Add(save);
+        commands.Controls.Add(cancel);
+
+        var footer = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        footer.Controls.Add(captureStatus, 0, 0);
+        footer.Controls.Add(commands, 1, 0);
         AcceptButton = save;
         CancelButton = cancel;
         return footer;
@@ -483,12 +690,24 @@ internal sealed class ConfigurationForm : Form
         {
             var rowIndex = _bindingGrid.Rows.Add(
                 binding.Name,
+                binding.DeviceId ?? _originalConfig.Devices[0].Id,
                 binding.Bank,
                 binding.Button,
                 binding.Trigger,
                 binding.Action,
                 binding.WheelNotches);
             UpdateWheelNotchesCell(_bindingGrid.Rows[rowIndex]);
+        }
+
+        var cm3MapRow = _buttonMapGrid.Rows.Cast<DataGridViewRow>().FirstOrDefault(row =>
+            string.Equals(
+                Convert.ToString(row.Cells["MapDeviceId"].Value),
+                CompanionConfigNormalizer.PrimaryDeviceId,
+                StringComparison.OrdinalIgnoreCase));
+        if (cm3MapRow is not null)
+        {
+            cm3MapRow.Cells["MapHoldDevice"].Value = CompanionConfigNormalizer.PrimaryDeviceId;
+            cm3MapRow.Cells["MapHold"].Value = 36;
         }
 
         var profileName = dialProfile == Cm3ModeDialProfile.FiveWayShift
@@ -554,12 +773,23 @@ internal sealed class ConfigurationForm : Form
         {
             var rowIndex = _bindingGrid.Rows.Add(
                 binding.Name,
+                binding.DeviceId ?? _originalConfig.Devices[0].Id,
                 binding.Bank,
                 binding.Button,
                 binding.Trigger,
                 binding.Action,
                 binding.WheelNotches);
             UpdateWheelNotchesCell(_bindingGrid.Rows[rowIndex]);
+        }
+
+        foreach (var profile in _originalConfig.Devices)
+        {
+            _buttonMapGrid.Rows.Add(
+                profile.Id,
+                profile.DisplayName,
+                profile.ButtonMapTemplate ?? string.Empty,
+                profile.ButtonMapHoldControl?.DeviceId ?? profile.Id,
+                profile.ButtonMapHoldControl?.Button);
         }
 
         _dryRunCheckBox.Checked = _originalConfig.Safety.DryRun;
@@ -602,6 +832,52 @@ internal sealed class ConfigurationForm : Form
         }
     }
 
+    private bool SelectBindingRowDeviceForCapture()
+    {
+        if (_bindingGrid.CurrentRow is null)
+        {
+            MessageBox.Show(this, "Select a row first.", "Capture control", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+
+        var deviceId = Convert.ToString(_bindingGrid.CurrentRow.Cells["BindingDevice"].Value);
+        return SelectConfiguredDeviceForCapture(deviceId);
+    }
+
+    private bool SelectConfiguredDeviceForCapture(string? deviceId)
+    {
+        var profile = _originalConfig.Devices.FirstOrDefault(device =>
+            string.Equals(device.Id, deviceId, StringComparison.OrdinalIgnoreCase));
+        if (profile is null)
+        {
+            MessageBox.Show(this, $"Controller profile '{deviceId}' is not configured.", "Capture control");
+            return false;
+        }
+
+        var attached = _deviceCombo.Items.Cast<DirectInputDeviceInfo>().FirstOrDefault(device =>
+            Guid.TryParse(profile.Selector.InstanceGuid, out var instanceGuid)
+                ? device.InstanceGuid == instanceGuid
+                : device.ProductName.Contains(profile.Selector.ProductNameContains, StringComparison.OrdinalIgnoreCase));
+        if (attached is null)
+        {
+            MessageBox.Show(this, $"{profile.DisplayName} is not attached.", "Capture control");
+            return false;
+        }
+
+        if (ReferenceEquals(_deviceCombo.SelectedItem, attached))
+        {
+            ConnectSelectedDevice();
+        }
+        else
+        {
+            var returnDevice = _deviceCombo.SelectedItem as DirectInputDeviceInfo;
+            _deviceCombo.SelectedItem = attached;
+            _captureReturnDevice = returnDevice;
+        }
+
+        return true;
+    }
+
     private void OnPoll(object? sender, EventArgs eventArgs)
     {
         if (_source.ConnectedDevice is null)
@@ -616,7 +892,7 @@ internal sealed class ConfigurationForm : Form
 
         if (!_source.TryRead(out var snapshot, out var error) || snapshot is null)
         {
-            _connectionLabel.Text = $"Throttle disconnected: {error ?? "unknown DirectInput error"}";
+            _connectionLabel.Text = $"Controller disconnected: {error ?? "unknown DirectInput error"}";
             _nextReconnectAt = DateTimeOffset.UtcNow.AddMilliseconds(_originalConfig.Polling.ReconnectIntervalMs);
             return;
         }
@@ -659,6 +935,7 @@ internal sealed class ConfigurationForm : Form
                 _captureLabel.Text = $"Captured button {inputEvent.DisplayIndex}.";
                 _captureTarget = null;
                 UpdateCaptureButtons();
+                RestoreDeviceAfterCapture();
             }
             else
             {
@@ -687,6 +964,17 @@ internal sealed class ConfigurationForm : Form
             _captureTarget = null;
             _captureLabel.Text = "Capture cancelled.";
             UpdateCaptureButtons();
+            RestoreDeviceAfterCapture();
+        }
+    }
+
+    private void RestoreDeviceAfterCapture()
+    {
+        var returnDevice = _captureReturnDevice;
+        _captureReturnDevice = null;
+        if (returnDevice is not null && !ReferenceEquals(_deviceCombo.SelectedItem, returnDevice))
+        {
+            _deviceCombo.SelectedItem = returnDevice;
         }
     }
 
@@ -694,6 +982,7 @@ internal sealed class ConfigurationForm : Form
     {
         _captureBankButton.Enabled = _captureTarget is null;
         _captureBindingButton.Enabled = _captureTarget is null;
+        _captureMapHoldButton.Enabled = _captureTarget is null;
         _cancelCaptureButton.Visible = _captureTarget is not null;
     }
 
@@ -708,11 +997,14 @@ internal sealed class ConfigurationForm : Form
 
     private void OnSave(object? sender, EventArgs eventArgs)
     {
+        CancelCapture();
         _bankGrid.EndEdit();
         _bindingGrid.EndEdit();
+        _buttonMapGrid.EndEdit();
 
         var bankSelectors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var bindings = new List<ButtonBinding>();
+        var buttonMaps = new Dictionary<string, (string? Template, DeviceControlReference? Hold)>(StringComparer.OrdinalIgnoreCase);
         var parseErrors = new List<string>();
 
         foreach (DataGridViewRow row in _bankGrid.Rows)
@@ -733,6 +1025,8 @@ internal sealed class ConfigurationForm : Form
         foreach (DataGridViewRow row in _bindingGrid.Rows)
         {
             var name = Convert.ToString(row.Cells["BindingName"].Value)?.Trim() ?? string.Empty;
+            var deviceId = Convert.ToString(row.Cells["BindingDevice"].Value)?.Trim()
+                ?? _originalConfig.Devices[0].Id;
             var bank = Convert.ToString(row.Cells["BindingBank"].Value)?.Trim() ?? string.Empty;
             var trigger = Convert.ToString(row.Cells["BindingTrigger"].Value)?.Trim() ?? string.Empty;
             var action = Convert.ToString(row.Cells["BindingAction"].Value)?.Trim() ?? string.Empty;
@@ -757,12 +1051,40 @@ internal sealed class ConfigurationForm : Form
             bindings.Add(new ButtonBinding
             {
                 Name = name,
+                DeviceId = deviceId,
                 Bank = bank,
                 Button = button,
                 Trigger = trigger,
                 Action = action,
                 WheelNotches = wheelNotches,
             });
+        }
+
+        foreach (DataGridViewRow row in _buttonMapGrid.Rows)
+        {
+            var deviceId = Convert.ToString(row.Cells["MapDeviceId"].Value)?.Trim() ?? string.Empty;
+            var template = Convert.ToString(row.Cells["MapTemplate"].Value)?.Trim();
+            var holdDeviceId = Convert.ToString(row.Cells["MapHoldDevice"].Value)?.Trim() ?? string.Empty;
+            var holdText = Convert.ToString(row.Cells["MapHold"].Value)?.Trim();
+            DeviceControlReference? hold = null;
+            if (!string.IsNullOrWhiteSpace(holdText))
+            {
+                if (int.TryParse(holdText, out var parsedHold))
+                {
+                    hold = new DeviceControlReference
+                    {
+                        DeviceId = holdDeviceId,
+                        Bank = CompanionConfig.AlwaysBank,
+                        Button = parsedHold,
+                    };
+                }
+                else
+                {
+                    parseErrors.Add($"Button map for '{deviceId}' needs a captured hold-to-show button.");
+                }
+            }
+
+            buttonMaps[deviceId] = (string.IsNullOrWhiteSpace(template) ? null : template, hold);
         }
 
         var device = _deviceCombo.SelectedItem is DirectInputDeviceInfo selected
@@ -783,6 +1105,21 @@ internal sealed class ConfigurationForm : Form
         var config = new CompanionConfig
         {
             Device = device,
+            Devices = _originalConfig.Devices.Select((profile, index) =>
+            {
+                var map = buttonMaps.TryGetValue(profile.Id, out var configuredMap)
+                    ? configuredMap
+                    : (Template: profile.ButtonMapTemplate, Hold: profile.ButtonMapHoldControl);
+                return new DeviceProfile
+                {
+                    Id = profile.Id,
+                    DisplayName = profile.DisplayName,
+                    Selector = index == 0 ? device : profile.Selector,
+                    BankSelectors = index == 0 ? bankSelectors : profile.BankSelectors,
+                    ButtonMapTemplate = map.Template,
+                    ButtonMapHoldControl = map.Hold,
+                };
+            }).ToList(),
             Polling = _originalConfig.Polling,
             Safety = new SafetyOptions
             {
@@ -798,6 +1135,8 @@ internal sealed class ConfigurationForm : Form
             },
             BankSelectors = bankSelectors,
             Bindings = bindings,
+            PromptPickers = _promptPickerEditor?.GetPromptPickers().ToList()
+                ?? _originalConfig.PromptPickers,
         };
 
         var errors = parseErrors.Concat(ConfigValidator.Validate(config)).Distinct().ToArray();

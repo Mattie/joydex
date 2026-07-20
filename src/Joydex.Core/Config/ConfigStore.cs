@@ -23,8 +23,9 @@ public static class ConfigStore
         }
 
         var json = File.ReadAllText(path);
-        var config = JsonSerializer.Deserialize<CompanionConfig>(json, SerializerOptions)
+        var deserialized = JsonSerializer.Deserialize<CompanionConfig>(json, SerializerOptions)
             ?? throw new InvalidDataException($"Configuration file '{path}' was empty.");
+        var config = CompanionConfigNormalizer.Normalize(deserialized);
 
         var errors = ConfigValidator.Validate(config);
         if (errors.Count > 0)
@@ -48,6 +49,7 @@ public static class ConfigStore
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(path, JsonSerializer.Serialize(config, SerializerOptions));
+        var normalized = CompanionConfigNormalizer.Normalize(config);
+        File.WriteAllText(path, JsonSerializer.Serialize(normalized, SerializerOptions));
     }
 }

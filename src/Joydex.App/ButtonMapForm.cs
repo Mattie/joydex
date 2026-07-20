@@ -11,11 +11,18 @@ internal sealed class ButtonMapForm : Form
     private readonly string _windowStatePath;
     private readonly ButtonMapCanvas _canvas;
 
-    public ButtonMapForm(CompanionConfig config, string windowStatePath, Action<string>? log = null)
+    public ButtonMapForm(
+        CompanionConfig config,
+        string deviceId,
+        string windowStatePath,
+        Action<string>? log = null)
     {
         _windowStatePath = windowStatePath;
+        var normalized = CompanionConfigNormalizer.Normalize(config);
+        var device = normalized.Devices.First(candidate =>
+            string.Equals(candidate.Id, deviceId, StringComparison.OrdinalIgnoreCase));
 
-        Text = "Joydex CM3 Button Map";
+        Text = $"Joydex {device.DisplayName} Button Map";
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("Segoe UI", 9F);
@@ -25,7 +32,7 @@ internal sealed class ButtonMapForm : Form
         ShowInTaskbar = false;
         TopMost = true;
 
-        _canvas = new ButtonMapCanvas(config, log) { Dock = DockStyle.Fill };
+        _canvas = new ButtonMapCanvas(normalized, deviceId, log) { Dock = DockStyle.Fill };
         Controls.Add(_canvas);
         RestoreWindowState();
     }
@@ -139,21 +146,37 @@ internal sealed class ButtonMapCanvas : Control
     private const int TemplateHeight = 2550;
     private const string TemplateAssetPath = "Assets/cm3-button-map.png";
     private static readonly IReadOnlyDictionary<int, RectangleF> ButtonRegions = CreateButtonRegions();
+    private static readonly Size AlphaTemplateSize = new(1180, 748);
+    private const string AlphaTemplateAssetPath = "Assets/alpha-warbrd-button-map.png";
     private readonly Bitmap? _templateBitmap;
     private readonly Size _templateSize;
+    private readonly IReadOnlyDictionary<int, RectangleF> _buttonRegions;
+    private readonly string _deviceId;
+    private readonly bool _isCm3;
     private IReadOnlyDictionary<int, string> _labels;
     private IReadOnlyList<TaskAlertAssignment> _taskAlerts = [];
 
     public ButtonMapCanvas(CompanionConfig config, Action<string>? log = null)
-        : this(config, LoadTemplateBitmap(log))
+        : this(config, CompanionConfigNormalizer.Normalize(config).Devices[0].Id, log)
     {
     }
 
-    private ButtonMapCanvas(CompanionConfig config, Bitmap? templateBitmap)
+    public ButtonMapCanvas(CompanionConfig config, string deviceId, Action<string>? log = null)
+        : this(config, deviceId, LoadTemplateBitmap(config, deviceId, log))
     {
-        _labels = BuildLabels(config);
+    }
+
+    private ButtonMapCanvas(CompanionConfig config, string deviceId, Bitmap? templateBitmap)
+    {
+        var normalized = CompanionConfigNormalizer.Normalize(config);
+        var device = normalized.Devices.First(candidate =>
+            string.Equals(candidate.Id, deviceId, StringComparison.OrdinalIgnoreCase));
+        _deviceId = deviceId;
+        _isCm3 = !string.Equals(device.ButtonMapTemplate, "alpha-warbrd", StringComparison.OrdinalIgnoreCase);
+        _buttonRegions = _isCm3 ? ButtonRegions : CreateAlphaButtonRegions();
+        _labels = BuildLabels(normalized, deviceId);
         _templateBitmap = templateBitmap;
-        _templateSize = _templateBitmap?.Size ?? new Size(TemplateWidth, TemplateHeight);
+        _templateSize = _templateBitmap?.Size ?? (_isCm3 ? CanonicalTemplateSize : AlphaTemplateSize);
 
         BackColor = Color.White;
         DoubleBuffered = true;
@@ -162,13 +185,16 @@ internal sealed class ButtonMapCanvas : Control
 
     internal static ButtonMapCanvas CreateWithTemplateForTesting(
         CompanionConfig config,
-        Bitmap templateBitmap) => new(config, templateBitmap);
+        Bitmap templateBitmap) => new(
+            config,
+            CompanionConfigNormalizer.Normalize(config).Devices[0].Id,
+            templateBitmap);
 
     internal static Size CanonicalTemplateSize => new(TemplateWidth, TemplateHeight);
 
     public void UpdateConfig(CompanionConfig config)
     {
-        _labels = BuildLabels(config);
+        _labels = BuildLabels(CompanionConfigNormalizer.Normalize(config), _deviceId);
         Invalidate();
     }
 
@@ -226,7 +252,10 @@ internal sealed class ButtonMapCanvas : Control
             return;
         }
 
-        DrawGeneratedTemplate(graphics, destination);
+        if (_isCm3)
+        {
+            DrawGeneratedTemplate(graphics, destination);
+        }
     }
 
     private static Bitmap? LoadTemplateBitmap(Action<string>? log)
@@ -239,8 +268,32 @@ internal sealed class ButtonMapCanvas : Control
         return LoadTemplateBitmap([userPath, packagedPath], log);
     }
 
+    private static Bitmap? LoadTemplateBitmap(
+        CompanionConfig config,
+        string deviceId,
+        Action<string>? log)
+    {
+        var normalized = CompanionConfigNormalizer.Normalize(config);
+        var device = normalized.Devices.First(candidate =>
+            string.Equals(candidate.Id, deviceId, StringComparison.OrdinalIgnoreCase));
+        if (!string.Equals(device.ButtonMapTemplate, "alpha-warbrd", StringComparison.OrdinalIgnoreCase))
+        {
+            return LoadTemplateBitmap(log);
+        }
+
+        var path = Path.Combine(AppContext.BaseDirectory, AlphaTemplateAssetPath);
+        return LoadTemplateBitmap([path], AlphaTemplateSize, "Alpha/WarBRD", log);
+    }
+
     internal static Bitmap? LoadTemplateBitmap(
         IEnumerable<string> candidatePaths,
+        Action<string>? log = null)
+        => LoadTemplateBitmap(candidatePaths, CanonicalTemplateSize, "CM3", log);
+
+    private static Bitmap? LoadTemplateBitmap(
+        IEnumerable<string> candidatePaths,
+        Size expectedSize,
+        string templateName,
         Action<string>? log = null)
     {
         foreach (var path in candidatePaths.Distinct(StringComparer.OrdinalIgnoreCase))
@@ -255,29 +308,29 @@ internal sealed class ButtonMapCanvas : Control
                 using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 using var decoded = Image.FromStream(stream, useEmbeddedColorManagement: true, validateImageData: true);
                 var bitmap = new Bitmap(decoded);
-                if (bitmap.Size != CanonicalTemplateSize)
+                if (bitmap.Size != expectedSize)
                 {
                     var message =
-                        $"CM3 button-map bitmap '{path}' is {bitmap.Width}x{bitmap.Height}; "
-                        + $"expected {TemplateWidth}x{TemplateHeight}. The mismatched bitmap was skipped.";
+                        $"{templateName} button-map bitmap '{path}' is {bitmap.Width}x{bitmap.Height}; "
+                        + $"expected {expectedSize.Width}x{expectedSize.Height}. The mismatched bitmap was skipped.";
                     bitmap.Dispose();
                     Trace.TraceError(message);
                     log?.Invoke(message);
                     continue;
                 }
 
-                log?.Invoke($"Loaded the CM3 button-map bitmap from '{path}' ({bitmap.Width}x{bitmap.Height}).");
+                log?.Invoke($"Loaded the {templateName} button-map bitmap from '{path}' ({bitmap.Width}x{bitmap.Height}).");
                 return bitmap;
             }
             catch (Exception error)
             {
-                Trace.TraceError("CM3 button-map asset could not be loaded from {0}: {1}", path, error.Message);
-                log?.Invoke($"Could not load the CM3 button-map bitmap from '{path}': {error.Message}");
+                Trace.TraceError("{0} button-map asset could not be loaded from {1}: {2}", templateName, path, error.Message);
+                log?.Invoke($"Could not load the {templateName} button-map bitmap from '{path}': {error.Message}");
             }
         }
 
-        Trace.TraceWarning("CM3 button-map assets were not found; using the generated fallback.");
-        log?.Invoke("CM3 button-map bitmap unavailable; using the generated fallback.");
+        Trace.TraceWarning("{0} button-map assets were not found.", templateName);
+        log?.Invoke($"{templateName} button-map bitmap unavailable.");
         return null;
     }
 
@@ -466,7 +519,7 @@ internal sealed class ButtonMapCanvas : Control
         var unplaced = new List<string>();
         foreach (var (button, label) in _labels.OrderBy(pair => pair.Key))
         {
-            if (!ButtonRegions.TryGetValue(button, out var sourceRegion))
+            if (!_buttonRegions.TryGetValue(button, out var sourceRegion))
             {
                 unplaced.Add($"{button}: {label}");
                 continue;
@@ -554,7 +607,7 @@ internal sealed class ButtonMapCanvas : Control
 
     private void DrawTaskAlertOverlays(Graphics graphics, ButtonMapLayout layout)
     {
-        if (_taskAlerts.Count == 0)
+        if (!_isCm3 || _taskAlerts.Count == 0)
         {
             return;
         }
@@ -591,7 +644,7 @@ internal sealed class ButtonMapCanvas : Control
 
             foreach (var logicalButton in TaskAlertSlots.LogicalButtons(assignment.Slot))
             {
-                if (!ButtonRegions.TryGetValue(logicalButton, out var sourceRegion))
+                if (!_buttonRegions.TryGetValue(logicalButton, out var sourceRegion))
                 {
                     continue;
                 }
@@ -628,15 +681,62 @@ internal sealed class ButtonMapCanvas : Control
 
     private readonly record struct ButtonMapLayout(RectangleF Destination, float Scale);
 
-    private static IReadOnlyDictionary<int, string> BuildLabels(CompanionConfig config) =>
-        config.Bindings
-            .GroupBy(binding => binding.Button)
+    private static IReadOnlyDictionary<int, string> BuildLabels(CompanionConfig config, string deviceId)
+    {
+        var labels = config.Bindings
+            .Where(binding => string.Equals(binding.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase))
+            .Select(binding => (binding.Button, Label: DisplayAction(binding.Action)))
+            .ToList();
+        for (var pickerIndex = 0; pickerIndex < config.PromptPickers.Count; pickerIndex++)
+        {
+            var picker = config.PromptPickers[pickerIndex];
+            var number = pickerIndex + 1;
+            AddPickerLabel(labels, picker.Controls.Up, deviceId, $"Prompt {number} up");
+            AddPickerLabel(labels, picker.Controls.Down, deviceId, $"Prompt {number} down");
+            AddPickerLabel(labels, picker.Controls.Insert, deviceId, $"Insert prompt {number}");
+        }
+
+        foreach (var target in config.Devices)
+        {
+            var control = target.ButtonMapHoldControl;
+            if (control is null
+                || !string.Equals(control.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var mapLabel = string.Equals(target.Id, deviceId, StringComparison.OrdinalIgnoreCase)
+                ? "Button map"
+                : target.ButtonMapTemplate switch
+                {
+                    "alpha-warbrd" => "Alpha map",
+                    "cm3" => "CM3 map",
+                    _ => $"{target.DisplayName} map",
+                };
+            labels.Add((control.Button, mapLabel));
+        }
+
+        return labels
+            .GroupBy(item => item.Button)
             .ToDictionary(
                 group => group.Key,
                 group => string.Join(
                     " / ",
-                    group.Select(binding => DisplayAction(binding.Action))
+                    group.Select(item => item.Label)
                         .Distinct(StringComparer.OrdinalIgnoreCase)));
+    }
+
+    private static void AddPickerLabel(
+        ICollection<(int Button, string Label)> labels,
+        DeviceControlReference control,
+        string deviceId,
+        string label)
+    {
+        if (string.Equals(control.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase))
+        {
+            labels.Add((control.Button, label));
+        }
+    }
 
     private static string DisplayAction(string action) => action.ToLowerInvariant() switch
     {
@@ -652,7 +752,7 @@ internal sealed class ButtonMapCanvas : Control
         "fork-task" => "Fork task",
         "push-to-talk" => "Hold to talk",
         "submit" => "Submit",
-        "plan-mode" => "Plan mode",
+        "plan-mode" => "Plan",
         "reasoning-up" => "Reasoning +",
         "reasoning-down" => "Reasoning -",
         "scroll-up" => "Scroll up",
@@ -693,6 +793,7 @@ internal sealed class ButtonMapCanvas : Control
         regions[47] = new RectangleF(160, 2082, 375, 64);
         regions[48] = new RectangleF(160, 2220, 375, 65);
         regions[49] = new RectangleF(160, 2285, 375, 65);
+        regions[34] = new RectangleF(2040, 2003, 375, 65);
 
         AddRows(regions, [52, 51, 50], 723, 2194, 1119, 65);
         AddRows(regions, [54, 55, 53], 1362, 2194, 1758, 65);
@@ -704,6 +805,37 @@ internal sealed class ButtonMapCanvas : Control
         AddBank(regions, 74, 2014, 2180, 2338);
 
         return regions;
+    }
+
+    private static IReadOnlyDictionary<int, RectangleF> CreateAlphaButtonRegions()
+    {
+        var regions = new Dictionary<int, RectangleF>();
+        AddAlphaRows(regions, [14, 15, 16, 17, 13], 93, 75, 306, 24);
+        AddAlphaRows(regions, [8, 9, 10, 11, 7], 93, 245, 306, 24);
+        AddAlphaRows(regions, [5], 93, 459, 306, 25);
+        AddAlphaRows(regions, [12, 6], 495, 75, 710, 24);
+        AddAlphaRows(regions, [26, 27, 28, 29, 25], 496, 581, 710, 24);
+        AddAlphaRows(regions, [24, 23, 21, 22], 923, 75, 1136, 24);
+        AddAlphaRows(regions, [19, 20, 18], 923, 228, 1136, 24);
+        AddAlphaRows(regions, [3, 4], 923, 346, 1136, 25);
+        AddAlphaRows(regions, [1, 2], 923, 443, 1136, 25);
+        AddAlphaRows(regions, [30], 923, 535, 1136, 30);
+        AddAlphaRows(regions, [31], 923, 624, 1136, 25);
+        return regions;
+    }
+
+    private static void AddAlphaRows(
+        IDictionary<int, RectangleF> regions,
+        IReadOnlyList<int> buttons,
+        float left,
+        float top,
+        float right,
+        float rowHeight)
+    {
+        for (var index = 0; index < buttons.Count; index++)
+        {
+            regions[buttons[index]] = new RectangleF(left, top + index * rowHeight, right - left, rowHeight);
+        }
     }
 
     private static void AddRows(

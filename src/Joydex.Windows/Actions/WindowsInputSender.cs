@@ -8,6 +8,8 @@ public interface IInputSender
 {
     Task SendSequenceAsync(KeySequence sequence, CancellationToken cancellationToken);
 
+    Task SendTextAsync(string text, CancellationToken cancellationToken);
+
     void HoldChord(KeyChord chord);
 
     void ReleaseChord(KeyChord chord);
@@ -20,11 +22,14 @@ internal enum WindowsInputEventKind
     KeyDown,
     KeyUp,
     MouseWheel,
+    UnicodeKeyDown,
+    UnicodeKeyUp,
 }
 
 internal sealed record WindowsInputEvent(
     WindowsInputEventKind Kind,
     ushort VirtualKey = 0,
+    ushort ScanCode = 0,
     int WheelDelta = 0,
     bool ExtendedKey = false);
 
@@ -69,6 +74,24 @@ public sealed class WindowsInputSender : IInputSender
         }
     }
 
+    public Task SendTextAsync(string text, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var normalized = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        var segments = normalized.Split('\n');
+        for (var index = 0; index < segments.Length; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            SendUnicode(segments[index], cancellationToken);
+            if (index < segments.Length - 1)
+            {
+                SendChord(new KeyChord([VirtualKey.Shift, VirtualKey.Enter], "Shift+Enter"));
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
     public void HoldChord(KeyChord chord)
     {
         ArgumentNullException.ThrowIfNull(chord);
@@ -91,6 +114,28 @@ public sealed class WindowsInputSender : IInputSender
             .Concat(chord.VirtualKeys.Reverse().Select(key => KeyEvent(key, WindowsInputEventKind.KeyUp)))
             .ToArray();
         _sink.Send(events);
+    }
+
+    private void SendUnicode(string text, CancellationToken cancellationToken)
+    {
+        const int chunkSize = 256;
+        for (var offset = 0; offset < text.Length; offset += chunkSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var length = Math.Min(chunkSize, text.Length - offset);
+            var events = new List<WindowsInputEvent>(length * 2);
+            for (var index = offset; index < offset + length; index++)
+            {
+                var scanCode = text[index];
+                events.Add(new WindowsInputEvent(WindowsInputEventKind.UnicodeKeyDown, ScanCode: scanCode));
+                events.Add(new WindowsInputEvent(WindowsInputEventKind.UnicodeKeyUp, ScanCode: scanCode));
+            }
+
+            if (events.Count > 0)
+            {
+                _sink.Send(events);
+            }
+        }
     }
 
     private static WindowsInputEvent KeyEvent(ushort key, WindowsInputEventKind kind) =>
@@ -129,6 +174,8 @@ internal sealed partial class NativeWindowsInputSink : IWindowsInputSink
         WindowsInputEventKind.KeyDown => Input.Key(inputEvent.VirtualKey, keyUp: false, inputEvent.ExtendedKey),
         WindowsInputEventKind.KeyUp => Input.Key(inputEvent.VirtualKey, keyUp: true, inputEvent.ExtendedKey),
         WindowsInputEventKind.MouseWheel => Input.MouseWheel(inputEvent.WheelDelta),
+        WindowsInputEventKind.UnicodeKeyDown => Input.Unicode(inputEvent.ScanCode, keyUp: false),
+        WindowsInputEventKind.UnicodeKeyUp => Input.Unicode(inputEvent.ScanCode, keyUp: true),
         _ => throw new InvalidOperationException($"Unknown Windows input event kind '{inputEvent.Kind}'."),
     };
 
@@ -160,6 +207,19 @@ internal sealed partial class NativeWindowsInputSink : IWindowsInputSink
                 {
                     MouseData = unchecked((uint)delta),
                     Flags = 0x0800,
+                },
+            },
+        };
+
+        public static Input Unicode(ushort scanCode, bool keyUp) => new()
+        {
+            Type = 1,
+            Data = new InputUnion
+            {
+                Keyboard = new KeyboardInput
+                {
+                    ScanCode = scanCode,
+                    Flags = 0x0004u | (keyUp ? 0x0002u : 0u),
                 },
             },
         };

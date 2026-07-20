@@ -12,6 +12,8 @@ public enum CodexLifecycleEvent
 {
     UserPromptSubmit,
     PermissionRequest,
+    UserInputRequest,
+    ToolCompleted,
     Stop,
     Fault,
 }
@@ -20,7 +22,8 @@ public sealed record TaskAlertEvent(
     CodexLifecycleEvent Event,
     string SessionId,
     string? TurnId,
-    DateTimeOffset ReceivedAt);
+    DateTimeOffset ReceivedAt,
+    string? AttentionKey = null);
 
 public sealed record TaskAlertAssignment(
     int Slot,
@@ -148,7 +151,7 @@ public static class TaskAlertColors
 {
     public static (byte Red, byte Green, byte Blue) Get(TaskAlertState state) => state switch
     {
-        TaskAlertState.Running => (0xFF, 0xFF, 0xFF),
+        TaskAlertState.Running => (0x55, 0x55, 0x55),
         TaskAlertState.Approval => (0xFF, 0xFF, 0x00),
         TaskAlertState.Completed => (0x00, 0x40, 0x00),
         TaskAlertState.Fault => (0xFF, 0x00, 0x00),

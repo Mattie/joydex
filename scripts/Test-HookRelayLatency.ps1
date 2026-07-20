@@ -4,7 +4,9 @@ param(
     [ValidateRange(20, 1000)]
     [int] $Samples = 100,
     [ValidateRange(0, 100)]
-    [int] $WarmupSamples = 10
+    [int] $WarmupSamples = 10,
+    [ValidateSet('Lifecycle', 'Correlation')]
+    [string] $PayloadKind = 'Correlation'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,7 +18,12 @@ if ([string]::IsNullOrWhiteSpace($RelayPath)) {
 
 $relay = (Resolve-Path -LiteralPath $RelayPath).Path
 $payloadPadding = 'x' * 8000
-$payload = '{"hook_event_name":"UserPromptSubmit","session_id":"latency-gate","turn_id":"turn","prompt":"' + $payloadPadding + '"}'
+$payload = if ($PayloadKind -eq 'Correlation') {
+    '{"hook_event_name":"PostToolUse","session_id":"latency-gate","turn_id":"turn","tool_name":"Bash","tool_input":{"command":"' + $payloadPadding + '"},"tool_response":{}}'
+}
+else {
+    '{"hook_event_name":"UserPromptSubmit","session_id":"latency-gate","turn_id":"turn","prompt":"' + $payloadPadding + '"}'
+}
 
 function Invoke-RelaySample {
     param(

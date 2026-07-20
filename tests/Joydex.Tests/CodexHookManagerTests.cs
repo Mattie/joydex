@@ -23,13 +23,21 @@ public sealed class CodexHookManagerTests : IDisposable
         var installed = JsonNode.Parse(File.ReadAllText(hooksPath))!;
         Assert.Contains("errorhelp.py hook-stop", installed.ToJsonString());
         Assert.Contains("request_timer.py hook-stop", installed.ToJsonString());
-        Assert.Equal(3, CountMarker(installed));
+        Assert.Equal(5, CountMarker(installed));
         foreach (var handler in JoydexHandlers(installed))
         {
             var command = handler["command"]!.GetValue<string>();
             Assert.Equal(Path.GetFullPath(relayPath), command);
             Assert.Equal(command, handler["commandWindows"]!.GetValue<string>());
+            Assert.Equal(CodexHookManager.TimeoutSeconds, handler["timeout"]!.GetValue<int>());
         }
+        Assert.Equal(
+            "^request_user_input$",
+            installed["hooks"]!["PreToolUse"]![0]!["matcher"]!.GetValue<string>());
+        Assert.Equal(
+            "^(Bash|apply_patch|request_user_input|mcp__.*)$",
+            installed["hooks"]!["PostToolUse"]![0]!["matcher"]!.GetValue<string>());
+        Assert.Null(installed["hooks"]!["PostToolUse"]![0]!["hooks"]![0]!["async"]);
 
         manager.Remove();
 
@@ -57,14 +65,14 @@ public sealed class CodexHookManagerTests : IDisposable
         manager.InstallOrRepair(relayPath);
 
         var repaired = JsonNode.Parse(File.ReadAllText(hooksPath))!;
-        Assert.Equal(3, CountMarker(repaired));
+        Assert.Equal(5, CountMarker(repaired));
         Assert.DoesNotContain("old.exe", repaired.ToJsonString());
     }
 
     [Theory]
-    [InlineData("process", 1)]
-    [InlineData("command", 5)]
-    public void InspectRequiresCommandTypeAndOneSecondTimeout(string type, int timeout)
+    [InlineData("process", 5)]
+    [InlineData("command", 1)]
+    public void InspectRequiresCommandTypeAndFiveSecondTimeout(string type, int timeout)
     {
         Directory.CreateDirectory(_directory);
         var hooksPath = Path.Combine(_directory, "hooks.json");
@@ -82,6 +90,14 @@ public sealed class CodexHookManagerTests : IDisposable
                   "type": "{{type}}", "command": "{{command}}", "commandWindows": "{{command}}",
                   "timeout": {{timeout}}, "statusMessage": "{{CodexHookManager.StatusMarker}}"
                 } ] } ],
+                "PreToolUse": [ { "matcher": "^request_user_input$", "hooks": [ {
+                  "type": "{{type}}", "command": "{{command}}", "commandWindows": "{{command}}",
+                  "timeout": {{timeout}}, "statusMessage": "{{CodexHookManager.StatusMarker}}"
+                } ] } ],
+                "PostToolUse": [ { "matcher": "^(Bash|apply_patch|request_user_input|mcp__.*)$", "hooks": [ {
+                  "type": "{{type}}", "command": "{{command}}", "commandWindows": "{{command}}",
+                  "timeout": {{timeout}}, "statusMessage": "{{CodexHookManager.StatusMarker}}"
+                } ] } ],
                 "Stop": [ { "hooks": [ {
                   "type": "{{type}}", "command": "{{command}}", "commandWindows": "{{command}}",
                   "timeout": {{timeout}}, "statusMessage": "{{CodexHookManager.StatusMarker}}"
@@ -91,6 +107,28 @@ public sealed class CodexHookManagerTests : IDisposable
             """);
         var manager = new CodexHookManager(hooksPath);
 
+        Assert.Equal(JoydexHookState.RepairNeeded, manager.Inspect(relayPath));
+    }
+
+    [Fact]
+    public void InspectRequiresExactInputAndCompletionMatchers()
+    {
+        Directory.CreateDirectory(_directory);
+        var hooksPath = Path.Combine(_directory, "hooks.json");
+        var relayPath = Path.Combine(_directory, "Joydex.HookRelay.exe");
+        File.WriteAllBytes(relayPath, [0]);
+        var manager = new CodexHookManager(hooksPath);
+        manager.InstallOrRepair(relayPath);
+
+        var installed = JsonNode.Parse(File.ReadAllText(hooksPath))!;
+        installed["hooks"]!["PreToolUse"]![0]!.AsObject().Remove("matcher");
+        File.WriteAllText(hooksPath, installed.ToJsonString());
+        Assert.Equal(JoydexHookState.RepairNeeded, manager.Inspect(relayPath));
+
+        manager.InstallOrRepair(relayPath);
+        installed = JsonNode.Parse(File.ReadAllText(hooksPath))!;
+        installed["hooks"]!["PostToolUse"]![0]!["matcher"] = "^Bash$";
+        File.WriteAllText(hooksPath, installed.ToJsonString());
         Assert.Equal(JoydexHookState.RepairNeeded, manager.Inspect(relayPath));
     }
 

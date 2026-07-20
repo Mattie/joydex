@@ -21,7 +21,7 @@ public sealed class ConfigValidatorTests
             {
                 Name = "dangerous",
                 Bank = "work",
-                Button = 3,
+                Button = 4,
                 Action = "launch-missiles",
             });
 
@@ -38,20 +38,20 @@ public sealed class ConfigValidatorTests
             {
                 Name = "first",
                 Bank = "work",
-                Button = 3,
+                Button = 4,
                 Action = "new-task",
             },
             new ButtonBinding
             {
                 Name = "second",
                 Bank = "work",
-                Button = 3,
+                Button = 4,
                 Action = "toggle-sidebar",
             });
 
         Assert.Contains(
             ConfigValidator.Validate(config),
-            error => error.Contains("more than one press binding for button 3", StringComparison.Ordinal));
+            error => error.Contains("more than one press binding for button 4", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -81,7 +81,7 @@ public sealed class ConfigValidatorTests
 
         Assert.Contains(
             ConfigValidator.Validate(config),
-            error => error.Contains("device.instanceGuid must be a valid GUID", StringComparison.Ordinal));
+            error => error.Contains("instanceGuid must be a valid GUID", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -175,7 +175,7 @@ public sealed class ConfigValidatorTests
             {
                 Name = "scroll",
                 Bank = "work",
-                Button = 3,
+                Button = 4,
                 Action = "scroll-down",
                 WheelNotches = wheelNotches,
             });
@@ -193,7 +193,7 @@ public sealed class ConfigValidatorTests
             {
                 Name = "scroll",
                 Bank = "work",
-                Button = 3,
+                Button = 4,
                 Action = "scroll-down",
                 WheelNotches = 5,
             });
@@ -209,7 +209,7 @@ public sealed class ConfigValidatorTests
             {
                 Name = "show-map",
                 Bank = "work",
-                Button = 3,
+                Button = 4,
                 Trigger = "press",
                 Action = "button-map",
             },
@@ -217,7 +217,7 @@ public sealed class ConfigValidatorTests
             {
                 Name = "hide-map",
                 Bank = "work",
-                Button = 3,
+                Button = 4,
                 Trigger = "release",
                 Action = "button-map",
             });
