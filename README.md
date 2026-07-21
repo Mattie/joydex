@@ -6,7 +6,7 @@ Why pay for a purpose-built Codex Micro keyboard when you already have a joystic
 Just use Codex to set it up in a couple of hours and save yourself that extra $230.
 
 ## What is Joydex?
-Joydex is a source example for turning a VIRPIL throttle into a physical control surface for the Codex desktop app. It reads the throttle through DirectInput, resolves the current Codex shortcuts, and injects the corresponding Windows input events. It is a small, self-contained Windows tray app.
+Joydex is a source example for turning a VIRPIL throttle into a physical control surface for the Codex desktop app. It reads the throttle through DirectInput, resolves the current Codex shortcuts, and injects the corresponding Windows input events. It is a small Windows tray app.
 
 It could be adapted pretty easily to other devices, but we wanted to show how easy it was to get going by using Codex itself to build the handlers. See [the case study](docs/CASE_STUDY.md) for the story of how this came together in just a few hours.
 
@@ -173,7 +173,7 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 | `tests/Joydex.Tests` | Unit and Windows interop coverage |
 | `config/joydex.example.json` | Safe, machine-neutral starter configuration |
 | `config/joydex.advanced.example.json` | Sanitized two-controller working example |
-| `docs/` | Case study, images, and planning notes |
+| `docs/` | Case study, setup guides, research notes, and images |
 
 ## Versions and Config
 
@@ -197,6 +197,6 @@ Yes. Joydex's built-in task-status LEDs are described above. Gremlin can also dr
 
 ## License and trademarks
 
-The source code is available under the [MIT License](LICENSE). Attribution for the CM3 visual template is recorded in [Third-party notices](THIRD_PARTY_NOTICES.md).
+The source code is available under the [MIT License](LICENSE). Visual-asset provenance and third-party attribution are recorded in [Third-party notices](THIRD_PARTY_NOTICES.md).
 
 Joydex is an independent project and is not affiliated with or endorsed by VIRPIL Controls, OpenAI, or Work Louder. VIRPIL, VPC, OpenAI, ChatGPT, Codex, Work Louder, and associated marks are the property of their respective owners.

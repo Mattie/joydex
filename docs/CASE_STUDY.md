@@ -37,7 +37,7 @@ Reply COMPANION to proceed with the input tracer and reversible-navigation MVP, 
 
 That one-word answer was enough to start the implementation. Surely Joystick Gremlin would have been faster, but then it wouldn't be quite as specific to our workflow.
 
-The initial plan is still available in [the original planning notes](plan_notes/virpil-codex-throttle/AGENT_PLAN.md). It contains more speculative branches than the finished product, including task-status lighting and deeper Codex integration. The conversation quickly narrowed toward something useful on the installed hardware.
+The initial plan explored more speculative branches than the finished product, including task-status lighting and deeper Codex integration. The conversation quickly narrowed toward something useful on the installed hardware.
 
 ---
 
@@ -289,11 +289,11 @@ The `button-map` action was kept inside the companion. It bypasses the Codex for
 
 **Codex (summarized)**
 
-Codex rendered a preview using the live configuration, inspected the label placement, added the T3 press and release bindings, ran all 61 tests, published the self-contained Windows package, restarted the tray app, and confirmed that it reconnected to the CM3.
+Codex rendered a preview using the live configuration, inspected the label placement, added the T3 press and release bindings, ran all 61 tests, published the Windows package, restarted the tray app, and confirmed that it reconnected to the CM3.
 
 The finished graphic looked like this:
 
-![Current CM3 button map](../tmp/pdfs/button-map-preview.png)
+![Current CM3 button map](images/joydex-button-map.png)
 
 ---
 

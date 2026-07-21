@@ -142,7 +142,7 @@ All five CM3 bank variants are known:
 
 An occupied slot intercepts both the press and matching release before Joydex's normal binding engine. Primary slots intercept their B-position only on M2-M4. Overflow slots intercept only their M1 B-position. M5 and every unassigned control pass through. A slot that appears while its physical control is already held is armed only after release, which prevents a stray release-only action.
 
-The 2026-07-18 VIRPIL firmware update changed this throttle's DirectInput identity to `LEFT VPC MongoosT-50CM3`, instance GUID `[machine-specific value omitted]`, and product GUID `81943344-0000-0000-0000-504944564944`. Joydex must be reconfigured after a firmware update that changes these identifiers; USB disconnect/reconnect with stable identifiers requires no reconfiguration.
+The 2026-07-18 VIRPIL firmware update changed this throttle's DirectInput identity to `LEFT VPC MongoosT-50CM3` and product GUID `81943344-0000-0000-0000-504944564944`; the machine-specific instance GUID is intentionally omitted. Joydex must be reconfigured after a firmware update that changes these identifiers; USB disconnect/reconnect with stable identifiers requires no reconfiguration.
 
 The routed target is:
 
