@@ -66,12 +66,21 @@ internal sealed class RoundedButton : Button
 
     public override Size GetPreferredSize(Size proposedSize)
     {
-        var preferredFont = Variant == ButtonVariant.Primary ? JoydexTheme.UiSemiboldFont : Font;
-        var text = TextRenderer.MeasureText(
-            Text,
-            preferredFont,
-            Size.Empty,
-            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+        var preferredFont = Variant == ButtonVariant.Primary
+            ? JoydexTheme.FontFor(this, JoydexTheme.UiSemiboldFont)
+            : Font;
+        var flags = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
+        Size text;
+        if (IsHandleCreated)
+        {
+            using var graphics = CreateGraphics();
+            text = TextRenderer.MeasureText(graphics, Text, preferredFont, Size.Empty, flags);
+        }
+        else
+        {
+            text = TextRenderer.MeasureText(Text, preferredFont, Size.Empty, flags);
+        }
+
         return new Size(
             Math.Max(MinimumSize.Width, text.Width + Padding.Horizontal + JoydexTheme.ScaleLogical(4, DeviceDpi)),
             Math.Max(MinimumSize.Height, text.Height + Padding.Vertical + JoydexTheme.ScaleLogical(4, DeviceDpi)));
@@ -81,7 +90,6 @@ internal sealed class RoundedButton : Button
     {
         base.OnDpiChangedAfterParent(eventArgs);
         UpdateButtonRegion();
-        Parent?.PerformLayout(this, nameof(DeviceDpi));
         Invalidate();
     }
 
@@ -176,7 +184,9 @@ internal sealed class RoundedButton : Button
         TextRenderer.DrawText(
             eventArgs.Graphics,
             Text,
-            Variant == ButtonVariant.Primary ? JoydexTheme.UiSemiboldFont : Font,
+            Variant == ButtonVariant.Primary
+                ? JoydexTheme.FontFor(this, JoydexTheme.UiSemiboldFont)
+                : Font,
             ClientRectangle,
             text,
             flags);
@@ -477,11 +487,21 @@ internal sealed class NavButton : Control
     {
         var hasGlyph = Icon is not null || Glyph != NavGlyph.None;
         var textLeft = JoydexTheme.ScaleLogical(hasGlyph ? 38 : 12, DeviceDpi);
-        var textSize = TextRenderer.MeasureText(
-            Text,
-            Selected ? JoydexTheme.UiSemiboldFont : Font,
-            Size.Empty,
-            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+        var preferredFont = Selected
+            ? JoydexTheme.FontFor(this, JoydexTheme.UiSemiboldFont)
+            : Font;
+        var flags = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
+        Size textSize;
+        if (IsHandleCreated)
+        {
+            using var graphics = CreateGraphics();
+            textSize = TextRenderer.MeasureText(graphics, Text, preferredFont, Size.Empty, flags);
+        }
+        else
+        {
+            textSize = TextRenderer.MeasureText(Text, preferredFont, Size.Empty, flags);
+        }
+
         return new Size(
             textLeft + textSize.Width + JoydexTheme.ScaleLogical(32, DeviceDpi),
             Math.Max(
@@ -584,7 +604,7 @@ internal sealed class NavButton : Control
         TextRenderer.DrawText(
             eventArgs.Graphics,
             Text,
-            Selected ? JoydexTheme.UiSemiboldFont : Font,
+            Selected ? JoydexTheme.FontFor(this, JoydexTheme.UiSemiboldFont) : Font,
             new Rectangle(textLeft, 0, Math.Max(0, Width - textLeft - Scale(8)), Height),
             Selected ? JoydexTheme.AccentText : JoydexTheme.TextSub,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
@@ -598,7 +618,6 @@ internal sealed class NavButton : Control
     protected override void OnDpiChangedAfterParent(EventArgs eventArgs)
     {
         base.OnDpiChangedAfterParent(eventArgs);
-        Parent?.PerformLayout(this, nameof(DeviceDpi));
         Invalidate();
     }
 
@@ -844,7 +863,7 @@ internal sealed class ModernDataGridView : DataGridView
             TextRenderer.DrawText(
                 graphics,
                 "\u25BE",
-                JoydexTheme.SectionFont,
+                JoydexTheme.FontFor(this, JoydexTheme.SectionFont),
                 new Rectangle(
                     eventArgs.CellBounds.Right - arrowWidth,
                     eventArgs.CellBounds.Top,
@@ -1123,7 +1142,8 @@ internal sealed class PromptListBox : ListBox
         Color background,
         Color foreground)
     {
-        var textSize = TextRenderer.MeasureText(text, JoydexTheme.SectionFont, Size.Empty, TextFormatFlags.NoPadding);
+        var pillFont = JoydexTheme.FontFor(this, JoydexTheme.SectionFont);
+        var textSize = TextRenderer.MeasureText(text, pillFont, Size.Empty, TextFormatFlags.NoPadding);
         var horizontalPadding = JoydexTheme.ScaleLogical(14, DeviceDpi);
         var height = JoydexTheme.ScaleLogical(20, DeviceDpi);
         var bounds = new Rectangle(
@@ -1138,7 +1158,7 @@ internal sealed class PromptListBox : ListBox
         TextRenderer.DrawText(
             graphics,
             text,
-            JoydexTheme.SectionFont,
+            pillFont,
             bounds,
             foreground,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);

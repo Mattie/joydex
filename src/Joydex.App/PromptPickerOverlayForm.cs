@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace Joydex.App;
 
-internal sealed class PromptPickerOverlayForm : Form
+internal sealed class PromptPickerOverlayForm : ThemedForm
 {
     private const int HotKeyId = 0x4A50;
     private const int WmHotKey = 0x0312;
@@ -50,8 +50,6 @@ internal sealed class PromptPickerOverlayForm : Form
     public PromptPickerOverlayForm(Func<bool> codexStillForeground)
     {
         _codexStillForeground = codexStillForeground;
-        AutoScaleDimensions = new SizeF(96F, 96F);
-        AutoScaleMode = AutoScaleMode.Dpi;
         Text = "Joydex Prompt Picker";
         Font = _normalFont;
         BackColor = OverlayPalette.WindowBg;
@@ -312,6 +310,7 @@ internal sealed class PromptPickerOverlayForm : Form
             _normalFont = normalFont;
             _selectedFont = selectedFont;
             _glyphFont = glyphFont;
+            Font = normalFont;
             SetStyle(
                 ControlStyles.UserPaint
                 | ControlStyles.AllPaintingInWmPaint
@@ -363,7 +362,10 @@ internal sealed class PromptPickerOverlayForm : Form
                 | TextFormatFlags.NoPadding
                 | TextFormatFlags.SingleLine;
             const string glyph = "▶";
-            var glyphSize = TextRenderer.MeasureText(glyph, _glyphFont, Size.Empty, TextFormatFlags.NoPadding);
+            var glyphFont = JoydexTheme.FontFor(this, _glyphFont, _normalFont.SizeInPoints);
+            var normalFont = JoydexTheme.FontFor(this, _normalFont, _normalFont.SizeInPoints);
+            var selectedFont = JoydexTheme.FontFor(this, _selectedFont, _normalFont.SizeInPoints);
+            var glyphSize = TextRenderer.MeasureText(glyph, glyphFont, Size.Empty, TextFormatFlags.NoPadding);
             var horizontalInset = JoydexTheme.ScaleLogical(16, DeviceDpi);
             var contentGap = JoydexTheme.ScaleLogical(13, DeviceDpi);
             var glyphBounds = new Rectangle(horizontalInset, 0, glyphSize.Width, Height);
@@ -372,7 +374,7 @@ internal sealed class PromptPickerOverlayForm : Form
                 TextRenderer.DrawText(
                     eventArgs.Graphics,
                     glyph,
-                    _glyphFont,
+                    glyphFont,
                     glyphBounds,
                     OverlayPalette.Accent,
                     textFlags);
@@ -385,7 +387,7 @@ internal sealed class PromptPickerOverlayForm : Form
             {
                 var markerSize = TextRenderer.MeasureText(
                     submitMarker,
-                    _normalFont,
+                    normalFont,
                     Size.Empty,
                     TextFormatFlags.NoPadding);
                 var markerBounds = new Rectangle(
@@ -396,7 +398,7 @@ internal sealed class PromptPickerOverlayForm : Form
                 TextRenderer.DrawText(
                     eventArgs.Graphics,
                     submitMarker,
-                    _normalFont,
+                    normalFont,
                     markerBounds,
                     _selected ? OverlayPalette.AccentText : OverlayPalette.TagText,
                     textFlags);
@@ -412,7 +414,7 @@ internal sealed class PromptPickerOverlayForm : Form
             TextRenderer.DrawText(
                 eventArgs.Graphics,
                 _text,
-                _selected ? _selectedFont : _normalFont,
+                _selected ? selectedFont : normalFont,
                 textBounds,
                 textColor,
                 textFlags);

@@ -9,7 +9,7 @@ internal sealed class DryRunActivityForm : ThemedForm
     private readonly HashSet<int> _seenButtons = [];
     private readonly Label _statusLabel = new() { AutoSize = true, Text = "Connecting to throttle..." };
     private readonly Label _summaryLabel = new() { AutoSize = true };
-    private readonly ProgressBar _progress = new()
+    private readonly ProgressIndicator _progress = new()
     {
         Dock = DockStyle.Fill,
         AccessibleName = "Mapped controls seen",
@@ -288,5 +288,67 @@ internal sealed class DryRunActivityForm : ThemedForm
         }
 
         return int.TryParse(message.AsSpan(start, length), out button);
+    }
+
+    private sealed class ProgressIndicator : Control
+    {
+        private int _maximum = 100;
+        private int _value;
+
+        public ProgressIndicator()
+        {
+            AccessibleRole = AccessibleRole.ProgressBar;
+            SetStyle(
+                ControlStyles.UserPaint
+                | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.ResizeRedraw,
+                true);
+        }
+
+        public int Maximum
+        {
+            get => _maximum;
+            set
+            {
+                _maximum = Math.Max(1, value);
+                _value = Math.Min(_value, _maximum);
+                Invalidate();
+            }
+        }
+
+        public int Value
+        {
+            get => _value;
+            set
+            {
+                _value = Math.Clamp(value, 0, Maximum);
+                Invalidate();
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs eventArgs)
+        {
+            base.OnPaint(eventArgs);
+            var trackHeight = Math.Min(Height, JoydexTheme.ScaleLogical(8, DeviceDpi));
+            if (Width <= 0 || trackHeight <= 0)
+            {
+                return;
+            }
+
+            var track = new Rectangle(0, Math.Max(0, (Height - trackHeight) / 2), Width, trackHeight);
+            using var trackBrush = new SolidBrush(JoydexTheme.BorderSoft);
+            ThemeDrawing.FillRoundedRectangle(eventArgs.Graphics, trackBrush, track, trackHeight / 2);
+
+            var fillWidth = (int)Math.Round(track.Width * (Value / (double)Maximum));
+            if (fillWidth <= 0)
+            {
+                return;
+            }
+
+            var fill = new Rectangle(track.X, track.Y, Math.Min(track.Width, fillWidth), track.Height);
+            using var fillBrush = new SolidBrush(JoydexTheme.Accent);
+            ThemeDrawing.FillRoundedRectangle(eventArgs.Graphics, fillBrush, fill, trackHeight / 2);
+        }
     }
 }

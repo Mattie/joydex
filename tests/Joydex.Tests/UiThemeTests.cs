@@ -159,7 +159,7 @@ public sealed class UiThemeTests
         var preferred = button.GetPreferredSize(Size.Empty);
         var text = TextRenderer.MeasureText(
             button.Text,
-            JoydexTheme.UiSemiboldFont,
+            JoydexTheme.FontFor(button, JoydexTheme.UiSemiboldFont),
             Size.Empty,
             TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
 
@@ -178,12 +178,39 @@ public sealed class UiThemeTests
         var preferred = button.GetPreferredSize(Size.Empty);
         var paintedText = TextRenderer.MeasureText(
             button.Text,
-            JoydexTheme.UiSemiboldFont,
+            JoydexTheme.FontFor(button, JoydexTheme.UiSemiboldFont),
             Size.Empty,
             TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
 
         Assert.True(
             preferred.Width >= paintedText.Width + button.Padding.Horizontal + JoydexTheme.ScaleLogical(4, button.DeviceDpi));
+    }
+
+    [Fact]
+    public void RoleFontTracksTheControlsCurrentFontSize()
+    {
+        using var control = new Label();
+        using var compact = new Font(JoydexTheme.UiFont.FontFamily, 6.5F, FontStyle.Regular);
+        using var comfortable = new Font(JoydexTheme.UiFont.FontFamily, 9.75F, FontStyle.Regular);
+        control.Font = compact;
+        var compactRoleSize = JoydexTheme.FontFor(control, JoydexTheme.UiSemiboldFont).SizeInPoints;
+
+        control.Font = comfortable;
+        var comfortableRoleSize = JoydexTheme.FontFor(control, JoydexTheme.UiSemiboldFont).SizeInPoints;
+
+        Assert.Equal(compact.SizeInPoints, compactRoleSize, precision: 2);
+        Assert.Equal(comfortable.SizeInPoints, comfortableRoleSize, precision: 2);
+        Assert.True(comfortableRoleSize > compactRoleSize);
+    }
+
+    [Theory]
+    [InlineData("--render-doc-screenshots")]
+    [InlineData("--RENDER-DOC-SCREENSHOTS-DARK")]
+    public void DocumentationRenderRequestsUseTheDeterministicDpiPath(string argument)
+    {
+        Assert.True(DocumentationScreenshotRenderer.IsRenderRequest([argument, "output"]));
+        Assert.False(DocumentationScreenshotRenderer.IsRenderRequest([argument]));
+        Assert.False(DocumentationScreenshotRenderer.IsRenderRequest(["--render-button-map", "output"]));
     }
 
     [Fact]
@@ -210,32 +237,53 @@ public sealed class UiThemeTests
                 choices.Items.AddRange("One", "Two");
                 grid.Columns.Add(choices);
                 grid.Rows.Add("One");
+                var valueChangedCount = 0;
+                grid.CellValueChanged += (_, eventArgs) =>
+                {
+                    if (eventArgs.RowIndex == 0 && eventArgs.ColumnIndex == 0)
+                    {
+                        valueChangedCount++;
+                    }
+                };
                 host.Controls.Add(grid);
                 host.Shown += (_, _) => host.BeginInvoke(() =>
                 {
-                    var click = new DataGridViewCellMouseEventArgs(
-                        columnIndex: 0,
-                        rowIndex: 0,
-                        localX: 8,
-                        localY: 8,
-                        new MouseEventArgs(MouseButtons.Left, clicks: 1, x: 8, y: 8, delta: 0));
-                    typeof(ModernDataGridView)
-                        .GetMethod("OnCellMouseClick", BindingFlags.Instance | BindingFlags.NonPublic)!
-                        .Invoke(grid, [click]);
+                    try
+                    {
+                        var click = new DataGridViewCellMouseEventArgs(
+                            columnIndex: 0,
+                            rowIndex: 0,
+                            localX: 8,
+                            localY: 8,
+                            new MouseEventArgs(MouseButtons.Left, clicks: 1, x: 8, y: 8, delta: 0));
+                        typeof(ModernDataGridView)
+                            .GetMethod("OnCellMouseClick", BindingFlags.Instance | BindingFlags.NonPublic)!
+                            .Invoke(grid, [click]);
 
-                    Assert.Same(grid.Rows[0].Cells[0], grid.CurrentCell);
-                    Assert.True(grid.IsCurrentCellInEditMode);
-                    var editor = Assert.IsType<DataGridViewComboBoxEditingControl>(grid.EditingControl);
-                    Assert.True(editor.DroppedDown);
-                    editor.DroppedDown = false;
-                    editor.SelectedIndex = 1;
-                    grid.NotifyCurrentCellDirty(dirty: true);
-                    typeof(ModernDataGridView)
-                        .GetMethod("OnComboSelectionChangeCommitted", BindingFlags.Instance | BindingFlags.NonPublic)!
-                        .Invoke(grid, [editor, EventArgs.Empty]);
-                    Assert.Equal("Two", grid.Rows[0].Cells[0].Value);
-                    Assert.False(grid.IsCurrentCellInEditMode);
-                    host.Close();
+                        Assert.Same(grid.Rows[0].Cells[0], grid.CurrentCell);
+                        Assert.True(grid.IsCurrentCellInEditMode);
+                        var editor = Assert.IsType<DataGridViewComboBoxEditingControl>(grid.EditingControl);
+                        Assert.True(editor.DroppedDown);
+                        editor.DroppedDown = false;
+                        editor.SelectedIndex = 1;
+                        grid.NotifyCurrentCellDirty(dirty: true);
+                        typeof(ModernDataGridView)
+                            .GetMethod("OnComboSelectionChangeCommitted", BindingFlags.Instance | BindingFlags.NonPublic)!
+                            .Invoke(grid, [editor, EventArgs.Empty]);
+                        Assert.Equal("Two", grid.Rows[0].Cells[0].Value);
+                        Assert.False(grid.IsCurrentCellInEditMode);
+                        Assert.Equal(1, valueChangedCount);
+                    }
+                    catch (Exception exception)
+                    {
+                        failure = exception is TargetInvocationException { InnerException: not null } target
+                            ? target.InnerException
+                            : exception;
+                    }
+                    finally
+                    {
+                        host.Close();
+                    }
                 });
                 Application.Run(host);
             }

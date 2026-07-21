@@ -51,7 +51,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private PromptPickerCoordinator? _promptPicker;
     private PromptPickerOverlayForm? _promptOverlay;
     private TaskAlertsForm? _taskAlertsForm;
-    private bool _showTaskAlertsAfterMenuCloses;
+    private bool _taskAlertsShowPending;
     private bool _configuring;
 
     public TrayApplicationContext(string configPath)
@@ -161,7 +161,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Text = "Joydex",
             Visible = true,
         };
-        _notifyIcon.ContextMenuStrip.Closed += OnTrayMenuClosed;
         _notifyIcon.DoubleClick += OnConfigure;
 
         _taskAlerts.Changed += OnTaskAlertsChanged;
@@ -201,6 +200,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         SystemEvents.SessionEnding -= OnSessionEnding;
         _deviceChangeMonitor.DevicesChanged -= OnDevicesChanged;
         _deviceChangeMonitor.Dispose();
+        if (_taskAlertsShowPending)
+        {
+            Application.Idle -= OnApplicationIdleShowTaskAlerts;
+            _taskAlertsShowPending = false;
+        }
         _taskAlertsForm?.Close();
         _taskAlertsForm = null;
         _activityForm?.Close();
@@ -840,30 +844,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnTaskAlertsStatus(object? sender, EventArgs eventArgs)
     {
-        // Showing a top-level window while a NotifyIcon context menu is still
-        // dismissing can leave the new HWND cached but hidden. Wait until the
-        // root menu has fully closed, then create/show/activate in one operation.
-        if (_notifyIcon.ContextMenuStrip?.Visible == true)
+        if (_taskAlertsShowPending)
         {
-            _showTaskAlertsAfterMenuCloses = true;
             return;
         }
 
-        _uiContext.Post(_ => ShowTaskAlertsStatus(), null);
+        // With a nested ToolStrip menu, the root Closed event occurs before this Click
+        // handler. Application.Idle runs after the remaining dismissal/focus messages.
+        _taskAlertsShowPending = true;
+        Application.Idle += OnApplicationIdleShowTaskAlerts;
     }
 
-    private void OnTrayMenuClosed(object? sender, ToolStripDropDownClosedEventArgs eventArgs)
+    private void OnApplicationIdleShowTaskAlerts(object? sender, EventArgs eventArgs)
     {
-        if (!_showTaskAlertsAfterMenuCloses)
-        {
-            return;
-        }
-
-        _showTaskAlertsAfterMenuCloses = false;
-        _uiContext.Post(_ => ShowTaskAlertsStatus(), null);
+        Application.Idle -= OnApplicationIdleShowTaskAlerts;
+        _taskAlertsShowPending = false;
+        _ = ShowTaskAlertsStatus();
     }
 
-    private void ShowTaskAlertsStatus()
+    private bool ShowTaskAlertsStatus()
     {
         try
         {
@@ -888,9 +887,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             ShowAndActivate(form);
+            var nativeVisible = IsFormNativelyVisible(form);
             _log.Write(
-                $"Task-alert status shown visible={form.Visible}; state={form.WindowState}; " +
+                $"Task-alert status shown visible={form.Visible}; nativeVisible={nativeVisible}; " +
+                $"state={form.WindowState}; " +
                 $"bounds={form.Bounds}; screen={Screen.FromControl(form).DeviceName}.");
+            return nativeVisible;
         }
         catch (Exception exception)
         {
@@ -902,6 +904,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 "Joydex task alerts",
                 "The status window could not be opened. See the Joydex log for details.",
                 ToolTipIcon.Error);
+            return false;
         }
     }
 
@@ -918,8 +921,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             form.Show();
         }
 
+        EnsureNativeWindowVisible(form);
+
         form.BringToFront();
         form.Activate();
+        _ = SetForegroundWindow(form.Handle);
 
         // Recheck on the next UI turn as foreground activation can settle after Show.
         form.BeginInvoke(() =>
@@ -940,9 +946,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 form.Show();
             }
 
+            EnsureNativeWindowVisible(form);
+
             form.BringToFront();
             form.Activate();
+            _ = SetForegroundWindow(form.Handle);
         });
+    }
+
+    internal static bool IsFormNativelyVisible(Form? form) => form is
+    {
+        IsDisposed: false,
+        Disposing: false,
+        IsHandleCreated: true,
+    } && IsWindowVisible(form.Handle);
+
+    internal static void EnsureNativeWindowVisible(Form form)
+    {
+        if (form.IsHandleCreated && !IsWindowVisible(form.Handle))
+        {
+            _ = ShowWindow(form.Handle, 5); // SW_SHOW
+        }
     }
 
     private static void RestoreVisibleWindowBounds(Form form)
@@ -965,6 +989,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
             size.Width,
             size.Height);
     }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr window);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr window, int command);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr window);
 
     private void OnTaskAlertsChanged(object? sender, TaskAlertSnapshot snapshot)
     {

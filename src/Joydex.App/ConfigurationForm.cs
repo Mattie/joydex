@@ -163,7 +163,7 @@ internal sealed class ConfigurationForm : ThemedForm
             Padding = new Padding(12, 12, 12, 0),
             RowCount = 2,
         };
-        main.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ScaleLogical(196)));
+        main.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 196));
         main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -271,7 +271,7 @@ internal sealed class ConfigurationForm : ThemedForm
         {
             AccessibleName = title,
             Dock = DockStyle.Top,
-            Height = ScaleLogical(36),
+            Height = 36,
             Glyph = title switch
             {
                 "Bindings" => NavGlyph.Bindings,
@@ -284,7 +284,7 @@ internal sealed class ConfigurationForm : ThemedForm
         };
         button.Click += (_, _) => ShowPage(index, focusNavigation: false);
         navigation.RowCount++;
-        navigation.RowStyles.Add(new RowStyle(SizeType.Absolute, ScaleLogical(40)));
+        navigation.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         navigation.Controls.Add(button, 0, index);
 
         page.Visible = false;
@@ -790,9 +790,10 @@ internal sealed class ConfigurationForm : ThemedForm
 
             var value = Convert.ToString(eventArgs.FormattedValue) ?? string.Empty;
             var warning = string.Equals(value, "release", StringComparison.OrdinalIgnoreCase);
+            var monoFont = JoydexTheme.FontFor(_bindingGrid, JoydexTheme.MonoFont);
             var textSize = TextRenderer.MeasureText(
                 value,
-                JoydexTheme.MonoFont,
+                monoFont,
                 Size.Empty,
                 TextFormatFlags.NoPadding);
             var horizontalInset = ScaleLogical(8);
@@ -817,7 +818,7 @@ internal sealed class ConfigurationForm : ThemedForm
             TextRenderer.DrawText(
                 graphics,
                 value,
-                JoydexTheme.MonoFont,
+                monoFont,
                 pillBounds,
                 warning ? JoydexTheme.TagWarnText : JoydexTheme.TagText,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
@@ -839,7 +840,7 @@ internal sealed class ConfigurationForm : ThemedForm
         TextRenderer.DrawText(
             graphics,
             "\u25BE",
-            JoydexTheme.SectionFont,
+            JoydexTheme.FontFor(_bindingGrid, JoydexTheme.SectionFont),
             new Rectangle(
                 eventArgs.CellBounds.Right - arrowWidth,
                 eventArgs.CellBounds.Top,

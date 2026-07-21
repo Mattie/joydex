@@ -129,6 +129,27 @@ internal static class JoydexTheme
         9F,
         FontStyle.Regular);
 
+    private static readonly ConditionalWeakTable<Control, RoleFontCache> RoleFonts = new();
+
+    /// <summary>
+    /// Returns a role font whose size follows the control font WinForms has already
+    /// adjusted for the control's current monitor.
+    /// </summary>
+    public static Font FontFor(Control control, Font roleFont)
+        => FontFor(control, roleFont, UiFont.SizeInPoints);
+
+    public static Font FontFor(Control control, Font roleFont, float logicalBaseFontSize)
+    {
+        if (!RoleFonts.TryGetValue(control, out var cache))
+        {
+            cache = new RoleFontCache();
+            RoleFonts.Add(control, cache);
+            control.Disposed += OnRoleFontControlDisposed;
+        }
+
+        return cache.Get(roleFont, logicalBaseFontSize, control.Font, control.DeviceDpi);
+    }
+
     public static bool RefreshSystemPreference()
     {
         var next = _darkModeOverride ?? ReadSystemDarkMode();
@@ -207,6 +228,18 @@ internal static class JoydexTheme
         return new Font("Segoe UI", size, style, GraphicsUnit.Point);
     }
 
+    private static void OnRoleFontControlDisposed(object? sender, EventArgs eventArgs)
+    {
+        if (sender is not Control control || !RoleFonts.TryGetValue(control, out var cache))
+        {
+            return;
+        }
+
+        control.Disposed -= OnRoleFontControlDisposed;
+        RoleFonts.Remove(control);
+        cache.Dispose();
+    }
+
     private static Color FromHex(string value) => ColorTranslator.FromHtml(value);
 
     private sealed class ThemeOverride(bool? previousOverride, bool previousDark) : IDisposable
@@ -223,6 +256,60 @@ internal static class JoydexTheme
             _darkModeOverride = previousOverride;
             Dark = previousOverride ?? previousDark;
             _disposed = true;
+        }
+    }
+
+    private sealed class RoleFontCache : IDisposable
+    {
+        private readonly Dictionary<(Font Role, float LogicalBaseSize), Font> _fonts = [];
+        private string? _sourceFamily;
+        private float _sourceSize;
+        private FontStyle _sourceStyle;
+        private int _sourceDpi;
+
+        public Font Get(Font roleFont, float logicalBaseFontSize, Font sourceFont, int sourceDpi)
+        {
+            if (!Matches(sourceFont, sourceDpi))
+            {
+                DisposeFonts();
+                _sourceFamily = sourceFont.FontFamily.Name;
+                _sourceSize = sourceFont.SizeInPoints;
+                _sourceStyle = sourceFont.Style;
+                _sourceDpi = sourceDpi;
+            }
+
+            var key = (roleFont, logicalBaseFontSize);
+            if (_fonts.TryGetValue(key, out var font))
+            {
+                return font;
+            }
+
+            var roleScale = roleFont.SizeInPoints / logicalBaseFontSize;
+            font = new Font(
+                roleFont.FontFamily,
+                Math.Max(1F, sourceFont.SizeInPoints * roleScale),
+                roleFont.Style,
+                GraphicsUnit.Point);
+            _fonts.Add(key, font);
+            return font;
+        }
+
+        public void Dispose() => DisposeFonts();
+
+        private bool Matches(Font sourceFont, int sourceDpi) =>
+            string.Equals(_sourceFamily, sourceFont.FontFamily.Name, StringComparison.Ordinal)
+            && Math.Abs(_sourceSize - sourceFont.SizeInPoints) < 0.01F
+            && _sourceStyle == sourceFont.Style
+            && _sourceDpi == sourceDpi;
+
+        private void DisposeFonts()
+        {
+            foreach (var font in _fonts.Values)
+            {
+                font.Dispose();
+            }
+
+            _fonts.Clear();
         }
     }
 }
@@ -307,19 +394,21 @@ internal static class ThemeService
         grid.ColumnHeadersHeight = headerHeight;
         grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
         grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        var sectionFont = JoydexTheme.FontFor(grid, JoydexTheme.SectionFont);
+        var monoFont = JoydexTheme.FontFor(grid, JoydexTheme.MonoFont);
         grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
         {
             Alignment = DataGridViewContentAlignment.MiddleLeft,
             BackColor = JoydexTheme.Surface,
             ForeColor = JoydexTheme.TextFaint,
-            Font = JoydexTheme.SectionFont,
+            Font = sectionFont,
             Padding = new Padding(6, 0, 6, 0),
             SelectionBackColor = JoydexTheme.Surface,
             SelectionForeColor = JoydexTheme.TextFaint,
         };
         grid.DefaultCellStyle.BackColor = JoydexTheme.Surface;
         grid.DefaultCellStyle.ForeColor = JoydexTheme.Text;
-        grid.DefaultCellStyle.Font = JoydexTheme.UiFont;
+        grid.DefaultCellStyle.Font = grid.Font;
         grid.DefaultCellStyle.Padding = new Padding(
             horizontalPadding,
             topPadding,
@@ -348,7 +437,7 @@ internal static class ThemeService
                 || column.Name.Contains("Time", StringComparison.OrdinalIgnoreCase)
                 || column.Name.Contains("Received", StringComparison.OrdinalIgnoreCase))
             {
-                column.DefaultCellStyle.Font = JoydexTheme.MonoFont;
+                column.DefaultCellStyle.Font = monoFont;
             }
 
             if (column.Name.Contains("Action", StringComparison.OrdinalIgnoreCase))
@@ -561,6 +650,7 @@ internal static class ThemeService
 internal class ThemedForm : Form
 {
     private const int WmSettingChange = 0x001A;
+    private bool _initialAutoScalePending = true;
     private Size? _logicalMinimumSize;
 
     internal bool SuppressActivation { get; set; }
@@ -569,8 +659,12 @@ internal class ThemedForm : Form
 
     protected ThemedForm()
     {
+        // Keep ContainerControl from consuming the 96-DPI baseline when the handle
+        // first establishes its real monitor DPI. The complete derived tree is scaled
+        // once in OnHandleCreated instead.
+        SuspendLayout();
+        AutoScaleMode = AutoScaleMode.None;
         AutoScaleDimensions = new SizeF(96F, 96F);
-        AutoScaleMode = AutoScaleMode.Dpi;
         Font = JoydexTheme.UiFont;
         BackColor = JoydexTheme.WindowBg;
         ForeColor = JoydexTheme.Text;
@@ -585,6 +679,16 @@ internal class ThemedForm : Form
     protected override void OnHandleCreated(EventArgs eventArgs)
     {
         base.OnHandleCreated(eventArgs);
+        if (_initialAutoScalePending)
+        {
+            _initialAutoScalePending = false;
+            AutoScaleMode = AutoScaleMode.Dpi;
+            // Switching from None clears the authored baseline.
+            AutoScaleDimensions = new SizeF(96F, 96F);
+            ResumeLayout(performLayout: false);
+            PerformLayout();
+        }
+
         ApplyCurrentTheme();
         ReflowForCurrentDpi();
     }

@@ -5,7 +5,10 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.SetHighDpiMode(
+            DocumentationScreenshotRenderer.IsRenderRequest(args)
+                ? HighDpiMode.DpiUnaware
+                : HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         if (DocumentationScreenshotRenderer.TryRender(args))

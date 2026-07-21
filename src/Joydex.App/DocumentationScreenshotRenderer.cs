@@ -3,7 +3,6 @@ using Joydex.Core.Mapping;
 using Joydex.Core.TaskAlerts;
 using Joydex.Windows.Interop;
 using Joydex.Windows.TaskAlerts;
-using System.Drawing.Drawing2D;
 
 namespace Joydex.App;
 
@@ -15,6 +14,20 @@ internal static class DocumentationScreenshotRenderer
 {
     private const string Argument = "--render-doc-screenshots";
     private const string DarkArgument = "--render-doc-screenshots-dark";
+
+    internal static bool IsRenderRequest(IReadOnlyList<string> args)
+    {
+        for (var index = 0; index < args.Count - 1; index++)
+        {
+            if (string.Equals(args[index], Argument, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(args[index], DarkArgument, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public static bool TryRender(IReadOnlyList<string> args)
     {
@@ -62,18 +75,18 @@ internal static class DocumentationScreenshotRenderer
                        cooperativeWindow.Handle,
                        documentationMode: true))
             {
-                configuration.Size = new Size(1500, 1000);
+                configuration.Size = new Size(1200, 800);
                 configuration.Shown += (_, _) => configuration.ExerciseBindingGridEditingForDocumentation();
                 RenderForm(
                     configuration,
                     Path.Combine(outputDirectory, "joydex-configuration.png"));
             }
 
-            foreach (var (tab, fileName) in new[]
+            foreach (var (tab, fileName, size) in new[]
             {
-                ("Prompt Pickers", "joydex-prompt-pickers.png"),
-                ("Button Maps", "joydex-button-maps-configuration.png"),
-                ("General", "joydex-general-configuration.png"),
+                ("Prompt Pickers", "joydex-prompt-pickers.png", new Size(1200, 800)),
+                ("Button Maps", "joydex-button-maps-configuration.png", new Size(1200, 800)),
+                ("General", "joydex-general-configuration.png", new Size(1200, 800)),
             })
             {
                 using var configuration = new ConfigurationForm(
@@ -81,7 +94,7 @@ internal static class DocumentationScreenshotRenderer
                     configurationStatePath,
                     cooperativeWindow.Handle,
                     documentationMode: true);
-                configuration.Size = new Size(1500, 1000);
+                configuration.Size = size;
                 configuration.SelectTabForDocumentation(tab);
                 RenderForm(configuration, Path.Combine(outputDirectory, fileName));
             }
@@ -284,7 +297,6 @@ internal static class DocumentationScreenshotRenderer
 
     private static void RenderForm(Form form, string outputPath)
     {
-        var requestedSize = form.Size;
         form.StartPosition = FormStartPosition.Manual;
         form.Location = new Point(-32000, -32000);
         form.ShowInTaskbar = false;
@@ -295,35 +307,16 @@ internal static class DocumentationScreenshotRenderer
 
         form.Show();
         Application.DoEvents();
-        // Per-monitor DPI scaling is desirable in the live app, while repository screenshots
-        // need the authored pixel dimensions to remain stable across developer monitors. Render
-        // at the monitor DPI, then downsample to the requested logical size.
         form.MinimumSize = Size.Empty;
-        form.Size = DpiUtilities.ScaleBetween(
-            requestedSize,
-            DpiUtilities.LogicalDpi,
-            form.DeviceDpi);
         form.PerformLayout();
         PrepareControlsForScreenshot(form);
+        form.Invalidate(invalidateChildren: true);
+        form.Update();
+        Application.DoEvents();
 
-        using var rendered = new Bitmap(form.Width, form.Height);
-        form.DrawToBitmap(rendered, new Rectangle(Point.Empty, rendered.Size));
-        if (rendered.Size == requestedSize)
-        {
-            rendered.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
-        }
-        else
-        {
-            using var output = new Bitmap(requestedSize.Width, requestedSize.Height);
-            using var graphics = Graphics.FromImage(output);
-            graphics.CompositingQuality = CompositingQuality.HighQuality;
-            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            graphics.SmoothingMode = SmoothingMode.HighQuality;
-            graphics.DrawImage(rendered, new Rectangle(Point.Empty, requestedSize));
-            output.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
-        }
-
+        using var bitmap = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+        bitmap.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
         form.Close();
     }
 
