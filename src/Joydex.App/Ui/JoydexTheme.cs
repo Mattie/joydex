@@ -227,6 +227,40 @@ internal static class JoydexTheme
     }
 }
 
+internal static class DpiUtilities
+{
+    public const int LogicalDpi = 96;
+
+    public static int SystemDpi
+    {
+        get
+        {
+            try
+            {
+                return Math.Max(LogicalDpi, checked((int)GetDpiForSystem()));
+            }
+            catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException or OverflowException)
+            {
+                return LogicalDpi;
+            }
+        }
+    }
+
+    public static int ScaleBetween(int value, int sourceDpi, int targetDpi)
+    {
+        sourceDpi = sourceDpi > 0 ? sourceDpi : LogicalDpi;
+        targetDpi = targetDpi > 0 ? targetDpi : LogicalDpi;
+        return Math.Max(1, (int)Math.Round(value * (double)targetDpi / sourceDpi));
+    }
+
+    public static Size ScaleBetween(Size value, int sourceDpi, int targetDpi) => new(
+        ScaleBetween(value.Width, sourceDpi, targetDpi),
+        ScaleBetween(value.Height, sourceDpi, targetDpi));
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForSystem();
+}
+
 /// <summary>
 /// Applies the current Joydex palette to stock controls and native title bars.
 /// </summary>
@@ -358,7 +392,6 @@ internal static class ThemeService
             case Form:
                 control.BackColor = JoydexTheme.WindowBg;
                 control.ForeColor = JoydexTheme.Text;
-                control.Font = JoydexTheme.UiFont;
                 childBackground = JoydexTheme.WindowBg;
                 break;
             case CardPanel:
@@ -528,6 +561,7 @@ internal static class ThemeService
 internal class ThemedForm : Form
 {
     private const int WmSettingChange = 0x001A;
+    private Size? _logicalMinimumSize;
 
     internal bool SuppressActivation { get; set; }
 
@@ -535,21 +569,49 @@ internal class ThemedForm : Form
 
     protected ThemedForm()
     {
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        AutoScaleMode = AutoScaleMode.Dpi;
         Font = JoydexTheme.UiFont;
         BackColor = JoydexTheme.WindowBg;
         ForeColor = JoydexTheme.Text;
+    }
+
+    protected void SetLogicalMinimumSize(Size minimumSize)
+    {
+        _logicalMinimumSize = minimumSize;
+        MinimumSize = minimumSize;
     }
 
     protected override void OnHandleCreated(EventArgs eventArgs)
     {
         base.OnHandleCreated(eventArgs);
         ApplyCurrentTheme();
+        ReflowForCurrentDpi();
     }
 
     protected override void OnShown(EventArgs eventArgs)
     {
         base.OnShown(eventArgs);
         ApplyCurrentTheme();
+        ReflowForCurrentDpi();
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs eventArgs)
+    {
+        base.OnDpiChanged(eventArgs);
+        ApplyCurrentTheme();
+        ReflowForCurrentDpi();
+        if (IsHandleCreated && !IsDisposed && !Disposing)
+        {
+            BeginInvoke(() =>
+            {
+                if (!IsDisposed && !Disposing)
+                {
+                    ApplyCurrentTheme();
+                    ReflowForCurrentDpi();
+                }
+            });
+        }
     }
 
     protected override void WndProc(ref Message message)
@@ -576,5 +638,40 @@ internal class ThemedForm : Form
     {
         ThemeService.Apply(this);
         OnThemeApplied();
+    }
+
+    private void ReflowForCurrentDpi()
+    {
+        SuspendLayout();
+        try
+        {
+            if (_logicalMinimumSize is { } logicalMinimum)
+            {
+                var workingArea = Screen.FromHandle(Handle).WorkingArea;
+                MinimumSize = SuppressActivation
+                    ? logicalMinimum
+                    : new Size(
+                        Math.Min(JoydexTheme.ScaleLogical(logicalMinimum.Width, DeviceDpi), workingArea.Width),
+                        Math.Min(JoydexTheme.ScaleLogical(logicalMinimum.Height, DeviceDpi), workingArea.Height));
+            }
+
+            PerformLayout();
+        }
+        finally
+        {
+            ResumeLayout(performLayout: true);
+        }
+
+        if (SuppressActivation || WindowState != FormWindowState.Normal)
+        {
+            return;
+        }
+
+        var area = Screen.FromHandle(Handle).WorkingArea;
+        var width = Math.Min(Math.Max(MinimumSize.Width, Width), area.Width);
+        var height = Math.Min(Math.Max(MinimumSize.Height, Height), area.Height);
+        var left = Math.Clamp(Left, area.Left, area.Right - width);
+        var top = Math.Clamp(Top, area.Top, area.Bottom - height);
+        Bounds = new Rectangle(left, top, width, height);
     }
 }

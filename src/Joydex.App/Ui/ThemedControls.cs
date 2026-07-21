@@ -42,7 +42,13 @@ internal sealed class RoundedButton : Button
         get => _variant;
         set
         {
+            if (_variant == value)
+            {
+                return;
+            }
+
             _variant = value;
+            Parent?.PerformLayout(this, nameof(Variant));
             Invalidate();
         }
     }
@@ -60,14 +66,23 @@ internal sealed class RoundedButton : Button
 
     public override Size GetPreferredSize(Size proposedSize)
     {
+        var preferredFont = Variant == ButtonVariant.Primary ? JoydexTheme.UiSemiboldFont : Font;
         var text = TextRenderer.MeasureText(
             Text,
-            Font,
+            preferredFont,
             Size.Empty,
             TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
         return new Size(
-            Math.Max(MinimumSize.Width, text.Width + Padding.Horizontal + 4),
-            Math.Max(MinimumSize.Height, text.Height + Padding.Vertical + 4));
+            Math.Max(MinimumSize.Width, text.Width + Padding.Horizontal + JoydexTheme.ScaleLogical(4, DeviceDpi)),
+            Math.Max(MinimumSize.Height, text.Height + Padding.Vertical + JoydexTheme.ScaleLogical(4, DeviceDpi)));
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs eventArgs)
+    {
+        base.OnDpiChangedAfterParent(eventArgs);
+        UpdateButtonRegion();
+        Parent?.PerformLayout(this, nameof(DeviceDpi));
+        Invalidate();
     }
 
     public override void NotifyDefault(bool value)
@@ -312,6 +327,14 @@ internal sealed class BorderedTextBox : Panel
         eventArgs.Graphics.FillPath(fill, path);
         eventArgs.Graphics.DrawPath(border, borderPath);
     }
+
+    protected override void OnDpiChangedAfterParent(EventArgs eventArgs)
+    {
+        base.OnDpiChangedAfterParent(eventArgs);
+        Parent?.PerformLayout(this, nameof(DeviceDpi));
+        PerformLayout();
+        Invalidate();
+    }
 }
 
 /// <summary>
@@ -336,7 +359,7 @@ internal sealed class CardPanel : Panel
         eventArgs.Graphics.Clear(Parent?.BackColor ?? JoydexTheme.WindowBg);
         eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var bounds = new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
-        using var path = ThemeDrawing.RoundedRectangle(bounds, 8);
+        using var path = ThemeDrawing.RoundedRectangle(bounds, JoydexTheme.ScaleLogical(8, DeviceDpi));
         using var brush = new SolidBrush(JoydexTheme.Surface);
         eventArgs.Graphics.FillPath(brush, path);
     }
@@ -346,7 +369,7 @@ internal sealed class CardPanel : Panel
         base.OnPaint(eventArgs);
         eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var bounds = new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
-        using var path = ThemeDrawing.RoundedRectangle(bounds, 8);
+        using var path = ThemeDrawing.RoundedRectangle(bounds, JoydexTheme.ScaleLogical(8, DeviceDpi));
         using var pen = new Pen(JoydexTheme.Border);
         eventArgs.Graphics.DrawPath(pen, path);
     }
@@ -453,15 +476,17 @@ internal sealed class NavButton : Control
     public override Size GetPreferredSize(Size proposedSize)
     {
         var hasGlyph = Icon is not null || Glyph != NavGlyph.None;
-        var textLeft = hasGlyph ? 38 : 12;
+        var textLeft = JoydexTheme.ScaleLogical(hasGlyph ? 38 : 12, DeviceDpi);
         var textSize = TextRenderer.MeasureText(
             Text,
             Selected ? JoydexTheme.UiSemiboldFont : Font,
             Size.Empty,
             TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
         return new Size(
-            textLeft + textSize.Width + 32,
-            Math.Max(36, textSize.Height + 12));
+            textLeft + textSize.Width + JoydexTheme.ScaleLogical(32, DeviceDpi),
+            Math.Max(
+                JoydexTheme.ScaleLogical(36, DeviceDpi),
+                textSize.Height + JoydexTheme.ScaleLogical(12, DeviceDpi)));
     }
 
     protected override AccessibleObject CreateAccessibilityInstance() => new NavButtonAccessibleObject(this);
@@ -478,16 +503,6 @@ internal sealed class NavButton : Control
         _hovered = false;
         Invalidate();
         base.OnMouseLeave(eventArgs);
-    }
-
-    protected override void OnMouseUp(MouseEventArgs eventArgs)
-    {
-        if (eventArgs.Button == MouseButtons.Left && ClientRectangle.Contains(eventArgs.Location))
-        {
-            OnClick(EventArgs.Empty);
-        }
-
-        base.OnMouseUp(eventArgs);
     }
 
     protected override bool IsInputKey(Keys keyData)
@@ -531,32 +546,38 @@ internal sealed class NavButton : Control
     protected override void OnPaint(PaintEventArgs eventArgs)
     {
         eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var scale = DeviceDpi / 96F;
+        int Scale(int value) => (int)Math.Round(value * scale);
         var bounds = new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
         if (Selected || _hovered)
         {
-            using var path = ThemeDrawing.RoundedRectangle(bounds, 6);
+            using var path = ThemeDrawing.RoundedRectangle(bounds, Scale(6));
             using var brush = new SolidBrush(Selected ? JoydexTheme.AccentTint : JoydexTheme.HoverBg);
             eventArgs.Graphics.FillPath(brush, path);
         }
 
         if (Selected)
         {
-            using var barPath = ThemeDrawing.RoundedRectangle(new Rectangle(0, 9, 3, Math.Max(2, Height - 18)), 2);
+            using var barPath = ThemeDrawing.RoundedRectangle(
+                new Rectangle(0, Scale(9), Math.Max(1, Scale(3)), Math.Max(Scale(2), Height - Scale(18))),
+                Scale(2));
             using var barBrush = new SolidBrush(JoydexTheme.Accent);
             eventArgs.Graphics.FillPath(barBrush, barPath);
         }
 
         var hasGlyph = Icon is not null || Glyph != NavGlyph.None;
-        var textLeft = hasGlyph ? 38 : 12;
+        var textLeft = Scale(hasGlyph ? 38 : 12);
         if (Icon is not null)
         {
-            eventArgs.Graphics.DrawImage(Icon, new Rectangle(12, (Height - 16) / 2, 16, 16));
+            var iconSize = Scale(16);
+            eventArgs.Graphics.DrawImage(Icon, new Rectangle(Scale(12), (Height - iconSize) / 2, iconSize, iconSize));
         }
         else if (Glyph != NavGlyph.None)
         {
+            var glyphSize = Scale(16);
             DrawGlyph(
                 eventArgs.Graphics,
-                new Rectangle(12, (Height - 16) / 2, 16, 16),
+                new Rectangle(Scale(12), (Height - glyphSize) / 2, glyphSize, glyphSize),
                 Selected ? JoydexTheme.AccentText : JoydexTheme.TextSub);
         }
 
@@ -564,14 +585,21 @@ internal sealed class NavButton : Control
             eventArgs.Graphics,
             Text,
             Selected ? JoydexTheme.UiSemiboldFont : Font,
-            new Rectangle(textLeft, 0, Math.Max(0, Width - textLeft - 8), Height),
+            new Rectangle(textLeft, 0, Math.Max(0, Width - textLeft - Scale(8)), Height),
             Selected ? JoydexTheme.AccentText : JoydexTheme.TextSub,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
 
         if (Focused && ShowFocusCues)
         {
-            ControlPaint.DrawFocusRectangle(eventArgs.Graphics, Rectangle.Inflate(bounds, -4, -4));
+            ControlPaint.DrawFocusRectangle(eventArgs.Graphics, Rectangle.Inflate(bounds, -Scale(4), -Scale(4)));
         }
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs eventArgs)
+    {
+        base.OnDpiChangedAfterParent(eventArgs);
+        Parent?.PerformLayout(this, nameof(DeviceDpi));
+        Invalidate();
     }
 
     private void DrawGlyph(Graphics graphics, Rectangle bounds, Color color)
@@ -664,6 +692,8 @@ internal sealed class NavButton : Control
 /// </summary>
 internal sealed class ModernDataGridView : DataGridView
 {
+    private ComboBox? _editingComboBox;
+
     public ModernDataGridView()
     {
         DoubleBuffered = true;
@@ -724,6 +754,35 @@ internal sealed class ModernDataGridView : DataGridView
         if (eventArgs.ColumnIndex >= 0 && eventArgs.RowIndex >= 0)
         {
             InvalidateCell(eventArgs.ColumnIndex, eventArgs.RowIndex);
+        }
+    }
+
+    protected override void OnCellMouseClick(DataGridViewCellMouseEventArgs eventArgs)
+    {
+        base.OnCellMouseClick(eventArgs);
+        if (eventArgs.Button != MouseButtons.Left
+            || eventArgs.Clicks != 1
+            || eventArgs.RowIndex < 0
+            || eventArgs.ColumnIndex < 0
+            || ReadOnly
+            || Rows[eventArgs.RowIndex].Cells[eventArgs.ColumnIndex] is not DataGridViewComboBoxCell { ReadOnly: false } cell)
+        {
+            return;
+        }
+
+        CurrentCell = cell;
+        if (BeginEdit(selectAll: false) && EditingControl is DataGridViewComboBoxEditingControl comboBox)
+        {
+            comboBox.DroppedDown = true;
+        }
+    }
+
+    protected override void OnCurrentCellDirtyStateChanged(EventArgs eventArgs)
+    {
+        base.OnCurrentCellDirtyStateChanged(eventArgs);
+        if (IsCurrentCellDirty && CurrentCell is DataGridViewComboBoxCell)
+        {
+            CommitEdit(DataGridViewDataErrorContexts.Commit);
         }
     }
 
@@ -801,11 +860,18 @@ internal sealed class ModernDataGridView : DataGridView
     protected override void OnEditingControlShowing(DataGridViewEditingControlShowingEventArgs eventArgs)
     {
         base.OnEditingControlShowing(eventArgs);
+        if (_editingComboBox is not null)
+        {
+            _editingComboBox.SelectionChangeCommitted -= OnComboSelectionChangeCommitted;
+            _editingComboBox = null;
+        }
+
         if (eventArgs.Control is not ComboBox comboBox)
         {
             return;
         }
 
+        _editingComboBox = comboBox;
         comboBox.BackColor = JoydexTheme.InputBg;
         comboBox.ForeColor = JoydexTheme.Text;
         comboBox.FlatStyle = FlatStyle.Flat;
@@ -813,6 +879,17 @@ internal sealed class ModernDataGridView : DataGridView
         comboBox.ItemHeight = Math.Max(
             JoydexTheme.ScaleLogical(24, DeviceDpi),
             comboBox.Font.Height + JoydexTheme.ScaleLogical(6, DeviceDpi));
+        comboBox.SelectionChangeCommitted += OnComboSelectionChangeCommitted;
+    }
+
+    private void OnComboSelectionChangeCommitted(object? sender, EventArgs eventArgs)
+    {
+        if (IsCurrentCellDirty)
+        {
+            CommitEdit(DataGridViewDataErrorContexts.Commit);
+        }
+
+        EndEdit();
     }
 
     private static void NormalizeComboColumn(DataGridViewColumn column)
@@ -944,7 +1021,7 @@ internal sealed class PromptListBox : ListBox
         BorderStyle = BorderStyle.None;
         DrawMode = DrawMode.OwnerDrawFixed;
         IntegralHeight = false;
-        ItemHeight = 38;
+        UpdateItemHeight();
         ApplyTheme();
     }
 
@@ -968,7 +1045,12 @@ internal sealed class PromptListBox : ListBox
         if (selected)
         {
             using var accent = new SolidBrush(JoydexTheme.Accent);
-            eventArgs.Graphics.FillRectangle(accent, eventArgs.Bounds.Left, eventArgs.Bounds.Top, 2, eventArgs.Bounds.Height);
+            eventArgs.Graphics.FillRectangle(
+                accent,
+                eventArgs.Bounds.Left,
+                eventArgs.Bounds.Top,
+                JoydexTheme.ScaleLogical(2, DeviceDpi),
+                eventArgs.Bounds.Height);
         }
 
         var value = GetItemText(Items[eventArgs.Index]) ?? string.Empty;
@@ -984,8 +1066,10 @@ internal sealed class PromptListBox : ListBox
             text = text[..^" [+ Submit]".Length];
         }
 
-        var left = eventArgs.Bounds.Left + 10;
-        var right = eventArgs.Bounds.Right - 10;
+        var horizontalInset = JoydexTheme.ScaleLogical(10, DeviceDpi);
+        var pillGap = JoydexTheme.ScaleLogical(6, DeviceDpi);
+        var left = eventArgs.Bounds.Left + horizontalInset;
+        var right = eventArgs.Bounds.Right - horizontalInset;
         if (submits)
         {
             right = DrawPill(
@@ -994,7 +1078,7 @@ internal sealed class PromptListBox : ListBox
                 right,
                 eventArgs.Bounds,
                 JoydexTheme.AccentTint,
-                JoydexTheme.AccentText) - 6;
+                JoydexTheme.AccentText) - pillGap;
         }
         if (isDefault)
         {
@@ -1004,7 +1088,7 @@ internal sealed class PromptListBox : ListBox
                 right,
                 eventArgs.Bounds,
                 JoydexTheme.TagWarnBg,
-                JoydexTheme.TagWarnText) - 6;
+                JoydexTheme.TagWarnText) - pillGap;
         }
 
         TextRenderer.DrawText(
@@ -1017,7 +1101,21 @@ internal sealed class PromptListBox : ListBox
         eventArgs.DrawFocusRectangle();
     }
 
-    private static int DrawPill(
+    protected override void OnDpiChangedAfterParent(EventArgs eventArgs)
+    {
+        base.OnDpiChangedAfterParent(eventArgs);
+        UpdateItemHeight();
+        Invalidate();
+    }
+
+    private void UpdateItemHeight()
+    {
+        ItemHeight = Math.Max(
+            JoydexTheme.ScaleLogical(38, DeviceDpi),
+            Font.Height + JoydexTheme.ScaleLogical(12, DeviceDpi));
+    }
+
+    private int DrawPill(
         Graphics graphics,
         string text,
         int right,
@@ -1026,13 +1124,15 @@ internal sealed class PromptListBox : ListBox
         Color foreground)
     {
         var textSize = TextRenderer.MeasureText(text, JoydexTheme.SectionFont, Size.Empty, TextFormatFlags.NoPadding);
+        var horizontalPadding = JoydexTheme.ScaleLogical(14, DeviceDpi);
+        var height = JoydexTheme.ScaleLogical(20, DeviceDpi);
         var bounds = new Rectangle(
-            right - textSize.Width - 14,
-            rowBounds.Top + ((rowBounds.Height - 20) / 2),
-            textSize.Width + 14,
-            20);
+            right - textSize.Width - horizontalPadding,
+            rowBounds.Top + ((rowBounds.Height - height) / 2),
+            textSize.Width + horizontalPadding,
+            height);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = ThemeDrawing.RoundedRectangle(bounds, 10);
+        using var path = ThemeDrawing.RoundedRectangle(bounds, height / 2);
         using var brush = new SolidBrush(background);
         graphics.FillPath(brush, path);
         TextRenderer.DrawText(

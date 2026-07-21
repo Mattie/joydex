@@ -72,9 +72,8 @@ internal sealed class ConfigurationForm : ThemedForm
 
         Text = "Configure Joydex";
         StartPosition = FormStartPosition.CenterScreen;
-        AutoScaleMode = AutoScaleMode.Dpi;
-        MinimumSize = PreferredMinimumSize;
-        Size = ClampToCurrentScreen(new Size(1500, 1000));
+        SetLogicalMinimumSize(PreferredMinimumSize);
+        Size = new Size(1500, 1000);
         ShowIcon = false;
 
         RestoreWindowState();
@@ -107,7 +106,8 @@ internal sealed class ConfigurationForm : ThemedForm
             new ConfigurationWindowState(
                 restoredSize.Width,
                 restoredSize.Height,
-                WindowState == FormWindowState.Maximized));
+                WindowState == FormWindowState.Maximized,
+                DeviceDpi));
 
         base.OnFormClosing(eventArgs);
     }
@@ -141,24 +141,15 @@ internal sealed class ConfigurationForm : ThemedForm
             return;
         }
 
-        Size = ClampToCurrentScreen(new Size(state.Width, state.Height));
+        var sourceDpi = state.Dpi > 0 ? state.Dpi : DpiUtilities.SystemDpi;
+        Size = DpiUtilities.ScaleBetween(
+            new Size(state.Width, state.Height),
+            sourceDpi,
+            DpiUtilities.LogicalDpi);
         if (state.Maximized)
         {
             WindowState = FormWindowState.Maximized;
         }
-    }
-
-    private Size ClampToCurrentScreen(Size requestedSize)
-    {
-        var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
-        var effectiveMinimum = new Size(
-            Math.Min(PreferredMinimumSize.Width, Math.Max(1, workingArea.Width)),
-            Math.Min(PreferredMinimumSize.Height, Math.Max(1, workingArea.Height)));
-        MinimumSize = effectiveMinimum;
-
-        return new Size(
-            Math.Clamp(requestedSize.Width, effectiveMinimum.Width, Math.Max(effectiveMinimum.Width, workingArea.Width)),
-            Math.Clamp(requestedSize.Height, effectiveMinimum.Height, Math.Max(effectiveMinimum.Height, workingArea.Height)));
     }
 
     private int ScaleLogical(int value) => (value * DeviceDpi + 48) / 96;
@@ -548,15 +539,6 @@ internal sealed class ConfigurationForm : ThemedForm
                 UpdateWheelNotchesCell(_bindingGrid.Rows[eventArgs.RowIndex]);
             }
         };
-        _bindingGrid.CurrentCellDirtyStateChanged += (_, _) =>
-        {
-            if (_bindingGrid.IsCurrentCellDirty
-                && _bindingGrid.CurrentCell?.OwningColumn.Name == "BindingAction")
-            {
-                _bindingGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
-            }
-        };
-
         var add = new RoundedButton { Text = "+ Add binding", Variant = ButtonVariant.Primary };
         add.Click += (_, _) =>
         {

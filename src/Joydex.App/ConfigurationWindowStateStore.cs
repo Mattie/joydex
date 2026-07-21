@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace Joydex.App;
 
-internal sealed record ConfigurationWindowState(int Width, int Height, bool Maximized);
+internal sealed record ConfigurationWindowState(int Width, int Height, bool Maximized, int Dpi = 0);
 
 internal static class ConfigurationWindowStateStore
 {

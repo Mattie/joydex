@@ -7,7 +7,8 @@ internal sealed record ButtonMapWindowState(
     int Top,
     int Width,
     int Height,
-    bool Maximized);
+    bool Maximized,
+    int Dpi = 0);
 
 internal static class ButtonMapWindowStateStore
 {

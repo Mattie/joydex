@@ -51,6 +51,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private PromptPickerCoordinator? _promptPicker;
     private PromptPickerOverlayForm? _promptOverlay;
     private TaskAlertsForm? _taskAlertsForm;
+    private bool _showTaskAlertsAfterMenuCloses;
     private bool _configuring;
 
     public TrayApplicationContext(string configPath)
@@ -160,6 +161,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Text = "Joydex",
             Visible = true,
         };
+        _notifyIcon.ContextMenuStrip.Closed += OnTrayMenuClosed;
         _notifyIcon.DoubleClick += OnConfigure;
 
         _taskAlerts.Changed += OnTaskAlertsChanged;
@@ -838,24 +840,74 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnTaskAlertsStatus(object? sender, EventArgs eventArgs)
     {
-        if (_taskAlertsForm is { IsDisposed: false })
+        // Showing a top-level window while a NotifyIcon context menu is still
+        // dismissing can leave the new HWND cached but hidden. Wait until the
+        // root menu has fully closed, then create/show/activate in one operation.
+        if (_notifyIcon.ContextMenuStrip?.Visible == true)
         {
-            ShowAndActivate(_taskAlertsForm);
+            _showTaskAlertsAfterMenuCloses = true;
             return;
         }
 
-        _taskAlertsForm = new TaskAlertsForm(
-            _taskAlerts,
-            _hookManager,
-            _hookRelayPath,
-            _linkToolProfilePath,
-            SetTaskAlertsEnabledAsync);
-        _taskAlertsForm.FormClosed += (_, _) => _taskAlertsForm = null;
-        ShowAndActivate(_taskAlertsForm);
+        _uiContext.Post(_ => ShowTaskAlertsStatus(), null);
+    }
+
+    private void OnTrayMenuClosed(object? sender, ToolStripDropDownClosedEventArgs eventArgs)
+    {
+        if (!_showTaskAlertsAfterMenuCloses)
+        {
+            return;
+        }
+
+        _showTaskAlertsAfterMenuCloses = false;
+        _uiContext.Post(_ => ShowTaskAlertsStatus(), null);
+    }
+
+    private void ShowTaskAlertsStatus()
+    {
+        try
+        {
+            var form = _taskAlertsForm;
+            if (form is null || form.IsDisposed || form.Disposing)
+            {
+                form = new TaskAlertsForm(
+                    _taskAlerts,
+                    _hookManager,
+                    _hookRelayPath,
+                    _linkToolProfilePath,
+                    SetTaskAlertsEnabledAsync);
+                var createdForm = form;
+                form.FormClosed += (_, _) =>
+                {
+                    if (ReferenceEquals(_taskAlertsForm, createdForm))
+                    {
+                        _taskAlertsForm = null;
+                    }
+                };
+                _taskAlertsForm = form;
+            }
+
+            ShowAndActivate(form);
+            _log.Write(
+                $"Task-alert status shown visible={form.Visible}; state={form.WindowState}; " +
+                $"bounds={form.Bounds}; screen={Screen.FromControl(form).DeviceName}.");
+        }
+        catch (Exception exception)
+        {
+            _log.Write($"Could not show task-alert status: {exception}");
+            _taskAlertsForm?.Dispose();
+            _taskAlertsForm = null;
+            _notifyIcon.ShowBalloonTip(
+                5000,
+                "Joydex task alerts",
+                "The status window could not be opened. See the Joydex log for details.",
+                ToolTipIcon.Error);
+        }
     }
 
     private static void ShowAndActivate(Form form)
     {
+        RestoreVisibleWindowBounds(form);
         if (form.WindowState == FormWindowState.Minimized)
         {
             form.WindowState = FormWindowState.Normal;
@@ -866,8 +918,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             form.Show();
         }
 
-        // NotifyIcon menu activation can remain with the closing context menu for the
-        // rest of this event. Reassert foreground activation on the next UI message.
+        form.BringToFront();
+        form.Activate();
+
+        // Recheck on the next UI turn as foreground activation can settle after Show.
         form.BeginInvoke(() =>
         {
             if (form.IsDisposed || form.Disposing)
@@ -880,9 +934,36 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 form.WindowState = FormWindowState.Normal;
             }
 
+            RestoreVisibleWindowBounds(form);
+            if (!form.Visible)
+            {
+                form.Show();
+            }
+
             form.BringToFront();
             form.Activate();
         });
+    }
+
+    private static void RestoreVisibleWindowBounds(Form form)
+    {
+        var bounds = form.WindowState == FormWindowState.Normal ? form.Bounds : form.RestoreBounds;
+        if (bounds.Width <= 0 || bounds.Height <= 0
+            || Screen.AllScreens.Any(screen => screen.WorkingArea.IntersectsWith(bounds)))
+        {
+            return;
+        }
+
+        var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
+        var size = new Size(
+            Math.Min(Math.Max(form.MinimumSize.Width, bounds.Width), workingArea.Width),
+            Math.Min(Math.Max(form.MinimumSize.Height, bounds.Height), workingArea.Height));
+        form.StartPosition = FormStartPosition.Manual;
+        form.Bounds = new Rectangle(
+            workingArea.Left + Math.Max(0, (workingArea.Width - size.Width) / 2),
+            workingArea.Top + Math.Max(0, (workingArea.Height - size.Height) / 2),
+            size.Width,
+            size.Height);
     }
 
     private void OnTaskAlertsChanged(object? sender, TaskAlertSnapshot snapshot)

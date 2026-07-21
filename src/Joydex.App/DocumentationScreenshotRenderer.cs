@@ -3,6 +3,7 @@ using Joydex.Core.Mapping;
 using Joydex.Core.TaskAlerts;
 using Joydex.Windows.Interop;
 using Joydex.Windows.TaskAlerts;
+using System.Drawing.Drawing2D;
 
 namespace Joydex.App;
 
@@ -88,12 +89,21 @@ internal static class DocumentationScreenshotRenderer
             using (var activity = new DryRunActivityForm(config))
             {
                 activity.SetConnectionStatus("Connected to VPC Throttle MT-50CM3 (documentation sample).");
-                activity.Append("INPUT press from throttle/button 56");
-                activity.Append("INPUT release from throttle/button 56");
-                activity.Append("INPUT press from throttle/button 62");
-                activity.Append("INPUT press from throttle/button 68");
-                activity.Append("INPUT press from throttle/button 52");
-                activity.Append("INPUT press from throttle/button 54");
+                var timestamp = new DateTime(2026, 7, 20, 9, 41, 10, DateTimeKind.Local);
+                foreach (var message in new[]
+                {
+                    "INPUT press from throttle/button 56",
+                    "INPUT release from throttle/button 56",
+                    "INPUT press from throttle/button 62",
+                    "INPUT press from throttle/button 68",
+                    "INPUT press from throttle/button 52",
+                    "INPUT press from throttle/button 54",
+                })
+                {
+                    activity.AppendForDocumentation(message, timestamp);
+                    timestamp = timestamp.AddSeconds(1);
+                }
+
                 RenderForm(activity, Path.Combine(outputDirectory, "joydex-dry-run.png"));
             }
 
@@ -274,6 +284,7 @@ internal static class DocumentationScreenshotRenderer
 
     private static void RenderForm(Form form, string outputPath)
     {
+        var requestedSize = form.Size;
         form.StartPosition = FormStartPosition.Manual;
         form.Location = new Point(-32000, -32000);
         form.ShowInTaskbar = false;
@@ -284,12 +295,35 @@ internal static class DocumentationScreenshotRenderer
 
         form.Show();
         Application.DoEvents();
+        // Per-monitor DPI scaling is desirable in the live app, while repository screenshots
+        // need the authored pixel dimensions to remain stable across developer monitors. Render
+        // at the monitor DPI, then downsample to the requested logical size.
+        form.MinimumSize = Size.Empty;
+        form.Size = DpiUtilities.ScaleBetween(
+            requestedSize,
+            DpiUtilities.LogicalDpi,
+            form.DeviceDpi);
         form.PerformLayout();
         PrepareControlsForScreenshot(form);
 
-        using var bitmap = new Bitmap(form.Width, form.Height);
-        form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
-        bitmap.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
+        using var rendered = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(rendered, new Rectangle(Point.Empty, rendered.Size));
+        if (rendered.Size == requestedSize)
+        {
+            rendered.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
+        }
+        else
+        {
+            using var output = new Bitmap(requestedSize.Width, requestedSize.Height);
+            using var graphics = Graphics.FromImage(output);
+            graphics.CompositingQuality = CompositingQuality.HighQuality;
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.SmoothingMode = SmoothingMode.HighQuality;
+            graphics.DrawImage(rendered, new Rectangle(Point.Empty, requestedSize));
+            output.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
+        }
+
         form.Close();
     }
 

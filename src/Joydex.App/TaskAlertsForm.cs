@@ -26,6 +26,9 @@ internal sealed class TaskAlertsForm : ThemedForm
     private readonly NavButton _eventStreamNav;
     private readonly Panel _currentStatePage;
     private readonly Panel _eventStreamPage;
+    private readonly object _snapshotSync = new();
+    private TaskAlertSnapshot? _latestSnapshot;
+    private bool _snapshotUpdateScheduled;
     private bool _eventStreamSelected;
     private bool _updating;
 
@@ -44,10 +47,8 @@ internal sealed class TaskAlertsForm : ThemedForm
 
         Text = "Joydex Task Alerts";
         StartPosition = FormStartPosition.CenterScreen;
-        AutoScaleMode = AutoScaleMode.Dpi;
-        var fittedWindow = FitToCurrentScreen(PreferredWindowSize, PreferredMinimumSize);
-        MinimumSize = fittedWindow.Minimum;
-        Size = fittedWindow.Size;
+        SetLogicalMinimumSize(PreferredMinimumSize);
+        Size = PreferredWindowSize;
         ShowIcon = false;
 
         var root = new TableLayoutPanel
@@ -398,9 +399,24 @@ internal sealed class TaskAlertsForm : ThemedForm
         root.Controls.Add(hooksCard, 0, 2);
         Controls.Add(root);
 
-        _coordinator.Changed += OnCoordinatorChanged;
-        UpdateSnapshot(_coordinator.GetSnapshot());
         UpdateHookStatus();
+        TaskAlertSnapshot initialSnapshot;
+        lock (_snapshotSync)
+        {
+            _coordinator.Changed += OnCoordinatorChanged;
+            initialSnapshot = _coordinator.GetSnapshot();
+            _latestSnapshot = initialSnapshot;
+        }
+
+        try
+        {
+            UpdateSnapshot(initialSnapshot);
+        }
+        catch
+        {
+            _coordinator.Changed -= OnCoordinatorChanged;
+            throw;
+        }
     }
 
     private static Label SummaryLabel(string text, ThemeTone tone = ThemeTone.Default) => new()
@@ -413,21 +429,15 @@ internal sealed class TaskAlertsForm : ThemedForm
         TextAlign = ContentAlignment.MiddleLeft,
     };
 
-    private static (Size Minimum, Size Size) FitToCurrentScreen(Size preferred, Size preferredMinimum)
+    internal void SetSnapshotForDocumentation(TaskAlertSnapshot snapshot)
     {
-        var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
-        var available = new Size(Math.Max(1, workingArea.Width), Math.Max(1, workingArea.Height));
-        var effectiveMinimum = new Size(
-            Math.Min(preferredMinimum.Width, available.Width),
-            Math.Min(preferredMinimum.Height, available.Height));
-        return (
-            effectiveMinimum,
-            new Size(
-                Math.Clamp(preferred.Width, effectiveMinimum.Width, available.Width),
-                Math.Clamp(preferred.Height, effectiveMinimum.Height, available.Height)));
-    }
+        lock (_snapshotSync)
+        {
+            _latestSnapshot = snapshot;
+        }
 
-    internal void SetSnapshotForDocumentation(TaskAlertSnapshot snapshot) => UpdateSnapshot(snapshot);
+        UpdateSnapshot(snapshot);
+    }
 
     protected override bool ProcessCmdKey(ref Message message, Keys keyData)
     {
@@ -466,24 +476,66 @@ internal sealed class TaskAlertsForm : ThemedForm
 
     private void OnCoordinatorChanged(object? sender, TaskAlertSnapshot snapshot)
     {
+        lock (_snapshotSync)
+        {
+            _latestSnapshot = snapshot;
+        }
+
         if (IsDisposed || Disposing || !IsHandleCreated)
         {
             return;
+        }
+
+        lock (_snapshotSync)
+        {
+            if (_snapshotUpdateScheduled)
+            {
+                return;
+            }
+
+            _snapshotUpdateScheduled = true;
         }
 
         try
         {
             BeginInvoke(() =>
             {
-                if (!IsDisposed && !Disposing)
+                TaskAlertSnapshot? latest;
+                lock (_snapshotSync)
                 {
-                    UpdateSnapshot(snapshot);
+                    _snapshotUpdateScheduled = false;
+                    latest = _latestSnapshot;
+                }
+
+                if (!IsDisposed && !Disposing && Visible && latest is not null)
+                {
+                    UpdateSnapshot(latest);
                 }
             });
         }
         catch (InvalidOperationException) when (IsDisposed || Disposing || !IsHandleCreated)
         {
+            lock (_snapshotSync)
+            {
+                _snapshotUpdateScheduled = false;
+            }
+
             // The form handle was torn down between the pre-check and BeginInvoke.
+        }
+    }
+
+    protected override void OnVisibleChanged(EventArgs eventArgs)
+    {
+        base.OnVisibleChanged(eventArgs);
+        TaskAlertSnapshot? latest;
+        lock (_snapshotSync)
+        {
+            latest = _latestSnapshot;
+        }
+
+        if (Visible && latest is not null && !IsDisposed && !Disposing)
+        {
+            UpdateSnapshot(latest);
         }
     }
 
@@ -585,18 +637,34 @@ internal sealed class TaskAlertsForm : ThemedForm
 
     private void UpdateHookStatus()
     {
-        if (!File.Exists(_relayPath))
+        var status = InspectHookStatus(_hooks, _relayPath);
+        _hookStatus.Text = status.Text;
+        _toolTips.SetToolTip(_hookStatus, status.Error ?? string.Empty);
+    }
+
+    internal static (string Text, string? Error) InspectHookStatus(CodexHookManager hooks, string relayPath)
+    {
+        if (!File.Exists(relayPath))
         {
-            _hookStatus.Text = "Hooks: relay not packaged";
-            return;
+            return ("Hooks: relay not packaged", null);
         }
 
-        _hookStatus.Text = _hooks.Inspect(_relayPath) switch
+        try
         {
-            JoydexHookState.Installed => "Hooks: installed",
-            JoydexHookState.RepairNeeded => "Hooks: repair needed",
-            _ => "Hooks: not installed",
-        };
+            return (hooks.Inspect(relayPath) switch
+            {
+                JoydexHookState.Installed => "Hooks: installed",
+                JoydexHookState.RepairNeeded => "Hooks: repair needed",
+                _ => "Hooks: not installed",
+            }, null);
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException
+            or UnauthorizedAccessException
+            or System.Text.Json.JsonException)
+        {
+            return ("Hooks: status unavailable", exception.Message);
+        }
     }
 
     private void ShowLinkToolProfile()

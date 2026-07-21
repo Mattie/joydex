@@ -50,6 +50,8 @@ internal sealed class PromptPickerOverlayForm : Form
     public PromptPickerOverlayForm(Func<bool> codexStillForeground)
     {
         _codexStillForeground = codexStillForeground;
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        AutoScaleMode = AutoScaleMode.Dpi;
         Text = "Joydex Prompt Picker";
         Font = _normalFont;
         BackColor = OverlayPalette.WindowBg;
@@ -173,6 +175,13 @@ internal sealed class PromptPickerOverlayForm : Form
 
         var borderColor = OverlayPalette.DwmBorderColor;
         DwmSetWindowAttribute(Handle, DwmBorderColor, ref borderColor, sizeof(int));
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs eventArgs)
+    {
+        base.OnDpiChanged(eventArgs);
+        PositionNearForegroundWindow();
+        Invalidate(true);
     }
 
     public void Apply(PromptPickerSnapshot snapshot)
@@ -341,7 +350,9 @@ internal sealed class PromptPickerOverlayForm : Form
             if (_selected)
             {
                 var selectionBounds = new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
-                using var selectionPath = ThemeDrawing.RoundedRectangle(selectionBounds, CornerRadius);
+                using var selectionPath = ThemeDrawing.RoundedRectangle(
+                    selectionBounds,
+                    JoydexTheme.ScaleLogical(CornerRadius, DeviceDpi));
                 using var selectionBrush = new SolidBrush(OverlayPalette.Selection);
                 eventArgs.Graphics.FillPath(selectionBrush, selectionPath);
             }
@@ -353,7 +364,9 @@ internal sealed class PromptPickerOverlayForm : Form
                 | TextFormatFlags.SingleLine;
             const string glyph = "▶";
             var glyphSize = TextRenderer.MeasureText(glyph, _glyphFont, Size.Empty, TextFormatFlags.NoPadding);
-            var glyphBounds = new Rectangle(16, 0, glyphSize.Width, Height);
+            var horizontalInset = JoydexTheme.ScaleLogical(16, DeviceDpi);
+            var contentGap = JoydexTheme.ScaleLogical(13, DeviceDpi);
+            var glyphBounds = new Rectangle(horizontalInset, 0, glyphSize.Width, Height);
             if (_selected)
             {
                 TextRenderer.DrawText(
@@ -366,8 +379,8 @@ internal sealed class PromptPickerOverlayForm : Form
             }
 
             const string submitMarker = "[+ Submit]";
-            var textLeft = glyphBounds.Right + 13;
-            var textRight = Width - 16;
+            var textLeft = glyphBounds.Right + contentGap;
+            var textRight = Width - horizontalInset;
             if (_submits)
             {
                 var markerSize = TextRenderer.MeasureText(
@@ -387,7 +400,7 @@ internal sealed class PromptPickerOverlayForm : Form
                     markerBounds,
                     _selected ? OverlayPalette.AccentText : OverlayPalette.TagText,
                     textFlags);
-                textRight = markerBounds.Left - 13;
+                textRight = markerBounds.Left - contentGap;
             }
 
             var textBounds = new Rectangle(textLeft, 0, Math.Max(0, textRight - textLeft), Height);

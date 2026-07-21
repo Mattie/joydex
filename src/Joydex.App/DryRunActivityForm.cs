@@ -37,8 +37,7 @@ internal sealed class DryRunActivityForm : ThemedForm
 
         Text = "Test Joydex";
         StartPosition = FormStartPosition.CenterScreen;
-        AutoScaleMode = AutoScaleMode.Dpi;
-        MinimumSize = new Size(760, 520);
+        SetLogicalMinimumSize(new Size(760, 520));
         Size = new Size(920, 640);
         ShowIcon = false;
 
@@ -70,7 +69,11 @@ internal sealed class DryRunActivityForm : ThemedForm
         UpdateSummary();
     }
 
-    public void Append(string message)
+    public void Append(string message) => Append(message, DateTime.Now);
+
+    internal void AppendForDocumentation(string message, DateTime timestamp) => Append(message, timestamp);
+
+    private void Append(string message, DateTime timestamp)
     {
         if (IsDisposed)
         {
@@ -113,7 +116,7 @@ internal sealed class DryRunActivityForm : ThemedForm
                 ? "Released."
                 : "Pressed.";
         var rowIndex = _activity.Rows.Add(
-            DateTime.Now.ToString("HH:mm:ss"),
+            timestamp.ToString("HH:mm:ss"),
             controlName,
             action,
             result);

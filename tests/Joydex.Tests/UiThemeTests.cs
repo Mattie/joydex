@@ -1,5 +1,7 @@
 using Joydex.App;
 using System.Drawing.Drawing2D;
+using System.Reflection;
+using System.Runtime.ExceptionServices;
 
 namespace Joydex.Tests;
 
@@ -162,6 +164,139 @@ public sealed class UiThemeTests
             TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
 
         Assert.True(preferred.Width - 44 >= text.Width);
+    }
+
+    [Fact]
+    public void PrimaryButtonPreferredWidthUsesItsPaintedSemiboldFont()
+    {
+        using var button = new RoundedButton
+        {
+            Padding = new Padding(12, 6, 12, 6),
+            Text = "+ Add binding",
+            Variant = ButtonVariant.Primary,
+        };
+        var preferred = button.GetPreferredSize(Size.Empty);
+        var paintedText = TextRenderer.MeasureText(
+            button.Text,
+            JoydexTheme.UiSemiboldFont,
+            Size.Empty,
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+        Assert.True(
+            preferred.Width >= paintedText.Width + button.Padding.Horizontal + JoydexTheme.ScaleLogical(4, button.DeviceDpi));
+    }
+
+    [Fact]
+    public void ComboCellEntersEditModeFromOneMouseClick()
+    {
+        Exception? failure = null;
+        using var completed = new ManualResetEventSlim();
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                using var host = new Form
+                {
+                    Bounds = new Rectangle(-32000, -32000, 400, 240),
+                    FormBorderStyle = FormBorderStyle.None,
+                    ShowInTaskbar = false,
+                };
+                using var grid = new ModernDataGridView
+                {
+                    AllowUserToAddRows = false,
+                    Dock = DockStyle.Fill,
+                };
+                var choices = new DataGridViewComboBoxColumn { Name = "Choice" };
+                choices.Items.AddRange("One", "Two");
+                grid.Columns.Add(choices);
+                grid.Rows.Add("One");
+                host.Controls.Add(grid);
+                host.Shown += (_, _) => host.BeginInvoke(() =>
+                {
+                    var click = new DataGridViewCellMouseEventArgs(
+                        columnIndex: 0,
+                        rowIndex: 0,
+                        localX: 8,
+                        localY: 8,
+                        new MouseEventArgs(MouseButtons.Left, clicks: 1, x: 8, y: 8, delta: 0));
+                    typeof(ModernDataGridView)
+                        .GetMethod("OnCellMouseClick", BindingFlags.Instance | BindingFlags.NonPublic)!
+                        .Invoke(grid, [click]);
+
+                    Assert.Same(grid.Rows[0].Cells[0], grid.CurrentCell);
+                    Assert.True(grid.IsCurrentCellInEditMode);
+                    var editor = Assert.IsType<DataGridViewComboBoxEditingControl>(grid.EditingControl);
+                    Assert.True(editor.DroppedDown);
+                    editor.DroppedDown = false;
+                    editor.SelectedIndex = 1;
+                    grid.NotifyCurrentCellDirty(dirty: true);
+                    typeof(ModernDataGridView)
+                        .GetMethod("OnComboSelectionChangeCommitted", BindingFlags.Instance | BindingFlags.NonPublic)!
+                        .Invoke(grid, [editor, EventArgs.Empty]);
+                    Assert.Equal("Two", grid.Rows[0].Cells[0].Value);
+                    Assert.False(grid.IsCurrentCellInEditMode);
+                    host.Close();
+                });
+                Application.Run(host);
+            }
+            catch (Exception exception)
+            {
+                failure = exception is TargetInvocationException { InnerException: not null } target
+                    ? target.InnerException
+                    : exception;
+            }
+            finally
+            {
+                completed.Set();
+            }
+        })
+        {
+            IsBackground = true,
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        Assert.True(completed.Wait(TimeSpan.FromSeconds(5)), "The one-click grid scenario did not complete.");
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+    }
+
+    [Theory]
+    [InlineData(Keys.Control | Keys.Tab, 0, 2, 1)]
+    [InlineData(Keys.Control | Keys.Tab, 1, 2, 0)]
+    [InlineData(Keys.Control | Keys.Shift | Keys.Tab, 0, 2, 1)]
+    [InlineData(Keys.Control | Keys.Shift | Keys.Tab, 1, 2, 0)]
+    [InlineData(Keys.Control | Keys.Tab, 1, 3, 2)]
+    [InlineData(Keys.Control | Keys.Shift | Keys.Tab, 1, 3, 0)]
+    public void PromptPickerEditorCyclesPagesWithControlTab(
+        Keys shortcut,
+        int selected,
+        int pageCount,
+        int expected)
+    {
+        Assert.Equal(
+            expected,
+            PromptPickerEditorForm.NavigationPageForShortcut(selected, pageCount, shortcut));
+    }
+
+    [Theory]
+    [InlineData(Keys.Tab)]
+    [InlineData(Keys.Alt | Keys.Tab)]
+    [InlineData(Keys.Control | Keys.Alt | Keys.Tab)]
+    public void PromptPickerEditorLeavesOtherTabShortcutsAlone(Keys shortcut)
+    {
+        Assert.Null(PromptPickerEditorForm.NavigationPageForShortcut(0, 2, shortcut));
+    }
+
+    [Theory]
+    [InlineData(100, 96, 144, 150)]
+    [InlineData(150, 144, 96, 100)]
+    [InlineData(1, 96, 120, 1)]
+    public void DpiScalingConvertsPhysicalMeasurements(int value, int sourceDpi, int targetDpi, int expected)
+    {
+        Assert.Equal(expected, DpiUtilities.ScaleBetween(value, sourceDpi, targetDpi));
     }
 
     [Theory]

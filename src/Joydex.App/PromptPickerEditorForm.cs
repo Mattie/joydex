@@ -24,6 +24,9 @@ internal sealed class PromptPickerEditorForm : ThemedForm
     private readonly ModernDataGridView _deviceGrid = new();
     private readonly DirectInputJoystickSource _captureSource;
     private readonly System.Windows.Forms.Timer _captureTimer = new() { Interval = 16 };
+    private readonly List<EditorNavigationPage> _navigationPages = [];
+    private readonly bool _pickerOnly;
+    private int _selectedNavigationPage;
     private bool _captureResourcesDisposed;
     private Action<int>? _captureTarget;
     private DateTimeOffset _captureReadyAt;
@@ -34,6 +37,7 @@ internal sealed class PromptPickerEditorForm : ThemedForm
 
     public PromptPickerEditorForm(string configPath, IntPtr cooperativeWindowHandle, bool pickerOnly = false)
     {
+        _pickerOnly = pickerOnly;
         _configPath = configPath;
         _cooperativeWindowHandle = cooperativeWindowHandle;
         _original = CompanionConfigNormalizer.Normalize(ConfigStore.LoadOrCreate(configPath));
@@ -42,7 +46,6 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         _pickers = _original.PromptPickers.Select(MutablePicker.FromConfig).ToList();
 
         Text = "Joydex Prompt Pickers and Device Maps";
-        AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
         var pickerPage = BuildPickerPage();
         EmbeddedPickerPage = pickerPage;
@@ -52,13 +55,8 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         }
         else
         {
-            var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
-            MinimumSize = new Size(
-                Math.Min(760, Math.Max(1, workingArea.Width)),
-                Math.Min(560, Math.Max(1, workingArea.Height)));
-            Size = new Size(
-                Math.Min(1320, Math.Max(MinimumSize.Width, workingArea.Width)),
-                Math.Min(860, Math.Max(MinimumSize.Height, workingArea.Height)));
+            SetLogicalMinimumSize(new Size(760, 560));
+            Size = new Size(1320, 860);
 
             var shell = BuildNavigationShell(
                 ("Prompt pickers", pickerPage),
@@ -144,7 +142,33 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         return _pickers.Select(picker => picker.ToConfig()).ToList();
     }
 
-    private static Control BuildNavigationShell(params (string Title, Control Page)[] pages)
+    protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+    {
+        var target = _pickerOnly
+            ? null
+            : NavigationPageForShortcut(_selectedNavigationPage, _navigationPages.Count, keyData);
+        if (target is not null)
+        {
+            SelectNavigationPage(target.Value, focus: true);
+            return true;
+        }
+
+        return base.ProcessCmdKey(ref message, keyData);
+    }
+
+    internal static int? NavigationPageForShortcut(int selectedIndex, int pageCount, Keys keyData)
+    {
+        if (pageCount <= 0
+            || keyData is not (Keys.Control | Keys.Tab) and not (Keys.Control | Keys.Shift | Keys.Tab))
+        {
+            return null;
+        }
+
+        var direction = (keyData & Keys.Shift) == Keys.Shift ? -1 : 1;
+        return (selectedIndex + direction + pageCount) % pageCount;
+    }
+
+    private Control BuildNavigationShell(params (string Title, Control Page)[] pages)
     {
         var shell = new TableLayoutPanel
         {
@@ -172,23 +196,6 @@ internal sealed class PromptPickerEditorForm : ThemedForm
             RowCount = pages.Length,
         };
         var host = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8, 0, 0, 0) };
-        var buttons = new List<NavButton>();
-
-        void ShowPage(int selectedIndex)
-        {
-            for (var index = 0; index < pages.Length; index++)
-            {
-                var selected = index == selectedIndex;
-                buttons[index].Selected = selected;
-                buttons[index].TabStop = selected;
-                pages[index].Page.Visible = selected;
-                if (selected)
-                {
-                    pages[index].Page.BringToFront();
-                }
-            }
-        }
-
         for (var index = 0; index < pages.Length; index++)
         {
             var pageIndex = index;
@@ -204,8 +211,8 @@ internal sealed class PromptPickerEditorForm : ThemedForm
                 },
                 Text = pages[index].Title,
             };
-            button.Click += (_, _) => ShowPage(pageIndex);
-            buttons.Add(button);
+            button.Click += (_, _) => SelectNavigationPage(pageIndex, focus: false);
+            _navigationPages.Add(new EditorNavigationPage(button, pages[index].Page));
             navigation.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             navigation.Controls.Add(button, 0, index);
             pages[index].Page.Visible = false;
@@ -215,8 +222,35 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         sidebar.Controls.Add(navigation);
         shell.Controls.Add(sidebar, 0, 0);
         shell.Controls.Add(host, 1, 0);
-        ShowPage(0);
+        SelectNavigationPage(0, focus: false);
         return shell;
+    }
+
+    private void SelectNavigationPage(int selectedIndex, bool focus)
+    {
+        if (selectedIndex < 0 || selectedIndex >= _navigationPages.Count)
+        {
+            return;
+        }
+
+        _selectedNavigationPage = selectedIndex;
+        for (var index = 0; index < _navigationPages.Count; index++)
+        {
+            var selected = index == selectedIndex;
+            var page = _navigationPages[index];
+            page.Button.Selected = selected;
+            page.Button.TabStop = selected;
+            page.Page.Visible = selected;
+            if (selected)
+            {
+                page.Page.BringToFront();
+            }
+        }
+
+        if (focus)
+        {
+            _navigationPages[selectedIndex].Button.Focus();
+        }
     }
 
     private Control BuildPickerPage()
@@ -943,6 +977,8 @@ internal sealed class PromptPickerEditorForm : ThemedForm
                     device.ButtonMapHoldControl.Button),
         };
     }
+
+    private sealed record EditorNavigationPage(NavButton Button, Control Page);
 
     private sealed record MutableControl(string DeviceId, string Bank, int Button);
 

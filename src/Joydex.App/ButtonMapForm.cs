@@ -10,6 +10,7 @@ internal sealed class ButtonMapForm : ThemedForm
 {
     private readonly string _windowStatePath;
     private readonly ButtonMapCanvas _canvas;
+    private bool _windowStateRestored;
 
     public ButtonMapForm(
         CompanionConfig config,
@@ -24,9 +25,9 @@ internal sealed class ButtonMapForm : ThemedForm
 
         Text = $"Joydex {device.DisplayName} Button Map";
         StartPosition = FormStartPosition.Manual;
-        AutoScaleMode = AutoScaleMode.Dpi;
         FormBorderStyle = FormBorderStyle.SizableToolWindow;
-        MinimumSize = new Size(850, 650);
+        SetLogicalMinimumSize(new Size(850, 650));
+        Size = new Size(1600, 1150);
         ShowIcon = false;
         ShowInTaskbar = false;
         TopMost = true;
@@ -40,7 +41,6 @@ internal sealed class ButtonMapForm : ThemedForm
         };
         canvasHost.Controls.Add(_canvas);
         Controls.Add(canvasHost);
-        RestoreWindowState();
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -81,7 +81,18 @@ internal sealed class ButtonMapForm : ThemedForm
                 bounds.Top,
                 bounds.Width,
                 bounds.Height,
-                WindowState == FormWindowState.Maximized));
+                WindowState == FormWindowState.Maximized,
+                DeviceDpi));
+    }
+
+    protected override void OnLoad(EventArgs eventArgs)
+    {
+        base.OnLoad(eventArgs);
+        if (!_windowStateRestored)
+        {
+            _windowStateRestored = true;
+            RestoreWindowState();
+        }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs eventArgs)
@@ -112,7 +123,12 @@ internal sealed class ButtonMapForm : ThemedForm
         var state = ButtonMapWindowStateStore.Load(_windowStatePath);
         if (state is not null)
         {
-            var requested = new Rectangle(state.Left, state.Top, state.Width, state.Height);
+            var sourceDpi = state.Dpi > 0 ? state.Dpi : DpiUtilities.SystemDpi;
+            var restoredSize = DpiUtilities.ScaleBetween(
+                new Size(state.Width, state.Height),
+                sourceDpi,
+                DeviceDpi);
+            var requested = new Rectangle(state.Left, state.Top, restoredSize.Width, restoredSize.Height);
             var screen = Screen.AllScreens.FirstOrDefault(candidate =>
                 candidate.WorkingArea.IntersectsWith(requested));
             if (screen is not null)
@@ -127,19 +143,22 @@ internal sealed class ButtonMapForm : ThemedForm
             }
         }
 
-        var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
-        var width = Math.Min(1600, workingArea.Width - 60);
-        var height = Math.Min(1150, workingArea.Height - 60);
+        var workingArea = Screen.FromHandle(Handle).WorkingArea;
+        var margin = JoydexTheme.ScaleLogical(60, DeviceDpi);
+        var width = Math.Min(JoydexTheme.ScaleLogical(1600, DeviceDpi), workingArea.Width - margin);
+        var height = Math.Min(JoydexTheme.ScaleLogical(1150, DeviceDpi), workingArea.Height - margin);
         Size = new Size(Math.Max(MinimumSize.Width, width), Math.Max(MinimumSize.Height, height));
         Location = new Point(
-            Math.Max(workingArea.Left, workingArea.Right - Width - 30),
-            workingArea.Top + 30);
+            Math.Max(workingArea.Left, workingArea.Right - Width - (margin / 2)),
+            workingArea.Top + (margin / 2));
     }
 
-    private static Rectangle ClampToWorkingArea(Rectangle requested, Rectangle workingArea)
+    private Rectangle ClampToWorkingArea(Rectangle requested, Rectangle workingArea)
     {
-        var width = Math.Clamp(requested.Width, 850, workingArea.Width);
-        var height = Math.Clamp(requested.Height, 650, workingArea.Height);
+        var minimumWidth = Math.Min(JoydexTheme.ScaleLogical(850, DeviceDpi), workingArea.Width);
+        var minimumHeight = Math.Min(JoydexTheme.ScaleLogical(650, DeviceDpi), workingArea.Height);
+        var width = Math.Clamp(requested.Width, minimumWidth, workingArea.Width);
+        var height = Math.Clamp(requested.Height, minimumHeight, workingArea.Height);
         var left = Math.Clamp(requested.Left, workingArea.Left, workingArea.Right - width);
         var top = Math.Clamp(requested.Top, workingArea.Top, workingArea.Bottom - height);
         return new Rectangle(left, top, width, height);
