@@ -181,12 +181,6 @@ Command IDs, Windows defaults, aliases, and precedence behavior were last checke
 
 Source builds use `%LOCALAPPDATA%\Joydex\config.json`, with `JOYDEX_CONFIG` and `--config` available for alternate paths. The graphical editor is the normal way to change mappings. Both checked-in example configurations are intended for dry-run exploration and contain no device GUIDs.
 
-## License and trademarks
-
-The source code is available under the [MIT License](LICENSE). Attribution for the CM3 visual template is recorded in [Third-party notices](THIRD_PARTY_NOTICES.md).
-
-Joydex is an independent project and is not affiliated with or endorsed by VIRPIL Controls, OpenAI, or Work Louder. VIRPIL, VPC, OpenAI, ChatGPT, Codex, Work Louder, and associated marks are the property of their respective owners.
-
 ## Likely asked questions
 
 ### Could I do this with Joystick Gremlin instead?
@@ -197,14 +191,12 @@ Joydex is just a little more specific to the companion use case. It stores Codex
 
 Joydex talks straight to the throttle, so it does not need a virtual joystick. Gremlin's supported setup uses [vJoy](https://whitemagic.github.io/JoystickGremlin/introduction/installation.html) and gives you another profile to keep track of. If you use Gremlin for flight sims, you may already have all of that.
 
-### I just want to try it in Gremlin. Any tips?
-
-Start small. Create a fresh profile, open Gremlin's Input Viewer, and press B1-B6 once in every dial position. VIRPIL shift modes can report a different logical button number for the same physical button. Write those numbers down before you create any extra modes in Gremlin.
-
-Next, map one normal button and one held control such as push-to-talk. Use the shortcuts shown in Codex Settings. Gremlin's [Map to Keyboard and Macro actions](https://whitemagic.github.io/JoystickGremlin/interface/actions.html) cover both cases. Once those work, fill in the rest of the throttle. Keep the profile paused while another app has focus; this quick setup will send its keys wherever you are typing.
-
-Follow Gremlin's instructions for installing vJoy. You can skip HidHide at first because Codex does not read joystick input.
-
 ### Can it support the VIRPIL LEDs?
 
 Yes. Joydex's built-in task-status LEDs are described above. Gremlin can also drive VIRPIL LEDs through Python scripts if a fixed keyboard profile is a better fit.
+
+## License and trademarks
+
+The source code is available under the [MIT License](LICENSE). Attribution for the CM3 visual template is recorded in [Third-party notices](THIRD_PARTY_NOTICES.md).
+
+Joydex is an independent project and is not affiliated with or endorsed by VIRPIL Controls, OpenAI, or Work Louder. VIRPIL, VPC, OpenAI, ChatGPT, Codex, Work Louder, and associated marks are the property of their respective owners.
