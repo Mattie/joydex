@@ -5,10 +5,11 @@ Joydex uses the CM3 throttle buttons and the Constellation Alpha grip LED as a p
 ## Set it up
 
 1. Connect the CM3 throttle and Alpha grip, then start Joydex. Joydex writes `%LOCALAPPDATA%\Joydex\joydex-linktool.led.json` while both devices are available.
-2. Open the Joydex tray menu and choose **Task alerts status...**. Use **Show LED profile** to locate the generated file, then load it in LinkTool.
-3. Keep LinkTool's telemetry listener running on its default UDP endpoint, `127.0.0.1:4123`.
-4. In the same Joydex window, choose **Install / Repair hooks**. Approve Codex's hook trust prompt if it appears, then confirm the window says `Hooks: installed`.
-5. Leave **Task alerts** checked in the tray menu.
+2. Open **Testing / Advanced > Task alerts status...** from the Joydex tray. Use **Show LED profile** to locate the generated file, then load it in LinkTool.
+3. Start LinkTool's telemetry listener on its default UDP endpoint, `127.0.0.1:4123`.
+4. In the same Joydex window, choose **Install / Repair hooks** and confirm the status reads `Hooks: installed`. If Codex marks the new handlers for review, open its Hooks screen and trust the Joydex handlers.
+5. Make sure **Task alerts** is checked in the top level of the Joydex tray menu.
+6. Submit a test prompt in Codex. Confirm that **Event stream** records it, **Current state** gains a running assignment, and the corresponding LED lights.
 
 ![Joydex task-alert status window at its compact supported size](images/joydex-task-alerts-compact.png)
 
@@ -50,7 +51,7 @@ If Joydex exits cleanly, it clears the live overlays before closing. If it crash
 
 ## Troubleshooting
 
-Open **Task alerts status...** before reinstalling or changing anything. It shows the detected bank, current assignments, dropped-event count, exact LinkTool telemetry, hook state, and the last 100 lifecycle events.
+Open **Testing / Advanced > Task alerts status...** before reinstalling or changing anything. It shows the detected bank, current assignments, dropped-event count, exact LinkTool telemetry, hook state, and the last 100 lifecycle events.
 
 | Status or symptom | Check |
 | --- | --- |

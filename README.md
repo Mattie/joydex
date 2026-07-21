@@ -3,7 +3,7 @@
 ## Codex companion for a Joystick/Throttle
 Why pay for a purpose-built Codex Micro keyboard when you already have a joystick, pad, or flight-sim throttle?
 
-Just use Codex to set it up in a couple of hours and save yourself that extra $230.
+Just use Codex to set it up in a couple of hours and save yourself that extra $230. [See the prompt I started with.](docs/CASE_STUDY.md)
 
 ## What is Joydex?
 Joydex is a source example for turning a VIRPIL throttle into a physical control surface for the Codex desktop app. It reads the throttle through DirectInput, resolves the current Codex shortcuts, and injects the corresponding Windows input events. It is a small Windows tray app.
@@ -15,6 +15,17 @@ Nothing rocket-science, but we live in an era where you can retrofit your own ha
 My favorite bit is I can just flip a T3 switch and see a floating map of the throttle's current bindings. The map reads its labels from the active configuration, so remapped controls are reflected in the floating window and I just flip the switch off and it instantly vanishes.
 
 ![Joydex floating CM3 quick-reference map](docs/images/joydex-button-map.png)
+
+## Quick start
+
+Joydex is a source project, so the easiest path is to clone the repository, open it in Codex, and ask Codex to adapt it to the controllers and controls you actually use. The two checked-in configurations are safe starting points: [`joydex.example.json`](config/joydex.example.json) for a CM3 throttle, and [`joydex.advanced.example.json`](config/joydex.advanced.example.json) for the CM3 plus an Alpha/WarBRD stick. Both start in dry-run mode.
+
+1. [Build and run Joydex](#build-and-explore-the-source) with the example configuration closest to your hardware.
+2. Open **Configure...** from the tray. Use **Load defaults** if the CM3 Codex Micro layout is useful, then adjust or capture the devices, bindings, prompt pickers, and map controls you want.
+3. Open **Testing / Advanced > Test controls...** and exercise each button, encoder, mode, and maintained switch. Check both press and release events where the action depends on a held control.
+4. Save the configuration. Turn off **Testing / Advanced > Dry run** only after the event log matches the physical controls.
+
+The task-status LEDs need a few additional steps because they use Codex hooks and VIRPIL LinkTool.
 
 ## What the experiment produced
 
@@ -92,15 +103,18 @@ The floating map reads its labels from the active configuration, so remapped con
 
 The LEDs turn the throttle into a ten-slot task monitor. Four primary tasks use B1, B2, B4, and B5 across M2-M4. Six overflow tasks use B1-B6 on M1, where every unassigned button stays dark. M5 remains available for ordinary commands. The Alpha grip LED shows the highest-priority state across all ten slots.
 
-Dim gray means running, yellow means the task needs attention, and low green means completed. Red is reserved for a future fault source. Pressing an assigned button opens that Codex task. Running and attention states remain assigned after navigation; opening a completed task clears its slot and restores the button's normal binding.
+Dim gray means running, yellow means the task needs attention, and low green means completed. Red is reserved for a future fault source. Pressing an assigned button opens that Codex task. Running and attention states remain assigned after navigation; opening a completed task clears its slot and restores the button's normal binding. Here is [my CM3 lit with a few example tasks](docs/images/20260720_064606c.jpg).
 
-### Quick start
+### Set up task-status LEDs
 
-1. Connect the CM3 throttle and Alpha grip, then start Joydex.
-2. Open **Task alerts status...** from the Joydex tray. Choose **Show LED profile** and load the generated file in LinkTool.
-3. Keep LinkTool's telemetry listener running on `127.0.0.1:4123`.
-4. Choose **Install / Repair hooks**. Approve Codex's trust prompt if it appears, then confirm the window says `Hooks: installed`.
-5. Leave **Task alerts** checked in the tray menu.
+This part matches the CM3 throttle, Alpha/WarBRD stick, and VIRPIL Controls LinkTool v3 used for this project. If your hardware differs, adapt the LED mappings before continuing.
+
+1. Connect both VIRPIL devices, then start Joydex. Joydex generates the LinkTool profile while both devices are available.
+2. Open **Testing / Advanced > Task alerts status...** from the Joydex tray. Choose **Show LED profile**, then load the selected `joydex-linktool.led.json` file in LinkTool.
+3. Start LinkTool's telemetry listener on its default UDP endpoint, `127.0.0.1:4123`.
+4. In the same Joydex window, choose **Install / Repair hooks** and confirm the status reads `Hooks: installed`. If Codex marks the new handlers for review, open its Hooks screen and trust the Joydex handlers; untrusted command hooks do not run.
+5. Make sure **Task alerts** is checked in the top level of the Joydex tray menu.
+6. Submit a test prompt in Codex. The Task Alerts **Event stream** should record it, **Current state** should gain a running assignment, and the corresponding LED should light.
 
 ![Joydex task-alert status window showing current task assignments and integration controls](docs/images/joydex-task-alerts.png)
 
