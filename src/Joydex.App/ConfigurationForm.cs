@@ -5,8 +5,9 @@ using Joydex.Windows.Input;
 
 namespace Joydex.App;
 
-internal sealed class ConfigurationForm : Form
+internal sealed class ConfigurationForm : ThemedForm
 {
+    private static readonly Size PreferredMinimumSize = new(760, 560);
     private readonly string _configPath;
     private readonly string _windowStatePath;
     private readonly IntPtr _cooperativeWindowHandle;
@@ -18,19 +19,24 @@ internal sealed class ConfigurationForm : Form
     private readonly ComboBox _deviceCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label _connectionLabel = new() { AutoSize = true, Text = "Looking for controller..." };
     private readonly Label _inputLabel = new() { AutoSize = true, Text = "Held buttons: none" };
-    private readonly Label _captureLabel = new() { AutoSize = true, ForeColor = Color.DarkBlue, Text = "Select a row and choose Capture." };
-    private readonly DataGridView _bankGrid = CreateGrid();
-    private readonly DataGridView _bindingGrid = CreateGrid();
-    private readonly DataGridView _buttonMapGrid = CreateGrid();
+    private readonly StatusLabel _captureLabel = new() { Tag = ThemeTone.Subtle, Text = "Select a row and choose Capture." };
+    private readonly ModernDataGridView _bankGrid = CreateGrid();
+    private readonly ModernDataGridView _bindingGrid = CreateGrid();
+    private readonly ModernDataGridView _buttonMapGrid = CreateGrid();
+    private readonly BorderedTextBox _bindingFilter = new();
+    private readonly Label _bindingCountLabel = new() { AutoSize = true, Tag = ThemeTone.Faint };
+    private readonly Dictionary<BindingCluster, RoundedButton> _bindingClusterButtons = [];
+    private BindingCluster _bindingCluster = BindingCluster.All;
     private readonly CheckBox _dryRunCheckBox = new() { AutoSize = true, Text = "Dry run (log actions without sending them)" };
     private readonly TextBox _simulatorProcessesTextBox = new() { Dock = DockStyle.Fill };
     private readonly ComboBox _openTargetCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly Button _captureBankButton = new() { AutoSize = true, Text = "Capture selector" };
-    private readonly Button _captureBindingButton = new() { AutoSize = true, Text = "Capture action button" };
-    private readonly Button _captureMapHoldButton = new() { AutoSize = true, Text = "Capture hold-to-show" };
-    private readonly Button _cancelCaptureButton = new() { AutoSize = true, Text = "Cancel capture", Visible = false };
-    private readonly Button _loadDefaultsButton = new() { AutoSize = true, Text = "Load Codex Micro defaults" };
-    private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
+    private readonly RoundedButton _captureBankButton = new() { Text = "Capture selector" };
+    private readonly RoundedButton _captureBindingButton = new() { Text = "Capture action button" };
+    private readonly RoundedButton _captureMapHoldButton = new() { Text = "Capture hold-to-show" };
+    private readonly RoundedButton _cancelCaptureButton = new() { Text = "Cancel capture", Visible = false };
+    private readonly RoundedButton _loadDefaultsButton = new() { Text = "Load Codex Micro defaults" };
+    private readonly Panel _pageHost = new() { Dock = DockStyle.Fill };
+    private readonly List<NavigationPage> _navigationPages = [];
     private CaptureTarget? _captureTarget;
     private JoystickSnapshot? _lastSnapshot;
     private DateTimeOffset _captureReadyAt;
@@ -67,8 +73,7 @@ internal sealed class ConfigurationForm : Form
         Text = "Configure Joydex";
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
-        Font = new Font("Segoe UI", 9F);
-        MinimumSize = new Size(960, 720);
+        MinimumSize = PreferredMinimumSize;
         Size = ClampToCurrentScreen(new Size(1500, 1000));
         ShowIcon = false;
 
@@ -117,6 +122,17 @@ internal sealed class ConfigurationForm : Form
         base.OnFormClosed(eventArgs);
     }
 
+    protected override void OnThemeApplied()
+    {
+        base.OnThemeApplied();
+        foreach (DataGridViewRow row in _bindingGrid.Rows)
+        {
+            UpdateWheelNotchesCell(row);
+        }
+
+        _captureLabel.ForeColor = JoydexTheme.TextSub;
+    }
+
     private void RestoreWindowState()
     {
         var state = ConfigurationWindowStateStore.Load(_windowStatePath);
@@ -135,85 +151,201 @@ internal sealed class ConfigurationForm : Form
     private Size ClampToCurrentScreen(Size requestedSize)
     {
         var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
-        var maximumWidth = Math.Max(MinimumSize.Width, workingArea.Width);
-        var maximumHeight = Math.Max(MinimumSize.Height, workingArea.Height);
+        var effectiveMinimum = new Size(
+            Math.Min(PreferredMinimumSize.Width, Math.Max(1, workingArea.Width)),
+            Math.Min(PreferredMinimumSize.Height, Math.Max(1, workingArea.Height)));
+        MinimumSize = effectiveMinimum;
 
         return new Size(
-            Math.Clamp(requestedSize.Width, MinimumSize.Width, maximumWidth),
-            Math.Clamp(requestedSize.Height, MinimumSize.Height, maximumHeight));
+            Math.Clamp(requestedSize.Width, effectiveMinimum.Width, Math.Max(effectiveMinimum.Width, workingArea.Width)),
+            Math.Clamp(requestedSize.Height, effectiveMinimum.Height, Math.Max(effectiveMinimum.Height, workingArea.Height)));
     }
+
+    private int ScaleLogical(int value) => (value * DeviceDpi + 48) / 96;
 
     private void BuildLayout()
     {
         var main = new TableLayoutPanel
         {
-            ColumnCount = 1,
+            ColumnCount = 2,
             Dock = DockStyle.Fill,
+            Padding = new Padding(12, 12, 12, 0),
             RowCount = 2,
         };
+        main.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ScaleLogical(196)));
+        main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        main.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        _tabs.TabPages.Add(BuildBindingsPage());
-        _tabs.TabPages.Add(BuildPromptPickersPage());
-        _tabs.TabPages.Add(BuildButtonMapsPage());
-        _tabs.TabPages.Add(BuildGeneralPage());
-        main.Controls.Add(_tabs, 0, 0);
-        main.Controls.Add(BuildFooter(), 0, 1);
-        var outer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12) };
-        outer.Controls.Add(main);
-        Controls.Add(outer);
+        var sidebar = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 12, 0),
+            Padding = new Padding(8, 10, 8, 8),
+        };
+        var sidebarLayout = new TableLayoutPanel
+        {
+            ColumnCount = 1,
+            Dock = DockStyle.Fill,
+            RowCount = 1,
+        };
+        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var navigation = new TableLayoutPanel
+        {
+            AccessibleName = "Configuration pages",
+            AccessibleRole = AccessibleRole.PageTabList,
+            AutoSize = true,
+            ColumnCount = 1,
+            Dock = DockStyle.Top,
+            RowCount = 0,
+        };
+        sidebarLayout.Controls.Add(navigation, 0, 0);
+        sidebar.Controls.Add(sidebarLayout);
+
+        _pageHost.Padding = new Padding(8, 0, 0, 0);
+        AddNavigationPage("Bindings", BuildBindingsPage(), navigation);
+        AddNavigationPage("Prompt Pickers", BuildPromptPickersPage(), navigation);
+        AddNavigationPage("Button Maps", BuildButtonMapsPage(), navigation);
+        AddNavigationPage("General", BuildGeneralPage(), navigation);
+        ShowPage(0, focusNavigation: false);
+
+        main.Controls.Add(sidebar, 0, 0);
+        main.SetRowSpan(sidebar, 2);
+        main.Controls.Add(_pageHost, 1, 0);
+        main.Controls.Add(BuildFooter(), 1, 1);
+        Controls.Add(main);
+        ThemeService.Apply(this);
     }
 
     internal void SelectTabForDocumentation(string tabText)
     {
-        var tab = _tabs.TabPages.Cast<TabPage>()
-            .FirstOrDefault(candidate => string.Equals(candidate.Text, tabText, StringComparison.Ordinal));
-        if (tab is not null)
+        var index = _navigationPages.FindIndex(candidate =>
+            string.Equals(candidate.Title, tabText, StringComparison.Ordinal));
+        if (index >= 0)
         {
-            _tabs.SelectedTab = tab;
+            ShowPage(index, focusNavigation: false);
         }
     }
 
-    private TabPage BuildBindingsPage()
+    internal void ExerciseBindingGridEditingForDocumentation()
     {
-        var page = new TabPage("Bindings") { Padding = new Padding(10) };
-        var layout = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Fill, RowCount = 2 };
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var introduction = new FlowLayoutPanel
+        var comboColumns = new[] { "BindingDevice", "BindingTrigger", "BindingAction" };
+        var rowCount = Math.Min(10, _bindingGrid.Rows.Count);
+        for (var rowIndex = 0; rowIndex < rowCount; rowIndex++)
         {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            Padding = new Padding(0, 0, 0, 8),
-            WrapContents = true,
+            foreach (var columnName in comboColumns)
+            {
+                _bindingGrid.CurrentCell = _bindingGrid.Rows[rowIndex].Cells[columnName];
+                _bindingGrid.BeginEdit(selectAll: false);
+                Application.DoEvents();
+                _bindingGrid.EndEdit();
+            }
+        }
+
+        _bindingGrid.CurrentCell = null;
+        _bindingGrid.Focus();
+        if (_bindingGrid.Rows.Count > 0)
+        {
+            _bindingGrid.FirstDisplayedScrollingRowIndex = 0;
+        }
+
+        Application.DoEvents();
+    }
+
+    protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+    {
+        if ((keyData & Keys.Control) == Keys.Control && (keyData & Keys.KeyCode) == Keys.Tab)
+        {
+            var current = Math.Max(0, _navigationPages.FindIndex(page => page.Button.Selected));
+            var direction = (keyData & Keys.Shift) == Keys.Shift ? -1 : 1;
+            var next = (current + direction + _navigationPages.Count) % _navigationPages.Count;
+            ShowPage(next, focusNavigation: true);
+            return true;
+        }
+
+        return base.ProcessCmdKey(ref message, keyData);
+    }
+
+    private static Panel CreatePage(Padding? padding = null) => new()
+    {
+        Dock = DockStyle.Fill,
+        Padding = padding ?? new Padding(0, 0, 0, 12),
+    };
+
+    private void AddNavigationPage(string title, Control page, TableLayoutPanel navigation)
+    {
+        var index = _navigationPages.Count;
+        var button = new NavButton
+        {
+            AccessibleName = title,
+            Dock = DockStyle.Top,
+            Height = ScaleLogical(36),
+            Glyph = title switch
+            {
+                "Bindings" => NavGlyph.Bindings,
+                "Prompt Pickers" => NavGlyph.PromptPickers,
+                "Button Maps" => NavGlyph.ButtonMaps,
+                "General" => NavGlyph.General,
+                _ => NavGlyph.None,
+            },
+            Text = title,
         };
-        introduction.Controls.Add(new Label
+        button.Click += (_, _) => ShowPage(index, focusNavigation: false);
+        navigation.RowCount++;
+        navigation.RowStyles.Add(new RowStyle(SizeType.Absolute, ScaleLogical(40)));
+        navigation.Controls.Add(button, 0, index);
+
+        page.Visible = false;
+        _pageHost.Controls.Add(page);
+        _navigationPages.Add(new NavigationPage(title, button, page));
+    }
+
+    private void ShowPage(int index, bool focusNavigation)
+    {
+        if (index < 0 || index >= _navigationPages.Count)
         {
-            Anchor = AnchorStyles.Left,
-            AutoSize = true,
-            Margin = new Padding(0, 7, 12, 0),
-            Text = "Start with the Codex Micro layout for the CM3, then adjust any row you want.",
-        });
+            return;
+        }
+
+        for (var candidateIndex = 0; candidateIndex < _navigationPages.Count; candidateIndex++)
+        {
+            var candidate = _navigationPages[candidateIndex];
+            var selected = candidateIndex == index;
+            candidate.Button.Selected = selected;
+            candidate.Button.TabStop = selected;
+            candidate.Page.Visible = selected;
+            if (selected)
+            {
+                candidate.Page.BringToFront();
+            }
+        }
+
+        if (focusNavigation)
+        {
+            _navigationPages[index].Button.Focus();
+        }
+    }
+
+    private Control BuildBindingsPage()
+    {
+        var page = CreatePage();
         _loadDefaultsButton.Click += (_, _) => LoadStarterProfile();
-        introduction.Controls.Add(_loadDefaultsButton);
-        layout.Controls.Add(introduction, 0, 0);
-        layout.Controls.Add(BuildBindingGroup(), 0, 1);
-        page.Controls.Add(layout);
+        page.Controls.Add(BuildBindingGroup());
         return page;
     }
 
-    private TabPage BuildPromptPickersPage()
+    private Control BuildPromptPickersPage()
     {
-        var page = new TabPage("Prompt Pickers") { Padding = new Padding(2) };
+        var page = CreatePage(new Padding(0));
         _promptPickerEditor = new PromptPickerEditorForm(_configPath, _cooperativeWindowHandle, pickerOnly: true);
         page.Controls.Add(_promptPickerEditor.EmbeddedPickerPage);
         return page;
     }
 
-    private TabPage BuildButtonMapsPage()
+    private Control BuildButtonMapsPage()
     {
-        var page = new TabPage("Button Maps") { Padding = new Padding(10) };
+        var page = CreatePage();
         var layout = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Fill, RowCount = 2 };
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -228,12 +360,13 @@ internal sealed class ConfigurationForm : Form
         return page;
     }
 
-    private TabPage BuildGeneralPage()
+    private Control BuildGeneralPage()
     {
-        var page = new TabPage("General") { Padding = new Padding(10) };
+        var page = CreatePage();
+        page.AutoScroll = true;
         var layout = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Fill, RowCount = 4 };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 125));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 210));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 230));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.Controls.Add(BuildDeviceGroup(), 0, 0);
@@ -241,12 +374,11 @@ internal sealed class ConfigurationForm : Form
 
         var bankGroup = BuildBankGroup();
         bankGroup.Visible = _originalConfig.BankSelectors.Count > 0;
-        var advanced = new Button
+        var advanced = new RoundedButton
         {
-            AutoSize = true,
-            FlatStyle = FlatStyle.Flat,
             Margin = new Padding(0, 12, 0, 6),
             Text = bankGroup.Visible ? "▼ Advanced" : "▶ Advanced",
+            Variant = ButtonVariant.Ghost,
         };
         advanced.Click += (_, _) =>
         {
@@ -259,6 +391,7 @@ internal sealed class ConfigurationForm : Form
         {
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
+            Tag = ThemeTone.Subtle,
             Margin = new Padding(12, 20, 0, 0),
             Text = "Software banks are only needed when one controller reuses the same logical buttons in several hardware modes.",
         });
@@ -270,12 +403,10 @@ internal sealed class ConfigurationForm : Form
 
     private Control BuildDeviceGroup()
     {
-        var group = new GroupBox { Dock = DockStyle.Fill, Text = "Controller" };
         var layout = new TableLayoutPanel
         {
             ColumnCount = 2,
             Dock = DockStyle.Fill,
-            Padding = new Padding(8, 4, 8, 4),
             RowCount = 3,
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
@@ -286,8 +417,7 @@ internal sealed class ConfigurationForm : Form
         layout.Controls.Add(_connectionLabel, 1, 1);
         layout.Controls.Add(new Label { Anchor = AnchorStyles.Left, AutoSize = true, Text = "Live input" }, 0, 2);
         layout.Controls.Add(_inputLabel, 1, 2);
-        group.Controls.Add(layout);
-        return group;
+        return BuildCard("Controller", layout);
     }
 
     private Control BuildBankGroup()
@@ -296,6 +426,7 @@ internal sealed class ConfigurationForm : Form
         {
             FillWeight = 70,
             HeaderText = "Bank name",
+            MinimumWidth = 180,
             Name = "BankName",
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
@@ -303,19 +434,20 @@ internal sealed class ConfigurationForm : Form
         {
             FillWeight = 30,
             HeaderText = "Selector button",
+            MinimumWidth = 130,
             Name = "SelectorButton",
             ReadOnly = true,
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
 
-        var add = new Button { AutoSize = true, Text = "Add bank" };
+        var add = new RoundedButton { Text = "Add bank" };
         add.Click += (_, _) =>
         {
             CancelCapture();
             var index = _bankGrid.Rows.Add($"bank-{_bankGrid.Rows.Count + 1}", null);
             _bankGrid.CurrentCell = _bankGrid.Rows[index].Cells[0];
         };
-        var remove = new Button { AutoSize = true, Text = "Remove bank" };
+        var remove = new RoundedButton { Text = "Remove bank" };
         remove.Click += (_, _) => RemoveCurrentRow(_bankGrid);
         _captureBankButton.Click += (_, _) => BeginCapture(
             _bankGrid,
@@ -331,6 +463,7 @@ internal sealed class ConfigurationForm : Form
         {
             FillWeight = 24,
             HeaderText = "Label",
+            MinimumWidth = 180,
             Name = "BindingName",
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
@@ -338,8 +471,11 @@ internal sealed class ConfigurationForm : Form
         {
             DataSource = _originalConfig.Devices.Select(device => device.Id).ToArray(),
             DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            DisplayStyleForCurrentCellOnly = true,
             FillWeight = 15,
+            FlatStyle = FlatStyle.Flat,
             HeaderText = "Device",
+            MinimumWidth = 100,
             Name = "BindingDevice",
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
@@ -347,6 +483,7 @@ internal sealed class ConfigurationForm : Form
         {
             FillWeight = 18,
             HeaderText = "Bank",
+            MinimumWidth = 100,
             Name = "BindingBank",
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
@@ -354,6 +491,7 @@ internal sealed class ConfigurationForm : Form
         {
             FillWeight = 10,
             HeaderText = "Button",
+            MinimumWidth = 70,
             Name = "BindingButton",
             ReadOnly = true,
             SortMode = DataGridViewColumnSortMode.NotSortable,
@@ -362,9 +500,11 @@ internal sealed class ConfigurationForm : Form
         {
             DataSource = new[] { "press", "release" },
             DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            DisplayStyleForCurrentCellOnly = true,
             FillWeight = 10,
             FlatStyle = FlatStyle.Flat,
             HeaderText = "When",
+            MinimumWidth = 80,
             Name = "BindingTrigger",
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
@@ -372,9 +512,11 @@ internal sealed class ConfigurationForm : Form
         {
             DataSource = CodexActionCatalog.SupportedIds.ToArray(),
             DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            DisplayStyleForCurrentCellOnly = true,
             FillWeight = 23,
             FlatStyle = FlatStyle.Flat,
             HeaderText = "Codex action",
+            MinimumWidth = 150,
             Name = "BindingAction",
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
@@ -382,10 +524,13 @@ internal sealed class ConfigurationForm : Form
         {
             FillWeight = 15,
             HeaderText = "Wheel notches",
+            MinimumWidth = 110,
             Name = "BindingWheelNotches",
             SortMode = DataGridViewColumnSortMode.NotSortable,
             ToolTipText = "Mouse-wheel notches per encoder detent; used only by scroll actions.",
         });
+
+        _bindingGrid.CellPainting += OnBindingGridCellPainting;
 
         _bindingGrid.CellBeginEdit += (_, eventArgs) =>
         {
@@ -412,7 +557,7 @@ internal sealed class ConfigurationForm : Form
             }
         };
 
-        var add = new Button { AutoSize = true, Text = "Add binding" };
+        var add = new RoundedButton { Text = "+ Add binding", Variant = ButtonVariant.Primary };
         add.Click += (_, _) =>
         {
             CancelCapture();
@@ -426,12 +571,21 @@ internal sealed class ConfigurationForm : Form
                 null,
                 "press",
                 "new-task",
-                null);
+            null);
             UpdateWheelNotchesCell(_bindingGrid.Rows[index]);
-            _bindingGrid.CurrentCell = _bindingGrid.Rows[index].Cells[0];
+            ApplyBindingFilter();
+            if (_bindingGrid.Rows[index].Visible)
+            {
+                _bindingGrid.CurrentCell = _bindingGrid.Rows[index].Cells[0];
+            }
         };
-        var remove = new Button { AutoSize = true, Text = "Remove binding" };
-        remove.Click += (_, _) => RemoveCurrentRow(_bindingGrid);
+        var remove = new RoundedButton { Text = "Remove" };
+        remove.Click += (_, _) =>
+        {
+            RemoveCurrentRow(_bindingGrid);
+            ApplyBindingFilter();
+        };
+        _captureBindingButton.Text = "Capture action";
         _captureBindingButton.Click += (_, _) =>
         {
             if (SelectBindingRowDeviceForCapture())
@@ -439,9 +593,156 @@ internal sealed class ConfigurationForm : Form
                 BeginCapture(_bindingGrid, "BindingButton", "Press the controller button for this Codex action.");
             }
         };
+        _loadDefaultsButton.Text = "Load defaults";
 
-        return BuildGridGroup("Bindings", _bindingGrid, add, remove, _captureBindingButton);
+        _bindingFilter.Editor.AccessibleName = "Filter bindings";
+        _bindingFilter.PlaceholderText = "Filter bindings...";
+        _bindingFilter.Editor.TextChanged += (_, _) => ApplyBindingFilter();
+        _bindingFilter.Margin = new Padding(0, 0, 8, 4);
+        _bindingCountLabel.Margin = new Padding(0, 8, 12, 0);
+
+        var toolbar = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = new Padding(0, 0, 0, 4),
+            WrapContents = true,
+        };
+        toolbar.Controls.AddRange([
+            _bindingFilter,
+            _bindingCountLabel,
+            _captureBindingButton,
+            _loadDefaultsButton,
+            remove,
+            add,
+        ]);
+
+        var clusters = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = new Padding(0, 0, 0, 4),
+            WrapContents = true,
+        };
+        foreach (var cluster in Enum.GetValues<BindingCluster>())
+        {
+            var capturedCluster = cluster;
+            var chip = new RoundedButton
+            {
+                AccessibleName = $"Show {FormatBindingCluster(cluster)} bindings",
+                CornerRadius = JoydexTheme.CompactControlHeight / 2,
+                MinimumSize = new Size(0, JoydexTheme.CompactControlHeight),
+                Padding = new Padding(10, 4, 10, 4),
+                Variant = cluster == BindingCluster.All ? ButtonVariant.Primary : ButtonVariant.Secondary,
+            };
+            chip.Click += (_, _) =>
+            {
+                _bindingCluster = capturedCluster;
+                ApplyBindingFilter();
+            };
+            _bindingClusterButtons[cluster] = chip;
+            clusters.Controls.Add(chip);
+        }
+
+        var helper = new Label
+        {
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 8),
+            Tag = ThemeTone.Faint,
+            Text = "Start with the Codex Micro layout for the CM3, then adjust any row you want.",
+        };
+        var gridCard = new CardPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(1),
+        };
+        gridCard.Controls.Add(_bindingGrid);
+
+        var layout = new TableLayoutPanel
+        {
+            ColumnCount = 1,
+            Dock = DockStyle.Fill,
+            RowCount = 4,
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.Controls.Add(toolbar, 0, 0);
+        layout.Controls.Add(clusters, 0, 1);
+        layout.Controls.Add(helper, 0, 2);
+        layout.Controls.Add(gridCard, 0, 3);
+        return layout;
     }
+
+    private void ApplyBindingFilter()
+    {
+        var filter = _bindingFilter.Editor.Text.Trim();
+        _bindingGrid.EndEdit();
+        _bindingGrid.CurrentCell = null;
+        var visible = 0;
+        foreach (DataGridViewRow row in _bindingGrid.Rows)
+        {
+            var matchesText = filter.Length == 0
+                || row.Cells.Cast<DataGridViewCell>()
+                    .Select(cell => Convert.ToString(cell.Value))
+                    .Any(value => value?.Contains(filter, StringComparison.OrdinalIgnoreCase) == true);
+            var matches = matchesText && MatchesBindingCluster(row, _bindingCluster);
+            row.Visible = matches;
+            if (matches)
+            {
+                visible++;
+            }
+        }
+
+        _bindingCountLabel.Text = filter.Length == 0
+            ? $"{visible} bindings"
+            : $"{visible} of {_bindingGrid.Rows.Count} bindings";
+
+        foreach (var (cluster, button) in _bindingClusterButtons)
+        {
+            var count = _bindingGrid.Rows.Cast<DataGridViewRow>().Count(row => MatchesBindingCluster(row, cluster));
+            button.Text = $"{FormatBindingCluster(cluster)} · {count}";
+            button.Variant = cluster == _bindingCluster ? ButtonVariant.Primary : ButtonVariant.Secondary;
+        }
+    }
+
+    private static bool MatchesBindingCluster(DataGridViewRow row, BindingCluster cluster)
+    {
+        if (cluster == BindingCluster.All)
+        {
+            return true;
+        }
+
+        var label = Convert.ToString(row.Cells["BindingName"].Value)?.Trim() ?? string.Empty;
+        var action = Convert.ToString(row.Cells["BindingAction"].Value)?.Trim() ?? string.Empty;
+        return cluster switch
+        {
+            BindingCluster.Encoders => label.StartsWith("E1", StringComparison.OrdinalIgnoreCase)
+                || label.StartsWith("E2", StringComparison.OrdinalIgnoreCase),
+            BindingCluster.Modules => label.Length >= 2
+                && char.ToUpperInvariant(label[0]) == 'M'
+                && char.IsDigit(label[1]),
+            BindingCluster.StickAndHats => label.StartsWith("Joystick", StringComparison.OrdinalIgnoreCase)
+                || label.StartsWith("T5", StringComparison.OrdinalIgnoreCase)
+                || label.StartsWith("T7", StringComparison.OrdinalIgnoreCase),
+            BindingCluster.Talk => label.Contains("talk", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "push-to-talk", StringComparison.OrdinalIgnoreCase),
+            _ => true,
+        };
+    }
+
+    private static string FormatBindingCluster(BindingCluster cluster) => cluster switch
+    {
+        BindingCluster.All => "All",
+        BindingCluster.Encoders => "Encoders",
+        BindingCluster.Modules => "Modules",
+        BindingCluster.StickAndHats => "Stick & hats",
+        BindingCluster.Talk => "Talk",
+        _ => cluster.ToString(),
+    };
 
     private static bool IsScrollAction(DataGridViewRow row)
     {
@@ -455,8 +756,8 @@ internal sealed class ConfigurationForm : Form
         var cell = row.Cells["BindingWheelNotches"];
         var isScrollAction = IsScrollAction(row);
         cell.ReadOnly = !isScrollAction;
-        cell.Style.BackColor = isScrollAction ? SystemColors.Window : SystemColors.Control;
-        cell.Style.ForeColor = isScrollAction ? SystemColors.WindowText : SystemColors.GrayText;
+        cell.Style.BackColor = isScrollAction ? JoydexTheme.Surface : JoydexTheme.GroupBg;
+        cell.Style.ForeColor = isScrollAction ? JoydexTheme.Text : JoydexTheme.TextFaint;
 
         if (isScrollAction)
         {
@@ -471,12 +772,108 @@ internal sealed class ConfigurationForm : Form
         }
     }
 
+    private void OnBindingGridCellPainting(object? sender, DataGridViewCellPaintingEventArgs eventArgs)
+    {
+        if (eventArgs.RowIndex < 0 || eventArgs.ColumnIndex < 0)
+        {
+            return;
+        }
+
+        if (eventArgs.Graphics is not { } graphics)
+        {
+            return;
+        }
+
+        var column = _bindingGrid.Columns[eventArgs.ColumnIndex];
+        if (column.Name == "BindingTrigger")
+        {
+            var current = _bindingGrid.CurrentCell;
+            if (_bindingGrid.IsCurrentCellInEditMode
+                && current is not null
+                && current.RowIndex == eventArgs.RowIndex
+                && current.ColumnIndex == eventArgs.ColumnIndex)
+            {
+                return;
+            }
+
+            var selected = (eventArgs.State & DataGridViewElementStates.Selected) != 0;
+            var cellStyle = eventArgs.CellStyle ?? _bindingGrid.DefaultCellStyle;
+            using (var background = new SolidBrush(
+                       selected
+                           ? cellStyle.SelectionBackColor
+                           : cellStyle.BackColor))
+            {
+                graphics.FillRectangle(background, eventArgs.CellBounds);
+            }
+
+            var value = Convert.ToString(eventArgs.FormattedValue) ?? string.Empty;
+            var warning = string.Equals(value, "release", StringComparison.OrdinalIgnoreCase);
+            var textSize = TextRenderer.MeasureText(
+                value,
+                JoydexTheme.MonoFont,
+                Size.Empty,
+                TextFormatFlags.NoPadding);
+            var horizontalInset = ScaleLogical(8);
+            var reservedArrowWidth = ScaleLogical(26);
+            var pillHeight = Math.Min(
+                eventArgs.CellBounds.Height - ScaleLogical(6),
+                textSize.Height + ScaleLogical(8));
+            var pillBounds = new Rectangle(
+                eventArgs.CellBounds.Left + horizontalInset,
+                eventArgs.CellBounds.Top + ((eventArgs.CellBounds.Height - pillHeight) / 2),
+                Math.Max(
+                    ScaleLogical(8),
+                    Math.Min(
+                        eventArgs.CellBounds.Width - reservedArrowWidth,
+                        textSize.Width + ScaleLogical(16))),
+                pillHeight);
+            using (var brush = new SolidBrush(warning ? JoydexTheme.TagWarnBg : JoydexTheme.TagBg))
+            {
+                ThemeDrawing.FillRoundedRectangle(graphics, brush, pillBounds, pillHeight / 2);
+            }
+
+            TextRenderer.DrawText(
+                graphics,
+                value,
+                JoydexTheme.MonoFont,
+                pillBounds,
+                warning ? JoydexTheme.TagWarnText : JoydexTheme.TagText,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            DrawComboAffordance(eventArgs);
+
+            eventArgs.Handled = true;
+            return;
+        }
+    }
+
+    private void DrawComboAffordance(DataGridViewCellPaintingEventArgs eventArgs)
+    {
+        if (eventArgs.Graphics is not { } graphics)
+        {
+            return;
+        }
+
+        var arrowWidth = ScaleLogical(24);
+        TextRenderer.DrawText(
+            graphics,
+            "\u25BE",
+            JoydexTheme.SectionFont,
+            new Rectangle(
+                eventArgs.CellBounds.Right - arrowWidth,
+                eventArgs.CellBounds.Top,
+                arrowWidth,
+                eventArgs.CellBounds.Height),
+            JoydexTheme.TextFaint,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+    }
+
     private Control BuildButtonMapGroup()
     {
         _buttonMapGrid.Columns.Add(new DataGridViewTextBoxColumn
         {
             FillWeight = 14,
             HeaderText = "Device ID",
+            MinimumWidth = 100,
             Name = "MapDeviceId",
             ReadOnly = true,
             SortMode = DataGridViewColumnSortMode.NotSortable,
@@ -485,14 +882,19 @@ internal sealed class ConfigurationForm : Form
         {
             FillWeight = 28,
             HeaderText = "Controller",
+            MinimumWidth = 180,
             Name = "MapDeviceName",
             ReadOnly = true,
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
         var template = new DataGridViewComboBoxColumn
         {
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            DisplayStyleForCurrentCellOnly = true,
             FillWeight = 16,
+            FlatStyle = FlatStyle.Flat,
             HeaderText = "Map template",
+            MinimumWidth = 120,
             Name = "MapTemplate",
             SortMode = DataGridViewColumnSortMode.NotSortable,
         };
@@ -502,8 +904,11 @@ internal sealed class ConfigurationForm : Form
         {
             DataSource = _originalConfig.Devices.Select(device => device.Id).ToArray(),
             DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            DisplayStyleForCurrentCellOnly = true,
             FillWeight = 22,
+            FlatStyle = FlatStyle.Flat,
             HeaderText = "Hold source",
+            MinimumWidth = 120,
             Name = "MapHoldDevice",
             SortMode = DataGridViewColumnSortMode.NotSortable,
         });
@@ -511,6 +916,7 @@ internal sealed class ConfigurationForm : Form
         {
             FillWeight = 20,
             HeaderText = "Hold-to-show button",
+            MinimumWidth = 150,
             Name = "MapHold",
             ReadOnly = true,
             SortMode = DataGridViewColumnSortMode.NotSortable,
@@ -533,7 +939,7 @@ internal sealed class ConfigurationForm : Form
                     "Move the physical control that should hold the selected button map open.");
             }
         };
-        var clear = new Button { AutoSize = true, Text = "Clear hold control" };
+        var clear = new RoundedButton { Text = "Clear hold control" };
         clear.Click += (_, _) =>
         {
             CancelCapture();
@@ -548,20 +954,12 @@ internal sealed class ConfigurationForm : Form
 
     private Control BuildSafetyGroup()
     {
-        var group = new GroupBox
-        {
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Dock = DockStyle.Top,
-            Text = "Safety and Open",
-        };
         var layout = new TableLayoutPanel
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 2,
             Dock = DockStyle.Top,
-            Padding = new Padding(8, 4, 8, 4),
             RowCount = 4,
         };
         for (var row = 0; row < 4; row++)
@@ -583,26 +981,29 @@ internal sealed class ConfigurationForm : Form
             AutoSize = true,
             Dock = DockStyle.Fill,
             ForeColor = SystemColors.GrayText,
+            Tag = ThemeTone.Subtle,
             Text = "Comma-separated process names, for example: DCS, FlightSimulator. Keyboard actions always require Codex in the foreground.",
         };
         layout.Controls.Add(hint, 0, 3);
         layout.SetColumnSpan(hint, 2);
-        group.Controls.Add(layout);
-        return group;
+        return BuildCard("Safety and open", layout);
     }
 
     private Control BuildFooter()
     {
-        var save = new Button { AutoSize = true, Text = "Save and close" };
+        var save = new RoundedButton { Text = "Save and close", Variant = ButtonVariant.Primary };
         save.Click += OnSave;
-        var cancel = new Button { AutoSize = true, DialogResult = DialogResult.Cancel, Text = "Cancel" };
+        var cancel = new RoundedButton { DialogResult = DialogResult.Cancel, Text = "Cancel" };
         _cancelCaptureButton.Click += (_, _) => CancelCapture();
         var captureStatus = new FlowLayoutPanel
         {
             AutoSize = true,
             Dock = DockStyle.Fill,
+            Padding = new Padding(12, 8, 0, 0),
             WrapContents = false,
         };
+        captureStatus.Controls.Add(new StatusDot());
+        _captureLabel.Margin = new Padding(0, 7, 10, 0);
         captureStatus.Controls.Add(_captureLabel);
         captureStatus.Controls.Add(_cancelCaptureButton);
 
@@ -611,13 +1012,23 @@ internal sealed class ConfigurationForm : Form
             AutoSize = true,
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(0, 4, 0, 0),
+            Padding = new Padding(0, 8, 12, 0),
             WrapContents = false,
         };
         commands.Controls.Add(save);
         commands.Controls.Add(cancel);
 
-        var footer = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill };
+        var footer = new TableLayoutPanel
+        {
+            AutoSize = true,
+            ColumnCount = 2,
+            Dock = DockStyle.Fill,
+        };
+        footer.Paint += (_, eventArgs) =>
+        {
+            using var pen = new Pen(JoydexTheme.Border);
+            eventArgs.Graphics.DrawLine(pen, 0, 0, footer.ClientSize.Width, 0);
+        };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.Controls.Add(captureStatus, 0, 0);
@@ -627,9 +1038,8 @@ internal sealed class ConfigurationForm : Form
         return footer;
     }
 
-    private static Control BuildGridGroup(string title, DataGridView grid, params Button[] buttons)
+    private static Control BuildGridGroup(string title, DataGridView grid, params RoundedButton[] buttons)
     {
-        var group = new GroupBox { Dock = DockStyle.Fill, Text = title };
         var layout = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Fill, RowCount = 2 };
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -640,21 +1050,43 @@ internal sealed class ConfigurationForm : Form
             AutoSize = true,
             Dock = DockStyle.Fill,
             Padding = new Padding(0, 4, 0, 0),
-            WrapContents = false,
+            WrapContents = true,
         };
         commands.Controls.AddRange(buttons);
         layout.Controls.Add(commands, 0, 1);
-        group.Controls.Add(layout);
-        return group;
+        return BuildCard(title, layout);
     }
 
-    private static DataGridView CreateGrid() => new()
+    private static CardPanel BuildCard(string title, Control content)
+    {
+        var card = new CardPanel { Dock = DockStyle.Fill };
+        var layout = new TableLayoutPanel
+        {
+            ColumnCount = 1,
+            Dock = DockStyle.Fill,
+            RowCount = 2,
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.Controls.Add(new Label
+        {
+            AutoSize = true,
+            Font = JoydexTheme.SectionFont,
+            Margin = new Padding(0, 0, 0, 10),
+            Text = title.ToUpperInvariant(),
+        }, 0, 0);
+        layout.Controls.Add(content, 0, 1);
+        card.Controls.Add(layout);
+        return card;
+    }
+
+    private static ModernDataGridView CreateGrid() => new()
     {
         AllowUserToAddRows = false,
         AllowUserToDeleteRows = false,
         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-        BackgroundColor = SystemColors.Window,
-        BorderStyle = BorderStyle.Fixed3D,
+        BackgroundColor = Color.White,
+        BorderStyle = BorderStyle.None,
         Dock = DockStyle.Fill,
         MultiSelect = false,
         RowHeadersVisible = false,
@@ -698,6 +1130,7 @@ internal sealed class ConfigurationForm : Form
                 binding.WheelNotches);
             UpdateWheelNotchesCell(_bindingGrid.Rows[rowIndex]);
         }
+        ApplyBindingFilter();
 
         var cm3MapRow = _buttonMapGrid.Rows.Cast<DataGridViewRow>().FirstOrDefault(row =>
             string.Equals(
@@ -781,6 +1214,7 @@ internal sealed class ConfigurationForm : Form
                 binding.WheelNotches);
             UpdateWheelNotchesCell(_bindingGrid.Rows[rowIndex]);
         }
+        ApplyBindingFilter();
 
         foreach (var profile in _originalConfig.Devices)
         {
@@ -1176,5 +1610,16 @@ internal sealed class ConfigurationForm : Form
         }
     }
 
+    private enum BindingCluster
+    {
+        All,
+        Encoders,
+        Modules,
+        StickAndHats,
+        Talk,
+    }
+
     private sealed record CaptureTarget(DataGridView Grid, int RowIndex, string ColumnName);
+
+    private sealed record NavigationPage(string Title, NavButton Button, Control Page);
 }

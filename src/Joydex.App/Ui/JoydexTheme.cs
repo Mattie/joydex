@@ -1,0 +1,580 @@
+using System.Drawing.Text;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using Microsoft.Win32;
+
+namespace Joydex.App;
+
+internal enum ThemeTone
+{
+    Default,
+    Subtle,
+    Faint,
+    Accent,
+    Success,
+}
+
+/// <summary>
+/// Centralizes the colors, fonts, and sizing used by Joydex windows.
+/// </summary>
+internal static class JoydexTheme
+{
+    public const int StandardControlHeight = 36;
+    public const int CompactControlHeight = 32;
+    public const int GridRowHeight = 36;
+    public const int GridHeaderHeight = 36;
+
+    public static int ScaleLogical(int value, int dpi) => (value * dpi + 48) / 96;
+
+    private static readonly bool SystemDarkMode = ReadSystemDarkMode();
+    private static bool? _darkModeOverride;
+
+    public static bool Dark { get; private set; } = SystemDarkMode;
+
+    public static bool HighContrast => SystemInformation.HighContrast;
+
+    public static Color WindowBg => HighContrast
+        ? SystemColors.Control
+        : Dark ? FromHex("#1D2026") : FromHex("#F4F5F7");
+
+    public static Color Surface => HighContrast
+        ? SystemColors.Window
+        : Dark ? FromHex("#23262D") : Color.White;
+
+    public static Color InputBg => HighContrast
+        ? SystemColors.Window
+        : Dark ? FromHex("#20232A") : Color.White;
+
+    public static Color Border => HighContrast
+        ? SystemColors.WindowFrame
+        : Dark ? FromHex("#343945") : FromHex("#D8DCE2");
+
+    public static Color BorderSoft => HighContrast
+        ? SystemColors.ControlDark
+        : Dark ? FromHex("#2C3038") : FromHex("#F1F3F6");
+
+    public static Color Text => HighContrast
+        ? SystemColors.WindowText
+        : Dark ? FromHex("#E7E9EE") : FromHex("#1B1E24");
+
+    public static Color TextSub => HighContrast
+        ? SystemColors.WindowText
+        : Dark ? FromHex("#9AA2AE") : FromHex("#5B6470");
+
+    public static Color TextFaint => HighContrast
+        ? SystemColors.GrayText
+        : Dark ? FromHex("#6F7784") : FromHex("#8A919C");
+
+    public static Color Accent => HighContrast
+        ? SystemColors.Highlight
+        : Dark ? FromHex("#8BA1F2") : FromHex("#3D63DD");
+
+    public static Color AccentText => HighContrast
+        ? SystemColors.HotTrack
+        : Dark ? FromHex("#A5B6F5") : FromHex("#2F4FC4");
+
+    // DataGridView backgrounds must be opaque, so the accent is blended into the surface.
+    public static Color AccentTint => Blend(Accent, Surface, Dark ? 0.18F : 0.10F);
+
+    public static Color HoverBg => HighContrast
+        ? SystemColors.ControlLight
+        : Dark ? FromHex("#2B3039") : FromHex("#ECEFF4");
+
+    public static Color GroupBg => HighContrast
+        ? SystemColors.Control
+        : Dark ? FromHex("#272B33") : FromHex("#F7F8FA");
+
+    public static Color TagBg => HighContrast
+        ? SystemColors.Control
+        : Dark ? FromHex("#2C3038") : FromHex("#EEF0F4");
+
+    public static Color TagText => HighContrast
+        ? SystemColors.ControlText
+        : Dark ? FromHex("#AAB1BC") : FromHex("#5A6270");
+
+    public static Color TagWarnBg => HighContrast
+        ? SystemColors.Control
+        : Dark ? FromHex("#3A2E1F") : FromHex("#FBEEDD");
+
+    public static Color TagWarnText => HighContrast
+        ? SystemColors.ControlText
+        : Dark ? FromHex("#E0A05C") : FromHex("#A05F17");
+
+    public static Color Success => HighContrast ? SystemColors.Highlight : FromHex("#37B26C");
+
+    public static Color PrimaryText => Dark ? FromHex("#171A20") : Color.White;
+
+    public static Color DisabledBg => Blend(TextFaint, Surface, 0.10F);
+
+    public static Color DisabledText => Blend(TextFaint, Surface, 0.72F);
+
+    public static Font UiFont { get; } = CreateFont(
+        ["Segoe UI Variable Text", "Segoe UI"],
+        9.75F,
+        FontStyle.Regular);
+
+    public static Font UiSemiboldFont { get; } = CreateFont(
+        ["Segoe UI Variable Text Semibold", "Segoe UI Semibold", "Segoe UI"],
+        9.75F,
+        FontStyle.Bold);
+
+    public static Font SectionFont { get; } = CreateFont(
+        ["Segoe UI Semibold", "Segoe UI"],
+        8.25F,
+        FontStyle.Bold);
+
+    public static Font MonoFont { get; } = CreateFont(
+        ["Cascadia Mono", "Consolas"],
+        9F,
+        FontStyle.Regular);
+
+    public static bool RefreshSystemPreference()
+    {
+        var next = _darkModeOverride ?? ReadSystemDarkMode();
+        if (Dark == next)
+        {
+            return false;
+        }
+
+        Dark = next;
+        return true;
+    }
+
+    /// <summary>
+    /// Temporarily pins the palette for deterministic rendering and tests.
+    /// </summary>
+    public static IDisposable OverrideDarkMode(bool dark)
+    {
+        var previousOverride = _darkModeOverride;
+        var previousDark = Dark;
+        _darkModeOverride = dark;
+        Dark = dark;
+        return new ThemeOverride(previousOverride, previousDark);
+    }
+
+    public static Color Blend(Color foreground, Color background, float amount)
+    {
+        amount = Math.Clamp(amount, 0F, 1F);
+        return Color.FromArgb(
+            255,
+            (int)Math.Round(background.R + ((foreground.R - background.R) * amount)),
+            (int)Math.Round(background.G + ((foreground.G - background.G) * amount)),
+            (int)Math.Round(background.B + ((foreground.B - background.B) * amount)));
+    }
+
+    public static Color Shift(Color color, float amount)
+    {
+        var target = amount < 0 ? Color.Black : Color.White;
+        return Blend(target, color, Math.Abs(amount));
+    }
+
+    private static bool ReadSystemDarkMode()
+    {
+        try
+        {
+            var value = Registry.GetValue(
+                @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "AppsUseLightTheme",
+                1);
+            return value is int intValue && intValue == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static Font CreateFont(IReadOnlyList<string> candidates, float size, FontStyle style)
+    {
+        try
+        {
+            using var installed = new InstalledFontCollection();
+            var names = installed.Families.Select(family => family.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var candidate in candidates)
+            {
+                if (names.Contains(candidate))
+                {
+                    return new Font(candidate, size, style, GraphicsUnit.Point);
+                }
+            }
+        }
+        catch
+        {
+            // Font discovery can fail in restricted sessions. Segoe UI ships with supported Windows versions.
+        }
+
+        return new Font("Segoe UI", size, style, GraphicsUnit.Point);
+    }
+
+    private static Color FromHex(string value) => ColorTranslator.FromHtml(value);
+
+    private sealed class ThemeOverride(bool? previousOverride, bool previousDark) : IDisposable
+    {
+        private bool _disposed;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _darkModeOverride = previousOverride;
+            Dark = previousOverride ?? previousDark;
+            _disposed = true;
+        }
+    }
+}
+
+/// <summary>
+/// Applies the current Joydex palette to stock controls and native title bars.
+/// </summary>
+internal static class ThemeService
+{
+    private const int DwmUseImmersiveDarkMode = 20;
+    private static readonly ConditionalWeakTable<ComboBox, object> StyledComboBoxes = new();
+
+    public static void Apply(Control root)
+    {
+        ApplyControl(root, JoydexTheme.WindowBg);
+        if (root is Form form && form.IsHandleCreated)
+        {
+            ApplyTitleBar(form);
+        }
+
+        root.Invalidate(true);
+    }
+
+    public static void ApplyGrid(DataGridView grid)
+    {
+        grid.EnableHeadersVisualStyles = false;
+        grid.BorderStyle = BorderStyle.None;
+        grid.CellBorderStyle = DataGridViewCellBorderStyle.None;
+        grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
+        grid.GridColor = JoydexTheme.Border;
+        grid.BackgroundColor = JoydexTheme.Surface;
+        grid.RowHeadersVisible = false;
+        grid.AllowUserToResizeRows = false;
+        var rowHeight = JoydexTheme.ScaleLogical(JoydexTheme.GridRowHeight, grid.DeviceDpi);
+        var headerHeight = JoydexTheme.ScaleLogical(JoydexTheme.GridHeaderHeight, grid.DeviceDpi);
+        var horizontalPadding = JoydexTheme.ScaleLogical(6, grid.DeviceDpi);
+        var topPadding = JoydexTheme.ScaleLogical(2, grid.DeviceDpi);
+        var bottomPadding = JoydexTheme.ScaleLogical(3, grid.DeviceDpi);
+
+        grid.RowTemplate.Height = rowHeight;
+        grid.RowTemplate.DividerHeight = 0;
+        foreach (DataGridViewRow row in grid.Rows)
+        {
+            row.Height = rowHeight;
+            row.DividerHeight = 0;
+        }
+
+        grid.ColumnHeadersHeight = headerHeight;
+        grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+        grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+        {
+            Alignment = DataGridViewContentAlignment.MiddleLeft,
+            BackColor = JoydexTheme.Surface,
+            ForeColor = JoydexTheme.TextFaint,
+            Font = JoydexTheme.SectionFont,
+            Padding = new Padding(6, 0, 6, 0),
+            SelectionBackColor = JoydexTheme.Surface,
+            SelectionForeColor = JoydexTheme.TextFaint,
+        };
+        grid.DefaultCellStyle.BackColor = JoydexTheme.Surface;
+        grid.DefaultCellStyle.ForeColor = JoydexTheme.Text;
+        grid.DefaultCellStyle.Font = JoydexTheme.UiFont;
+        grid.DefaultCellStyle.Padding = new Padding(
+            horizontalPadding,
+            topPadding,
+            horizontalPadding,
+            bottomPadding);
+        grid.DefaultCellStyle.SelectionBackColor = JoydexTheme.AccentTint;
+        grid.DefaultCellStyle.SelectionForeColor = JoydexTheme.Text;
+        grid.AlternatingRowsDefaultCellStyle.BackColor = JoydexTheme.Surface;
+        grid.RowsDefaultCellStyle.BackColor = JoydexTheme.Surface;
+
+        foreach (DataGridViewColumn column in grid.Columns)
+        {
+            column.DividerWidth = 0;
+            column.HeaderText = column.HeaderText.ToUpperInvariant();
+            if (column is DataGridViewComboBoxColumn comboColumn)
+            {
+                comboColumn.DisplayStyle = DataGridViewComboBoxDisplayStyle.Nothing;
+                comboColumn.DisplayStyleForCurrentCellOnly = false;
+                comboColumn.FlatStyle = FlatStyle.Flat;
+            }
+
+            if (column.Name.Contains("Button", StringComparison.OrdinalIgnoreCase)
+                || column.Name.Contains("Action", StringComparison.OrdinalIgnoreCase)
+                || column.Name.Contains("Notches", StringComparison.OrdinalIgnoreCase)
+                || column.Name.Contains("Slot", StringComparison.OrdinalIgnoreCase)
+                || column.Name.Contains("Time", StringComparison.OrdinalIgnoreCase)
+                || column.Name.Contains("Received", StringComparison.OrdinalIgnoreCase))
+            {
+                column.DefaultCellStyle.Font = JoydexTheme.MonoFont;
+            }
+
+            if (column.Name.Contains("Action", StringComparison.OrdinalIgnoreCase))
+            {
+                column.DefaultCellStyle.ForeColor = JoydexTheme.AccentText;
+                column.DefaultCellStyle.SelectionForeColor = JoydexTheme.AccentText;
+            }
+        }
+
+        typeof(DataGridView)
+            .GetProperty("DoubleBuffered", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.SetValue(grid, true);
+    }
+
+    public static void ApplyTitleBar(Form form)
+    {
+        if (!form.IsHandleCreated)
+        {
+            return;
+        }
+
+        var enabled = JoydexTheme.Dark ? 1 : 0;
+        _ = DwmSetWindowAttribute(
+            form.Handle,
+            DwmUseImmersiveDarkMode,
+            ref enabled,
+            sizeof(int));
+    }
+
+    private static void ApplyControl(Control control, Color inheritedBackground)
+    {
+        // These controls carry authored visuals whose colors are part of their content or behavior.
+        if (control is ButtonMapCanvas or PromptPickerOverlayForm)
+        {
+            return;
+        }
+
+        var childBackground = inheritedBackground;
+        switch (control)
+        {
+            case Form:
+                control.BackColor = JoydexTheme.WindowBg;
+                control.ForeColor = JoydexTheme.Text;
+                control.Font = JoydexTheme.UiFont;
+                childBackground = JoydexTheme.WindowBg;
+                break;
+            case CardPanel:
+                control.BackColor = JoydexTheme.Surface;
+                control.ForeColor = JoydexTheme.Text;
+                childBackground = JoydexTheme.Surface;
+                break;
+            case TabPage:
+                control.BackColor = JoydexTheme.WindowBg;
+                control.ForeColor = JoydexTheme.Text;
+                childBackground = JoydexTheme.WindowBg;
+                break;
+            case BorderedTextBox:
+                control.BackColor = JoydexTheme.InputBg;
+                control.ForeColor = JoydexTheme.Text;
+                childBackground = JoydexTheme.InputBg;
+                break;
+            case TableLayoutPanel or FlowLayoutPanel or Panel:
+                control.BackColor = inheritedBackground;
+                control.ForeColor = JoydexTheme.Text;
+                childBackground = inheritedBackground;
+                break;
+            case ModernDataGridView modernGrid:
+                ApplyGrid(modernGrid);
+                break;
+            case DataGridView grid:
+                ApplyGrid(grid);
+                break;
+            case RoundedButton:
+                control.BackColor = inheritedBackground;
+                control.ForeColor = JoydexTheme.Text;
+                break;
+            case Button button:
+                button.FlatStyle = FlatStyle.Flat;
+                button.FlatAppearance.BorderColor = JoydexTheme.Border;
+                button.FlatAppearance.BorderSize = 1;
+                button.BackColor = JoydexTheme.Surface;
+                button.ForeColor = JoydexTheme.Text;
+                button.UseVisualStyleBackColor = false;
+                break;
+            case TextBoxBase textBox:
+                textBox.BackColor = JoydexTheme.InputBg;
+                textBox.ForeColor = JoydexTheme.Text;
+                textBox.BorderStyle = textBox.Parent is BorderedTextBox
+                    ? BorderStyle.None
+                    : BorderStyle.FixedSingle;
+                break;
+            case ComboBox comboBox:
+                comboBox.BackColor = JoydexTheme.InputBg;
+                comboBox.ForeColor = JoydexTheme.Text;
+                comboBox.FlatStyle = FlatStyle.Flat;
+                comboBox.DrawMode = DrawMode.OwnerDrawFixed;
+                if (!StyledComboBoxes.TryGetValue(comboBox, out _))
+                {
+                    StyledComboBoxes.Add(comboBox, new object());
+                    comboBox.DrawItem += DrawComboBoxItem;
+                }
+                break;
+            case NumericUpDown numeric:
+                numeric.BackColor = JoydexTheme.InputBg;
+                numeric.ForeColor = JoydexTheme.Text;
+                numeric.BorderStyle = BorderStyle.FixedSingle;
+                break;
+            case PromptListBox promptList:
+                promptList.ApplyTheme();
+                break;
+            case ListBox listBox:
+                listBox.BackColor = JoydexTheme.Surface;
+                listBox.ForeColor = JoydexTheme.Text;
+                listBox.BorderStyle = BorderStyle.None;
+                break;
+            case ListView listView:
+                listView.BackColor = JoydexTheme.Surface;
+                listView.ForeColor = JoydexTheme.Text;
+                listView.BorderStyle = BorderStyle.None;
+                break;
+            case CheckBox checkBox:
+                checkBox.BackColor = inheritedBackground;
+                checkBox.ForeColor = JoydexTheme.Text;
+                checkBox.FlatStyle = FlatStyle.Flat;
+                break;
+            case Label label:
+                label.BackColor = inheritedBackground;
+                if (label.Tag is ThemeTone tone)
+                {
+                    label.ForeColor = tone switch
+                    {
+                        ThemeTone.Subtle => JoydexTheme.TextSub,
+                        ThemeTone.Faint => JoydexTheme.TextFaint,
+                        ThemeTone.Accent => JoydexTheme.AccentText,
+                        ThemeTone.Success => JoydexTheme.Success,
+                        _ => JoydexTheme.Text,
+                    };
+                }
+                else if (label.ForeColor == SystemColors.GrayText || label.ForeColor == Color.DarkGray)
+                {
+                    label.Tag = ThemeTone.Subtle;
+                    label.ForeColor = JoydexTheme.TextSub;
+                }
+                else if (label.ForeColor == Color.DarkBlue)
+                {
+                    label.Tag = ThemeTone.Accent;
+                    label.ForeColor = JoydexTheme.AccentText;
+                }
+                else
+                {
+                    label.ForeColor = JoydexTheme.Text;
+                }
+                break;
+            case GroupBox groupBox:
+                groupBox.BackColor = JoydexTheme.Surface;
+                groupBox.ForeColor = JoydexTheme.Text;
+                childBackground = JoydexTheme.Surface;
+                break;
+            default:
+                control.ForeColor = JoydexTheme.Text;
+                break;
+        }
+
+        foreach (Control child in control.Controls)
+        {
+            ApplyControl(child, childBackground);
+        }
+    }
+
+    private static void DrawComboBoxItem(object? sender, DrawItemEventArgs eventArgs)
+    {
+        if (sender is not ComboBox comboBox)
+        {
+            return;
+        }
+
+        var selected = (eventArgs.State & DrawItemState.Selected) != 0;
+        using var background = new SolidBrush(selected ? JoydexTheme.AccentTint : JoydexTheme.InputBg);
+        eventArgs.Graphics.FillRectangle(background, eventArgs.Bounds);
+        var text = eventArgs.Index >= 0 && eventArgs.Index < comboBox.Items.Count
+            ? comboBox.GetItemText(comboBox.Items[eventArgs.Index])
+            : comboBox.Text;
+        TextRenderer.DrawText(
+            eventArgs.Graphics,
+            text,
+            comboBox.Font,
+            new Rectangle(
+                eventArgs.Bounds.Left + 4,
+                eventArgs.Bounds.Top,
+                Math.Max(0, eventArgs.Bounds.Width - 8),
+                eventArgs.Bounds.Height),
+            JoydexTheme.Text,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        if ((eventArgs.State & DrawItemState.Focus) != 0)
+        {
+            eventArgs.DrawFocusRectangle();
+        }
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr window,
+        int attribute,
+        ref int attributeValue,
+        int attributeSize);
+}
+
+/// <summary>
+/// Base form that tracks Windows app-theme changes without recreating its handle.
+/// </summary>
+internal class ThemedForm : Form
+{
+    private const int WmSettingChange = 0x001A;
+
+    internal bool SuppressActivation { get; set; }
+
+    protected override bool ShowWithoutActivation => SuppressActivation || base.ShowWithoutActivation;
+
+    protected ThemedForm()
+    {
+        Font = JoydexTheme.UiFont;
+        BackColor = JoydexTheme.WindowBg;
+        ForeColor = JoydexTheme.Text;
+    }
+
+    protected override void OnHandleCreated(EventArgs eventArgs)
+    {
+        base.OnHandleCreated(eventArgs);
+        ApplyCurrentTheme();
+    }
+
+    protected override void OnShown(EventArgs eventArgs)
+    {
+        base.OnShown(eventArgs);
+        ApplyCurrentTheme();
+    }
+
+    protected override void WndProc(ref Message message)
+    {
+        if (message.Msg == WmSettingChange)
+        {
+            var setting = message.LParam == IntPtr.Zero ? null : Marshal.PtrToStringUni(message.LParam);
+            if (string.IsNullOrEmpty(setting)
+                || string.Equals(setting, "ImmersiveColorSet", StringComparison.OrdinalIgnoreCase))
+            {
+                JoydexTheme.RefreshSystemPreference();
+                ApplyCurrentTheme();
+            }
+        }
+
+        base.WndProc(ref message);
+    }
+
+    protected virtual void OnThemeApplied()
+    {
+    }
+
+    private void ApplyCurrentTheme()
+    {
+        ThemeService.Apply(this);
+        OnThemeApplied();
+    }
+}

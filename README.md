@@ -102,6 +102,8 @@ Dim gray means running, yellow means the task needs attention, and low green mea
 4. Choose **Install / Repair hooks**. Approve Codex's trust prompt if it appears, then confirm the window says `Hooks: installed`.
 5. Leave **Task alerts** checked in the tray menu.
 
+![Joydex task-alert status window showing current task assignments and integration controls](docs/images/joydex-task-alerts.png)
+
 Joydex sends a complete snapshot whenever a task or physical mode changes, and LinkTool holds the matching colors. A read-only VIRPIL Software Link report tells Joydex which M1-M5 position is selected, so turning the dial switches LED pages without writing to controller firmware or profiles.
 
 Task assignments, completion deadlines, and privacy-preserving attention hashes are saved in `%LOCALAPPDATA%\Joydex\task-alert-state.json`. Prompt text, commands, and tool responses are never stored there. Active slots survive a Joydex restart, expired entries are discarded during restore, and turning Task alerts off clears the saved assignments. The tray's **Task alerts status...** window installs or repairs the Codex hooks and shows current assignments, exact LinkTool telemetry, and the last 100 lifecycle events. See [the LED status guide](docs/LED_STATUS.md) for setup, troubleshooting, and the full behavior.

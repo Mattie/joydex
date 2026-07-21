@@ -6,7 +6,7 @@ using Joydex.Core.TaskAlerts;
 
 namespace Joydex.App;
 
-internal sealed class ButtonMapForm : Form
+internal sealed class ButtonMapForm : ThemedForm
 {
     private readonly string _windowStatePath;
     private readonly ButtonMapCanvas _canvas;
@@ -25,7 +25,6 @@ internal sealed class ButtonMapForm : Form
         Text = $"Joydex {device.DisplayName} Button Map";
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Dpi;
-        Font = new Font("Segoe UI", 9F);
         FormBorderStyle = FormBorderStyle.SizableToolWindow;
         MinimumSize = new Size(850, 650);
         ShowIcon = false;
@@ -33,7 +32,14 @@ internal sealed class ButtonMapForm : Form
         TopMost = true;
 
         _canvas = new ButtonMapCanvas(normalized, deviceId, log) { Dock = DockStyle.Fill };
-        Controls.Add(_canvas);
+        var canvasHost = new Panel
+        {
+            BackColor = JoydexTheme.WindowBg,
+            Dock = DockStyle.Fill,
+            Padding = new Padding(8),
+        };
+        canvasHost.Controls.Add(_canvas);
+        Controls.Add(canvasHost);
         RestoreWindowState();
     }
 

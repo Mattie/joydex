@@ -21,12 +21,30 @@ internal sealed class PromptPickerOverlayForm : Form
     private readonly Label _position = new();
     private readonly System.Windows.Forms.Timer _foregroundTimer = new() { Interval = 250 };
     private readonly Func<bool> _codexStillForeground;
-    private readonly Font _headerNameFont = new("Segoe UI Semibold", 14F, FontStyle.Regular);
-    private readonly Font _headerHintFont = new("Segoe UI", 12F, FontStyle.Regular);
-    private readonly Font _normalFont = new("Segoe UI", 13.5F, FontStyle.Regular);
-    private readonly Font _selectedFont = new("Segoe UI Semibold", 13.5F, FontStyle.Regular);
-    private readonly Font _glyphFont = new("Segoe UI", 12F, FontStyle.Regular);
-    private readonly Font _footerFont = new("Segoe UI", 11.5F, FontStyle.Regular);
+    private readonly Font _headerNameFont = new(
+        JoydexTheme.UiSemiboldFont.FontFamily,
+        14F,
+        FontStyle.Bold);
+    private readonly Font _headerHintFont = new(
+        JoydexTheme.UiFont.FontFamily,
+        12F,
+        FontStyle.Regular);
+    private readonly Font _normalFont = new(
+        JoydexTheme.UiFont.FontFamily,
+        13.5F,
+        FontStyle.Regular);
+    private readonly Font _selectedFont = new(
+        JoydexTheme.UiSemiboldFont.FontFamily,
+        13.5F,
+        FontStyle.Bold);
+    private readonly Font _glyphFont = new(
+        JoydexTheme.UiFont.FontFamily,
+        12F,
+        FontStyle.Regular);
+    private readonly Font _footerFont = new(
+        JoydexTheme.UiFont.FontFamily,
+        11.5F,
+        FontStyle.Regular);
     private bool _hotKeyRegistered;
 
     public PromptPickerOverlayForm(Func<bool> codexStillForeground)
@@ -34,8 +52,8 @@ internal sealed class PromptPickerOverlayForm : Form
         _codexStillForeground = codexStillForeground;
         Text = "Joydex Prompt Picker";
         Font = _normalFont;
-        BackColor = Color.FromArgb(32, 32, 32);
-        ForeColor = Color.White;
+        BackColor = OverlayPalette.WindowBg;
+        ForeColor = OverlayPalette.Text;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
@@ -52,14 +70,14 @@ internal sealed class PromptPickerOverlayForm : Form
 
         _pickerName.AutoSize = true;
         _pickerName.Font = _headerNameFont;
-        _pickerName.ForeColor = Color.White;
+        _pickerName.ForeColor = OverlayPalette.Text;
         _pickerName.BackColor = Color.Transparent;
         _pickerName.Margin = System.Windows.Forms.Padding.Empty;
 
         _hint.AutoSize = true;
         _hint.Text = "Insert to use · Esc cancels";
         _hint.Font = _headerHintFont;
-        _hint.ForeColor = Color.FromArgb(110, 110, 110);
+        _hint.ForeColor = OverlayPalette.TextFaint;
         _hint.BackColor = Color.Transparent;
         _hint.Margin = new Padding(16, 3, 0, 0);
 
@@ -88,7 +106,7 @@ internal sealed class PromptPickerOverlayForm : Form
         _footer.Dock = DockStyle.Bottom;
         _footer.Height = 42;
         _footer.Padding = new Padding(16, 1, 16, 0);
-        _footer.BackColor = Color.FromArgb(27, 27, 27);
+        _footer.BackColor = OverlayPalette.FooterBg;
         _footer.ColumnCount = 2;
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -96,21 +114,21 @@ internal sealed class PromptPickerOverlayForm : Form
         _footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
         _footer.Paint += (_, eventArgs) =>
         {
-            using var borderPen = new Pen(Color.FromArgb(51, 51, 51));
+            using var borderPen = new Pen(OverlayPalette.Border);
             eventArgs.Graphics.DrawLine(borderPen, 0, 0, _footer.ClientSize.Width, 0);
         };
 
         _footerHint.Dock = DockStyle.Fill;
         _footerHint.Text = "Roll to select Press to confirm";
         _footerHint.Font = _footerFont;
-        _footerHint.ForeColor = Color.FromArgb(122, 122, 122);
+        _footerHint.ForeColor = OverlayPalette.TextSub;
         _footerHint.TextAlign = ContentAlignment.MiddleLeft;
         _footerHint.Margin = System.Windows.Forms.Padding.Empty;
 
         _position.AutoSize = true;
         _position.Dock = DockStyle.Fill;
         _position.Font = _footerFont;
-        _position.ForeColor = Color.FromArgb(90, 90, 90);
+        _position.ForeColor = OverlayPalette.TextFaint;
         _position.TextAlign = ContentAlignment.MiddleRight;
         _position.Margin = System.Windows.Forms.Padding.Empty;
 
@@ -153,7 +171,7 @@ internal sealed class PromptPickerOverlayForm : Form
         var cornerPreference = 2; // DWMWCP_ROUND
         DwmSetWindowAttribute(Handle, DwmWindowCornerPreference, ref cornerPreference, sizeof(int));
 
-        var borderColor = 0x00383838;
+        var borderColor = OverlayPalette.DwmBorderColor;
         DwmSetWindowAttribute(Handle, DwmBorderColor, ref borderColor, sizeof(int));
     }
 
@@ -323,8 +341,8 @@ internal sealed class PromptPickerOverlayForm : Form
             if (_selected)
             {
                 var selectionBounds = new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
-                using var selectionPath = RoundedRectangle(selectionBounds, CornerRadius);
-                using var selectionBrush = new SolidBrush(Color.FromArgb(53, 53, 53));
+                using var selectionPath = ThemeDrawing.RoundedRectangle(selectionBounds, CornerRadius);
+                using var selectionBrush = new SolidBrush(OverlayPalette.Selection);
                 eventArgs.Graphics.FillPath(selectionBrush, selectionPath);
             }
 
@@ -343,7 +361,7 @@ internal sealed class PromptPickerOverlayForm : Form
                     glyph,
                     _glyphFont,
                     glyphBounds,
-                    Color.FromArgb(76, 194, 255),
+                    OverlayPalette.Accent,
                     textFlags);
             }
 
@@ -367,17 +385,17 @@ internal sealed class PromptPickerOverlayForm : Form
                     submitMarker,
                     _normalFont,
                     markerBounds,
-                    _selected ? Color.FromArgb(76, 194, 255) : Color.FromArgb(138, 138, 138),
+                    _selected ? OverlayPalette.AccentText : OverlayPalette.TagText,
                     textFlags);
                 textRight = markerBounds.Left - 13;
             }
 
             var textBounds = new Rectangle(textLeft, 0, Math.Max(0, textRight - textLeft), Height);
             var textColor = _selected
-                ? Color.White
+                ? OverlayPalette.Text
                 : _isExit
-                    ? Color.FromArgb(138, 138, 138)
-                    : Color.FromArgb(207, 207, 207);
+                    ? OverlayPalette.TagText
+                    : OverlayPalette.Text;
             TextRenderer.DrawText(
                 eventArgs.Graphics,
                 _text,
@@ -387,27 +405,26 @@ internal sealed class PromptPickerOverlayForm : Form
                 textFlags);
         }
 
-        private static GraphicsPath RoundedRectangle(Rectangle bounds, int radius)
-        {
-            var path = new GraphicsPath();
-            var diameter = radius * 2;
-            if (bounds.Width <= diameter || bounds.Height <= diameter)
-            {
-                path.AddRectangle(bounds);
-                return path;
-            }
+    }
 
-            var arc = new Rectangle(bounds.Location, new Size(diameter, diameter));
-            path.AddArc(arc, 180, 90);
-            arc.X = bounds.Right - diameter;
-            path.AddArc(arc, 270, 90);
-            arc.Y = bounds.Bottom - diameter;
-            path.AddArc(arc, 0, 90);
-            arc.X = bounds.Left;
-            path.AddArc(arc, 90, 90);
-            path.CloseFigure();
-            return path;
-        }
+    /// <summary>
+    /// Keeps the no-activation overlay consistently dark while matching the shared Joydex palette.
+    /// </summary>
+    private static class OverlayPalette
+    {
+        public const int DwmBorderColor = 0x00453934;
+
+        public static readonly Color WindowBg = Color.FromArgb(29, 32, 38);
+        public static readonly Color FooterBg = Color.FromArgb(24, 27, 33);
+        public static readonly Color Surface = Color.FromArgb(35, 38, 45);
+        public static readonly Color Border = Color.FromArgb(52, 57, 69);
+        public static readonly Color Text = Color.FromArgb(231, 233, 238);
+        public static readonly Color TextSub = Color.FromArgb(154, 162, 174);
+        public static readonly Color TextFaint = Color.FromArgb(111, 119, 132);
+        public static readonly Color Accent = Color.FromArgb(139, 161, 242);
+        public static readonly Color AccentText = Color.FromArgb(165, 182, 245);
+        public static readonly Color TagText = Color.FromArgb(170, 177, 188);
+        public static readonly Color Selection = JoydexTheme.Blend(Accent, Surface, 0.18F);
     }
 
     [StructLayout(LayoutKind.Sequential)]

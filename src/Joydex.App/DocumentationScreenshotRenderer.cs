@@ -1,6 +1,8 @@
 using Joydex.Core.Config;
 using Joydex.Core.Mapping;
+using Joydex.Core.TaskAlerts;
 using Joydex.Windows.Interop;
+using Joydex.Windows.TaskAlerts;
 
 namespace Joydex.App;
 
@@ -11,25 +13,28 @@ namespace Joydex.App;
 internal static class DocumentationScreenshotRenderer
 {
     private const string Argument = "--render-doc-screenshots";
+    private const string DarkArgument = "--render-doc-screenshots-dark";
 
     public static bool TryRender(IReadOnlyList<string> args)
     {
         for (var index = 0; index < args.Count - 1; index++)
         {
-            if (!string.Equals(args[index], Argument, StringComparison.OrdinalIgnoreCase))
+            var dark = string.Equals(args[index], DarkArgument, StringComparison.OrdinalIgnoreCase);
+            if (!dark && !string.Equals(args[index], Argument, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            Render(Path.GetFullPath(args[index + 1]));
+            Render(Path.GetFullPath(args[index + 1]), dark);
             return true;
         }
 
         return false;
     }
 
-    private static void Render(string outputDirectory)
+    private static void Render(string outputDirectory, bool dark)
     {
+        using var themeOverride = JoydexTheme.OverrideDarkMode(dark);
         Directory.CreateDirectory(outputDirectory);
         var config = CreateDocumentationConfig();
         var temporaryDirectory = Path.Combine(
@@ -39,6 +44,11 @@ internal static class DocumentationScreenshotRenderer
         var configPath = Path.Combine(temporaryDirectory, "config.json");
         var configurationStatePath = Path.Combine(temporaryDirectory, "configuration-window.json");
         var buttonMapStatePath = Path.Combine(temporaryDirectory, "button-map-window.json");
+        var taskAlertPreferencesPath = Path.Combine(temporaryDirectory, "task-alerts.json");
+        var taskAlertStatePath = Path.Combine(temporaryDirectory, "task-alert-state.json");
+        var hooksPath = Path.Combine(temporaryDirectory, "hooks.json");
+        var relayPath = Path.Combine(temporaryDirectory, "Joydex.HookRelay.exe");
+        var linkToolProfilePath = Path.Combine(temporaryDirectory, "joydex-linktool.led.json");
 
         try
         {
@@ -52,6 +62,7 @@ internal static class DocumentationScreenshotRenderer
                        documentationMode: true))
             {
                 configuration.Size = new Size(1500, 1000);
+                configuration.Shown += (_, _) => configuration.ExerciseBindingGridEditingForDocumentation();
                 RenderForm(
                     configuration,
                     Path.Combine(outputDirectory, "joydex-configuration.png"));
@@ -86,6 +97,33 @@ internal static class DocumentationScreenshotRenderer
                 RenderForm(activity, Path.Combine(outputDirectory, "joydex-dry-run.png"));
             }
 
+            File.WriteAllText(relayPath, "Documentation placeholder");
+            var taskAlertCoordinator = new TaskAlertCoordinator(taskAlertPreferencesPath, taskAlertStatePath);
+            try
+            {
+                var hookManager = new CodexHookManager(hooksPath);
+                foreach (var (size, fileName) in new[]
+                {
+                    (new Size(1100, 720), "joydex-task-alerts.png"),
+                    (new Size(820, 640), "joydex-task-alerts-compact.png"),
+                })
+                {
+                    using var taskAlerts = new TaskAlertsForm(
+                        taskAlertCoordinator,
+                        hookManager,
+                        relayPath,
+                        linkToolProfilePath,
+                        _ => Task.CompletedTask);
+                    taskAlerts.SetSnapshotForDocumentation(CreateTaskAlertDocumentationSnapshot());
+                    taskAlerts.Size = size;
+                    RenderForm(taskAlerts, Path.Combine(outputDirectory, fileName));
+                }
+            }
+            finally
+            {
+                taskAlertCoordinator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+
             using var map = new ButtonMapCanvas(config);
             using var preview = map.RenderPreview(new Size(1600, 1200));
             preview.Save(
@@ -101,13 +139,51 @@ internal static class DocumentationScreenshotRenderer
         }
         finally
         {
-            foreach (var path in new[] { configPath, configurationStatePath, buttonMapStatePath })
+            foreach (var path in new[]
+            {
+                configPath,
+                configurationStatePath,
+                buttonMapStatePath,
+                taskAlertPreferencesPath,
+                taskAlertStatePath,
+                hooksPath,
+                relayPath,
+                linkToolProfilePath,
+            })
             {
                 File.Delete(path);
             }
 
             Directory.Delete(temporaryDirectory, recursive: false);
         }
+    }
+
+    private static TaskAlertSnapshot CreateTaskAlertDocumentationSnapshot()
+    {
+        var now = DateTimeOffset.Now;
+        var assignments = new[]
+        {
+            new TaskAlertAssignment(1, "00000000-0000-7000-8000-000000000001", "turn-01", TaskAlertState.Running, now),
+            new TaskAlertAssignment(2, "00000000-0000-7000-8000-000000000002", "turn-02", TaskAlertState.Completed, now),
+            new TaskAlertAssignment(3, "00000000-0000-7000-8000-000000000003", "turn-03", TaskAlertState.Completed, now),
+            new TaskAlertAssignment(4, "00000000-0000-7000-8000-000000000004", "turn-04", TaskAlertState.Completed, now),
+            new TaskAlertAssignment(5, "00000000-0000-7000-8000-000000000005", "turn-05", TaskAlertState.Completed, now),
+        };
+        var recentEvents = assignments.Select((assignment, index) => new TaskAlertEventTrace(
+            now.AddSeconds(-index),
+            index == 0 ? CodexLifecycleEvent.UserPromptSubmit : CodexLifecycleEvent.Stop,
+            assignment.SessionId,
+            assignment.TurnId,
+            assignment.Slot,
+            assignment.State,
+            index == 0 ? TaskAlertEventResult.Assigned : TaskAlertEventResult.Updated)).ToArray();
+        return new TaskAlertSnapshot(
+            Enabled: true,
+            Assignments: assignments,
+            DroppedEventCount: 0,
+            Bank: 2,
+            BankAutomaticallyDetected: true,
+            RecentEvents: recentEvents);
     }
 
     private static CompanionConfig CreateAlphaDocumentationConfig()
@@ -201,14 +277,33 @@ internal static class DocumentationScreenshotRenderer
         form.StartPosition = FormStartPosition.Manual;
         form.Location = new Point(-32000, -32000);
         form.ShowInTaskbar = false;
+        if (form is ThemedForm themedForm)
+        {
+            themedForm.SuppressActivation = true;
+        }
+
         form.Show();
         Application.DoEvents();
         form.PerformLayout();
+        PrepareControlsForScreenshot(form);
 
         using var bitmap = new Bitmap(form.Width, form.Height);
         form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
         bitmap.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
         form.Close();
+    }
+
+    private static void PrepareControlsForScreenshot(Control parent)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            if (child is BorderedTextBox input)
+            {
+                input.ShowPlaceholderForDocumentation();
+            }
+
+            PrepareControlsForScreenshot(child);
+        }
     }
 
 }

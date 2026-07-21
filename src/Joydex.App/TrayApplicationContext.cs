@@ -840,9 +840,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (_taskAlertsForm is { IsDisposed: false })
         {
-            _taskAlertsForm.Show();
-            _taskAlertsForm.BringToFront();
-            _taskAlertsForm.Activate();
+            ShowAndActivate(_taskAlertsForm);
             return;
         }
 
@@ -853,7 +851,38 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _linkToolProfilePath,
             SetTaskAlertsEnabledAsync);
         _taskAlertsForm.FormClosed += (_, _) => _taskAlertsForm = null;
-        _taskAlertsForm.Show();
+        ShowAndActivate(_taskAlertsForm);
+    }
+
+    private static void ShowAndActivate(Form form)
+    {
+        if (form.WindowState == FormWindowState.Minimized)
+        {
+            form.WindowState = FormWindowState.Normal;
+        }
+
+        if (!form.Visible)
+        {
+            form.Show();
+        }
+
+        // NotifyIcon menu activation can remain with the closing context menu for the
+        // rest of this event. Reassert foreground activation on the next UI message.
+        form.BeginInvoke(() =>
+        {
+            if (form.IsDisposed || form.Disposing)
+            {
+                return;
+            }
+
+            if (form.WindowState == FormWindowState.Minimized)
+            {
+                form.WindowState = FormWindowState.Normal;
+            }
+
+            form.BringToFront();
+            form.Activate();
+        });
     }
 
     private void OnTaskAlertsChanged(object? sender, TaskAlertSnapshot snapshot)

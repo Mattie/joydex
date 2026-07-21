@@ -4,7 +4,7 @@ using Joydex.Windows.Input;
 
 namespace Joydex.App;
 
-internal sealed class PromptPickerEditorForm : Form
+internal sealed class PromptPickerEditorForm : ThemedForm
 {
     private readonly string _configPath;
     private readonly IntPtr _cooperativeWindowHandle;
@@ -13,7 +13,7 @@ internal sealed class PromptPickerEditorForm : Form
     private readonly List<MutablePicker> _pickers;
     private readonly ComboBox _pickerCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     private readonly TextBox _pickerName = new() { Width = 260 };
-    private readonly ListBox _promptList = new() { Dock = DockStyle.Fill };
+    private readonly PromptListBox _promptList = new() { Dock = DockStyle.Fill };
     private readonly TextBox _promptText = new() { AcceptsReturn = true, Multiline = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly CheckBox _submitAfterInsertCheckBox = new() { AutoSize = true, Text = "After this prompt: run Codex Submit" };
     private readonly CheckBox _includeExitOptionCheckBox = new() { AutoSize = true, Text = "Add [Exit / Nevermind] as the last item" };
@@ -21,9 +21,10 @@ internal sealed class PromptPickerEditorForm : Form
     private readonly Dictionary<string, ComboBox> _controlDevices = [];
     private readonly Dictionary<string, ComboBox> _controlBanks = [];
     private readonly Dictionary<string, NumericUpDown> _controlButtons = [];
-    private readonly DataGridView _deviceGrid = new();
+    private readonly ModernDataGridView _deviceGrid = new();
     private readonly DirectInputJoystickSource _captureSource;
     private readonly System.Windows.Forms.Timer _captureTimer = new() { Interval = 16 };
+    private bool _captureResourcesDisposed;
     private Action<int>? _captureTarget;
     private DateTimeOffset _captureReadyAt;
     private int _currentPickerIndex = -1;
@@ -41,7 +42,7 @@ internal sealed class PromptPickerEditorForm : Form
         _pickers = _original.PromptPickers.Select(MutablePicker.FromConfig).ToList();
 
         Text = "Joydex Prompt Pickers and Device Maps";
-        Font = new Font("Segoe UI", 9F);
+        AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
         var pickerPage = BuildPickerPage();
         EmbeddedPickerPage = pickerPage;
@@ -51,17 +52,22 @@ internal sealed class PromptPickerEditorForm : Form
         }
         else
         {
-            MinimumSize = new Size(980, 720);
-            Size = new Size(1120, 820);
+            var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
+            MinimumSize = new Size(
+                Math.Min(760, Math.Max(1, workingArea.Width)),
+                Math.Min(560, Math.Max(1, workingArea.Height)));
+            Size = new Size(
+                Math.Min(1320, Math.Max(MinimumSize.Width, workingArea.Width)),
+                Math.Min(860, Math.Max(MinimumSize.Height, workingArea.Height)));
 
-            var tabs = new TabControl { Dock = DockStyle.Fill };
-            tabs.TabPages.Add(new TabPage("Prompt pickers") { Controls = { pickerPage } });
-            tabs.TabPages.Add(new TabPage("Device maps") { Controls = { BuildDevicePage() } });
+            var shell = BuildNavigationShell(
+                ("Prompt pickers", pickerPage),
+                ("Device maps", BuildDevicePage()));
             var footer = BuildFooter();
             var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            root.Controls.Add(tabs, 0, 0);
+            root.Controls.Add(shell, 0, 0);
             root.Controls.Add(footer, 0, 1);
             Controls.Add(root);
         }
@@ -105,12 +111,6 @@ internal sealed class PromptPickerEditorForm : Form
             }
         };
         _captureTimer.Tick += OnCaptureTick;
-        FormClosed += (_, _) =>
-        {
-            _captureTimer.Dispose();
-            _captureSource.Dispose();
-        };
-
         RefreshPickerCombo();
         if (_pickers.Count > 0)
         {
@@ -120,7 +120,21 @@ internal sealed class PromptPickerEditorForm : Form
         if (!pickerOnly)
         {
             PopulateDeviceGrid();
+            ThemeService.Apply(this);
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_captureResourcesDisposed)
+        {
+            _captureResourcesDisposed = true;
+            _captureTimer.Stop();
+            _captureTimer.Dispose();
+            _captureSource.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 
     internal IReadOnlyList<PromptPickerConfig> GetPromptPickers()
@@ -130,35 +144,122 @@ internal sealed class PromptPickerEditorForm : Form
         return _pickers.Select(picker => picker.ToConfig()).ToList();
     }
 
+    private static Control BuildNavigationShell(params (string Title, Control Page)[] pages)
+    {
+        var shell = new TableLayoutPanel
+        {
+            ColumnCount = 2,
+            Dock = DockStyle.Fill,
+            Padding = new Padding(12, 12, 12, 0),
+            RowCount = 1,
+        };
+        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 196));
+        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        var sidebar = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 12, 0),
+            Padding = new Padding(8, 10, 8, 8),
+        };
+        var navigation = new TableLayoutPanel
+        {
+            AccessibleName = "Editor pages",
+            AccessibleRole = AccessibleRole.PageTabList,
+            AutoSize = true,
+            ColumnCount = 1,
+            Dock = DockStyle.Top,
+            RowCount = pages.Length,
+        };
+        var host = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8, 0, 0, 0) };
+        var buttons = new List<NavButton>();
+
+        void ShowPage(int selectedIndex)
+        {
+            for (var index = 0; index < pages.Length; index++)
+            {
+                var selected = index == selectedIndex;
+                buttons[index].Selected = selected;
+                buttons[index].TabStop = selected;
+                pages[index].Page.Visible = selected;
+                if (selected)
+                {
+                    pages[index].Page.BringToFront();
+                }
+            }
+        }
+
+        for (var index = 0; index < pages.Length; index++)
+        {
+            var pageIndex = index;
+            var button = new NavButton
+            {
+                AccessibleName = pages[index].Title,
+                Dock = DockStyle.Top,
+                Glyph = pages[index].Title switch
+                {
+                    "Prompt pickers" => NavGlyph.PromptPickers,
+                    "Device maps" => NavGlyph.ButtonMaps,
+                    _ => NavGlyph.None,
+                },
+                Text = pages[index].Title,
+            };
+            button.Click += (_, _) => ShowPage(pageIndex);
+            buttons.Add(button);
+            navigation.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            navigation.Controls.Add(button, 0, index);
+            pages[index].Page.Visible = false;
+            host.Controls.Add(pages[index].Page);
+        }
+
+        sidebar.Controls.Add(navigation);
+        shell.Controls.Add(sidebar, 0, 0);
+        shell.Controls.Add(host, 1, 0);
+        ShowPage(0);
+        return shell;
+    }
+
     private Control BuildPickerPage()
     {
         var page = new TableLayoutPanel
         {
+            AutoScroll = true,
             Dock = DockStyle.Fill,
-            Padding = new Padding(12),
+            Padding = new Padding(0, 0, 0, 12),
             ColumnCount = 2,
-            RowCount = 4,
+            RowCount = 3,
         };
-        page.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-        page.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+        page.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
+        page.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 66));
         page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 240));
+        page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         page.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        var pickerBar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        var pickerBar = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            Padding = new Padding(0, 0, 0, 12),
+        };
         pickerBar.Controls.AddRange([
             new Label { AutoSize = true, Text = "Picker", Margin = new Padding(0, 8, 4, 0) },
             _pickerCombo,
-            Button("Add", (_, _) => AddPicker()),
+            Button("+ Add", (_, _) => AddPicker()),
             Button("Remove", (_, _) => RemovePicker()),
-            Button("Move up", (_, _) => MovePicker(-1)),
-            Button("Move down", (_, _) => MovePicker(1)),
+            CompactButton("↑", "Move picker up", (_, _) => MovePicker(-1)),
+            CompactButton("↓", "Move picker down", (_, _) => MovePicker(1)),
         ]);
         page.Controls.Add(pickerBar, 0, 0);
         page.SetColumnSpan(pickerBar, 2);
 
-        var settings = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 5, Padding = new Padding(0, 8, 0, 8) };
+        var settings = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top,
+            ColumnCount = 2,
+            RowCount = 5,
+        };
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
         settings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         settings.Controls.Add(new Label { AutoSize = true, Text = "Name", Anchor = AnchorStyles.Left }, 0, 0);
@@ -168,32 +269,47 @@ internal sealed class PromptPickerEditorForm : Form
         AddControlRow(settings, 3, "Insert", "insert");
         settings.Controls.Add(new Label { AutoSize = true, Text = "Cancel option", Anchor = AnchorStyles.Left }, 0, 4);
         settings.Controls.Add(_includeExitOptionCheckBox, 1, 4);
-        page.Controls.Add(settings, 0, 1);
-        page.SetColumnSpan(settings, 2);
+        var settingsCard = BuildCard("Navigation buttons", settings);
+        settingsCard.AutoSize = true;
+        settingsCard.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        settingsCard.Dock = DockStyle.Top;
+        settingsCard.Margin = new Padding(0, 0, 0, 12);
+        page.Controls.Add(settingsCard, 0, 1);
+        page.SetColumnSpan(settingsCard, 2);
 
-        var listPanel = new Panel { Dock = DockStyle.Fill };
-        listPanel.Controls.Add(_promptList);
+        var listPanel = new TableLayoutPanel
+        {
+            ColumnCount = 1,
+            Dock = DockStyle.Fill,
+            RowCount = 3,
+        };
+        listPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        listPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        listPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        listPanel.Controls.Add(_promptList, 0, 0);
         var listButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Bottom };
         listButtons.Controls.AddRange([
-            Button("Add", (_, _) => AddPrompt()),
-            Button("Delete", (_, _) => DeletePrompt()),
-            Button("Up", (_, _) => MovePrompt(-1)),
-            Button("Down", (_, _) => MovePrompt(1)),
-            Button("Set default", (_, _) => SetDefault()),
+            CompactButton("Add", "Add prompt", (_, _) => AddPrompt()),
+            CompactButton("Delete", "Delete prompt", (_, _) => DeletePrompt()),
+            CompactButton("↑", "Move prompt up", (_, _) => MovePrompt(-1)),
+            CompactButton("↓", "Move prompt down", (_, _) => MovePrompt(1)),
+            CompactButton("★ Default", "Set default prompt", (_, _) => SetDefault()),
         ]);
-        listPanel.Controls.Add(listButtons);
-        page.Controls.Add(listPanel, 0, 2);
+        listPanel.Controls.Add(listButtons, 0, 1);
+        _defaultLabel.Margin = new Padding(0, 8, 0, 0);
+        listPanel.Controls.Add(_defaultLabel, 0, 2);
+        var listCard = BuildCard("Prompts", listPanel);
+        listCard.Margin = new Padding(0, 0, 12, 0);
+        page.Controls.Add(listCard, 0, 2);
 
-        var editPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8, 0, 0, 0) };
+        var editPanel = new Panel { Dock = DockStyle.Fill };
         editPanel.Controls.Add(_promptText);
-        var update = Button("Update selected prompt", (_, _) => UpdatePrompt());
+        var update = Button("Update selected prompt", (_, _) => UpdatePrompt(), ButtonVariant.Primary);
         var promptActions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Bottom, WrapContents = false };
         promptActions.Controls.Add(_submitAfterInsertCheckBox);
         promptActions.Controls.Add(update);
         editPanel.Controls.Add(promptActions);
-        page.Controls.Add(editPanel, 1, 2);
-        page.Controls.Add(_defaultLabel, 0, 3);
-        page.SetColumnSpan(_defaultLabel, 2);
+        page.Controls.Add(BuildCard("Prompt text", editPanel), 1, 2);
         return page;
     }
 
@@ -207,7 +323,13 @@ internal sealed class PromptPickerEditorForm : Form
 
         var bank = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150 };
         var button = new NumericUpDown { Minimum = 1, Maximum = 128, Width = 70 };
-        var bar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        var bar = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            WrapContents = false,
+        };
         bar.Controls.AddRange([
             device,
             new Label { AutoSize = true, Text = "Bank", Margin = new Padding(10, 8, 4, 0) },
@@ -234,11 +356,21 @@ internal sealed class PromptPickerEditorForm : Form
         _deviceGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         _deviceGrid.Columns.Add("Id", "ID");
         _deviceGrid.Columns.Add("Name", "Device");
-        var template = new DataGridViewComboBoxColumn { Name = "Template", HeaderText = "Button map" };
+        var template = new DataGridViewComboBoxColumn
+        {
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            DisplayStyleForCurrentCellOnly = true,
+            FlatStyle = FlatStyle.Flat,
+            Name = "Template",
+            HeaderText = "Button map",
+        };
         template.Items.AddRange("", "cm3", "alpha-warbrd");
         _deviceGrid.Columns.Add(template);
         _deviceGrid.Columns.Add(new DataGridViewComboBoxColumn
         {
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            DisplayStyleForCurrentCellOnly = true,
+            FlatStyle = FlatStyle.Flat,
             Name = "MapHoldDevice",
             HeaderText = "Hold source",
             DataSource = _devices.Select(device => device.Id).ToArray(),
@@ -277,9 +409,45 @@ internal sealed class PromptPickerEditorForm : Form
             FlowDirection = FlowDirection.RightToLeft,
             Padding = new Padding(8),
         };
-        footer.Controls.Add(Button("Save", OnSave));
-        footer.Controls.Add(Button("Cancel", (_, _) => { DialogResult = DialogResult.Cancel; Close(); }));
+        var save = Button("Save", OnSave, ButtonVariant.Primary);
+        var cancel = Button("Cancel", (_, _) => { DialogResult = DialogResult.Cancel; Close(); });
+        cancel.DialogResult = DialogResult.Cancel;
+        footer.Controls.Add(save);
+        footer.Controls.Add(cancel);
+        AcceptButton = save;
+        CancelButton = cancel;
         return footer;
+    }
+
+    private static CardPanel BuildCard(string title, Control content)
+    {
+        var autoSize = content.AutoSize;
+        var card = new CardPanel
+        {
+            AutoSize = autoSize,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = autoSize ? DockStyle.Top : DockStyle.Fill,
+        };
+        var layout = new TableLayoutPanel
+        {
+            AutoSize = autoSize,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            Dock = autoSize ? DockStyle.Top : DockStyle.Fill,
+            RowCount = 2,
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(autoSize ? SizeType.AutoSize : SizeType.Percent, autoSize ? 0 : 100));
+        layout.Controls.Add(new Label
+        {
+            AutoSize = true,
+            Font = JoydexTheme.SectionFont,
+            Margin = new Padding(0, 0, 0, 10),
+            Text = title.ToUpperInvariant(),
+        }, 0, 0);
+        layout.Controls.Add(content, 0, 1);
+        card.Controls.Add(layout);
+        return card;
     }
 
     private void SelectPicker(int index)
@@ -492,7 +660,7 @@ internal sealed class PromptPickerEditorForm : Form
     {
         if (_currentPickerIndex >= 0)
         {
-            _defaultLabel.Text = $"Default entry: {CurrentPicker().DefaultIndex + 1} of {CurrentPicker().Prompts.Count}";
+            _defaultLabel.Text = $"Default: {CurrentPicker().DefaultIndex + 1} of {CurrentPicker().Prompts.Count}";
         }
     }
 
@@ -674,10 +842,22 @@ internal sealed class PromptPickerEditorForm : Form
 
     private IWin32Window DialogOwner => EmbeddedPickerPage.FindForm() ?? this;
 
-    private static Button Button(string text, EventHandler handler)
+    private static RoundedButton Button(
+        string text,
+        EventHandler handler,
+        ButtonVariant variant = ButtonVariant.Secondary)
     {
-        var button = new Button { AutoSize = true, Text = text };
+        var button = new RoundedButton { Text = text, Variant = variant };
         button.Click += handler;
+        return button;
+    }
+
+    private static RoundedButton CompactButton(string text, string accessibleName, EventHandler handler)
+    {
+        var button = Button(text, handler);
+        button.AccessibleName = accessibleName;
+        button.MinimumSize = new Size(0, JoydexTheme.CompactControlHeight);
+        button.Padding = new Padding(6, 4, 6, 4);
         return button;
     }
 

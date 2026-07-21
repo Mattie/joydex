@@ -10,6 +10,8 @@ Joydex uses the CM3 throttle buttons and the Constellation Alpha grip LED as a p
 4. In the same Joydex window, choose **Install / Repair hooks**. Approve Codex's hook trust prompt if it appears, then confirm the window says `Hooks: installed`.
 5. Leave **Task alerts** checked in the tray menu.
 
+![Joydex task-alert status window at its compact supported size](images/joydex-task-alerts-compact.png)
+
 ## What the lights mean
 
 | State | Color | Meaning |
