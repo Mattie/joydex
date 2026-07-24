@@ -150,15 +150,15 @@ public static class LinkToolProfileWriter
     public const string AlphaName = "Constellation ALPHA-R Grip";
     public const ushort AlphaVendorId = 0x3344;
     public const ushort AlphaProductId = 0x40CC;
+    private static readonly VirpilLedColor Off = new(0x00, 0x00, 0x00);
+    private static readonly VirpilLedColor MidPink = new(0x80, 0x20, 0x60);
 
     private static readonly IReadOnlyDictionary<int, VirpilLedColor> DefaultBankColors =
         new Dictionary<int, VirpilLedColor>
         {
-            [1] = new(0x00, 0x00, 0x00),
             [2] = new(0x00, 0x00, 0xFF),
             [3] = new(0x00, 0xFF, 0x00),
             [4] = new(0xFF, 0x00, 0x00),
-            [5] = new(0xFF, 0xFF, 0x00),
         };
 
     public static string Write(string path)
@@ -214,9 +214,9 @@ public static class LinkToolProfileWriter
         }
 
         // LinkTool resolves competing rules for one LED in profile order. Keep
-        // bank-gated state rules ahead of the always-matching baselines. M1's
-        // baseline is black so an empty overflow page is dark. M5 has baseline
-        // rules only, so every control on that page keeps its command.
+        // bank-gated state rules ahead of the always-matching baselines. Empty
+        // task positions are black, ordinary M2-M4 controls retain their bank
+        // colors, and M5 uses one pink command-page color.
         foreach (var channel in Enumerable.Range(1, 6))
         {
             foreach (var bank in Enumerable.Range(1, 5))
@@ -227,7 +227,7 @@ public static class LinkToolProfileWriter
                     "JoydexBank",
                     bank,
                     channel,
-                    DefaultBankColors[bank],
+                    BaselineColor(bank, channel),
                     $"Joydex M{bank} B{channel} baseline",
                     priority: 0));
             }
@@ -344,6 +344,15 @@ public static class LinkToolProfileWriter
         ?? throw new IOException($"VIRPIL HID device {vendorId:X4}:{productId:X4} is unavailable.");
 
     private static int Bgr(VirpilLedColor color) => color.Red | (color.Green << 8) | (color.Blue << 16);
+
+    private static VirpilLedColor BaselineColor(int bank, int channel) => bank switch
+    {
+        1 => Off,
+        2 or 3 or 4 when channel is 1 or 2 or 4 or 5 => Off,
+        2 or 3 or 4 => DefaultBankColors[bank],
+        5 => MidPink,
+        _ => throw new ArgumentOutOfRangeException(nameof(bank)),
+    };
 
     internal static string TelemetryArgument(int slot) => TaskAlertSlots.Page(slot) switch
     {

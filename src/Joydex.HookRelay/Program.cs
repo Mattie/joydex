@@ -22,7 +22,9 @@ internal static partial class HookRelay
             eventName = input?.HookEventName;
             sessionId = input?.SessionId;
             turnId = input?.TurnId;
-            if (!string.IsNullOrWhiteSpace(sessionId) && IsSupportedEvent(eventName))
+            if (IsTrackableSession(input)
+                && !string.IsNullOrWhiteSpace(sessionId)
+                && IsSupportedEvent(eventName))
             {
                 var relayEvent = MapRelayEvent(eventName!, input?.ToolName);
                 if (relayEvent is null)
@@ -131,6 +133,13 @@ internal static partial class HookRelay
     private static bool IsSupportedEvent(string? value) => value is
         "UserPromptSubmit" or "PermissionRequest" or "PreToolUse" or "PostToolUse" or "Stop";
 
+    internal static bool IsSubagent(HookInput? input) =>
+        !string.IsNullOrWhiteSpace(input?.AgentId);
+
+    internal static bool IsTrackableSession(HookInput? input) =>
+        !IsSubagent(input)
+        && !string.IsNullOrWhiteSpace(input?.TranscriptPath);
+
     private static string? MapRelayEvent(string eventName, string? toolName) => eventName switch
     {
         "PreToolUse" when string.Equals(toolName, "request_user_input", StringComparison.Ordinal) =>
@@ -155,6 +164,8 @@ internal sealed record HookInput(
     [property: JsonPropertyName("hook_event_name")] string? HookEventName,
     [property: JsonPropertyName("session_id")] string? SessionId,
     [property: JsonPropertyName("turn_id")] string? TurnId,
+    [property: JsonPropertyName("agent_id")] string? AgentId,
+    [property: JsonPropertyName("transcript_path")] string? TranscriptPath,
     [property: JsonPropertyName("tool_name")] string? ToolName,
     [property: JsonPropertyName("tool_input")] JsonElement ToolInput);
 

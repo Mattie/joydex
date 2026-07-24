@@ -1,8 +1,12 @@
 # Joydex task-status LEDs: implementation research archive
 
-> **Maintainer archive, recorded July 18-20, 2026.** This file preserves the experiments, compatibility findings, protocol details, benchmarks, and acceptance notes behind the LED integration. Dates and version numbers below describe the environment used for each finding. For current setup and behavior, read the [LED status guide](LED_STATUS.md).
+> **Maintainer archive, recorded July 18-24, 2026.** This file preserves the experiments, compatibility findings, protocol details, benchmarks, and acceptance notes behind the LED integration. Dates and version numbers below describe the environment used for each finding. For current setup and behavior, read the [LED status guide](LED_STATUS.md).
 
 **Archived status (July 18, 2026):** implementation updated for VIRPIL Controls LinkTool v3. The ten-slot reducer, bank-specific interception, 106-rule profile generation, M5 isolation, and legacy-settings migration pass automated tests. Hardware canaries pass for the complete M2 primary pattern, complete M1 overflow pattern, empty M1 off baseline, M5 baseline isolation, and Global Alpha across those banks. The Windows Desktop `UserPromptSubmit` canary passes on the updated Codex package, including a fresh real prompt after automatic bank detection was staged. The Task Alerts status viewer also reports the repaired canonical hooks as installed. Earlier canaries cover M2 deep-link routing, running-state preservation, and M2-M3-M2 bank following. The unchanged hook relay remains functional, but its p95 latency gate needs an idle-machine recheck after exceeding 25 ms under system load.
+
+**Follow-up (July 23, 2026):** the installed `OpenAI.Codex 26.715.10079.0` package, with bundled CLI `0.145.0-alpha.30`, was observed sending a subagent's ephemeral thread ID through the ordinary task hooks. That release also supplies optional `agent_id` and `agent_type` fields on those hook payloads. Joydex now drops payloads carrying `agent_id`, which keeps delegated work out of the ten physical task slots. The generated 106-rule LinkTool profile also uses black baselines for empty M2-M4 task positions, preserves bank colors on B3/B6, and uses RGB `80 20 60` across M5. Automated generation tests cover these rules; the adjusted colors still need a hardware appearance canary.
+
+**Follow-up (July 24, 2026):** the installed `OpenAI.Codex 26.721.3404.0` package, with active sessions reporting CLI `0.146.0-alpha.3`, generated an internal ephemeral thread for hyperpersonalized task suggestions. It ran ordinary hooks without `agent_id`, was absent from the persisted thread catalog, and rejected a turn read with `ephemeral threads do not support includeTurns`. In this release, ephemeral sessions skip thread persistence, so their hook payloads have `transcript_path: null`; persistent sidebar tasks materialize a transcript path before hooks run. Joydex now requires that path in addition to rejecting explicit subagent IDs.
 
 The Codex behavior was checked against the installed Windows package `OpenAI.Codex 26.715.3651.0`. The current hardware work uses VIRPIL Controls LinkTool v3.0 and the firmware/toolset installed on 2026-07-18. Earlier quick-utility experiments used VPC Software Suite `20220720`.
 
@@ -175,7 +179,7 @@ Joydex writes `joydex-linktool.led.json` beside its task-alert settings. The gen
 
 - primary state rules for B1, B2, B4, and B5, gated to M2-M4;
 - overflow state rules for B1-B6, gated to M1;
-- a baseline rule for each of M1-M5 on all six throttle LEDs, ordered after the alert rules, with M1 explicitly black/off;
+- a baseline rule for each of M1-M5 on all six throttle LEDs, ordered after the alert rules, with M1 and empty M2-M4 task positions black/off, M2-M4 B3/B6 retaining their bank colors, and M5 medium pink;
 - four priority rules for the Alpha grip;
 - no task-state rule gated to M5.
 

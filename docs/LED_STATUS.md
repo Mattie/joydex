@@ -27,11 +27,13 @@ The throttle provides ten stable task slots:
 | Page | Controls | Behavior |
 | --- | --- | --- |
 | M1 | B1-B6 | Overflow slots 5-10; empty buttons are dark |
-| M2-M4 | B1, B2, B4, B5 | Primary slots 1-4; B3 and B6 keep their normal bindings |
-| M5 | B1-B6 | Ordinary commands only; no task overlays |
+| M2-M4 | B1, B2, B4, B5 | Primary slots 1-4; empty task positions are dark, while B3 and B6 keep their bank colors |
+| M5 | B1-B6 | Ordinary commands only; medium-pink baseline and no task overlays |
 | Alpha grip LED | Global | Highest-priority state across all ten slots |
 
 Each new task claims the lowest free slot. Existing assignments stay where they were placed, even when a lower slot becomes free. When all ten slots are occupied, later events are dropped; a later lifecycle event can claim a slot after one becomes available.
+
+Joydex ignores lifecycle events that Codex marks with a subagent `agent_id`. It also ignores events without a persistent `transcript_path`, which covers Codex's internal ephemeral sessions. Delegated and background-only agent threads therefore do not claim their own slots; the parent sidebar task remains the physical unit of attention.
 
 Pressing an assigned button opens its Codex task. Running and attention states stay assigned after navigation. Opening a completed task acknowledges it, clears the overlay, and returns that button to its normal binding. Blocked or failed navigation leaves the assignment alone.
 
@@ -43,7 +45,7 @@ Assignments keep their physical slots across a Joydex restart. Running assignmen
 
 ## How LinkTool carries the state
 
-Joydex sends one complete telemetry snapshot whenever a task state or physical mode changes. LinkTool evaluates the generated rules and holds the matching colors, so Joydex does not need to refresh the LEDs continuously.
+Joydex sends one complete telemetry snapshot whenever a task state or physical mode changes. LinkTool evaluates the generated rules and holds the matching colors, so Joydex does not need to refresh the LEDs continuously. The generated baseline keeps primary task positions dark when empty, preserves the ordinary M2-M4 bank colors on B3 and B6, and paints all six M5 controls medium pink (`80 20 60` RGB).
 
 The physical M1-M5 selector is read through VIRPIL's read-only Software Link feature report. Turning the dial updates the LinkTool page while preserving active task states. Joydex does not flash firmware, write EEPROM, calibrate either device, or edit a VPC profile.
 

@@ -212,7 +212,7 @@ public sealed class LinkToolLedServiceTests
     }
 
     [Fact]
-    public void WritesBankGatedPrimaryAndOverflowRulesWithM5BaselinesOnly()
+    public void WritesBankGatedAlertsWithDarkEmptySlotsAndPinkM5Baselines()
     {
         var directory = Path.Combine(Path.GetTempPath(), "joydex-tests", Guid.NewGuid().ToString("N"));
         var path = Path.Combine(directory, "joydex-linktool.led.json");
@@ -229,18 +229,7 @@ public sealed class LinkToolLedServiceTests
                 rule.GetProperty("argument").GetString()?.StartsWith("JoydexOverflow", StringComparison.Ordinal) == true));
             Assert.DoesNotContain(rules, rule =>
                 rule.GetProperty("argument").GetString() is "JoydexPrimaryB3State" or "JoydexPrimaryB6State");
-            Assert.Contains(rules, rule =>
-                rule.GetProperty("comment").GetString() == "Joydex M2 B3 baseline"
-                && rule.GetProperty("colorOne").GetString() == "16711680");
-            Assert.Contains(rules, rule =>
-                rule.GetProperty("comment").GetString() == "Joydex M2 B6 baseline"
-                && rule.GetProperty("colorOne").GetString() == "16711680");
-            Assert.Contains(rules, rule =>
-                rule.GetProperty("comment").GetString() == "Joydex M2 B1 baseline"
-                && rule.GetProperty("argument").GetString() == "JoydexBank"
-                && rule.GetProperty("primaryValue").GetString() == "2"
-                && rule.GetProperty("colorOne").GetString() == "16711680"
-                && rule.GetProperty("priority").GetInt32() == 0);
+
             foreach (var button in Enumerable.Range(1, 6))
             {
                 Assert.Contains(rules, rule =>
@@ -248,6 +237,39 @@ public sealed class LinkToolLedServiceTests
                     && rule.GetProperty("argument").GetString() == "JoydexBank"
                     && rule.GetProperty("primaryValue").GetString() == "1"
                     && rule.GetProperty("colorOne").GetString() == "0"
+                    && rule.GetProperty("priority").GetInt32() == 0);
+            }
+
+            var ordinaryBankColors = new Dictionary<int, string>
+            {
+                [2] = "16711680",
+                [3] = "65280",
+                [4] = "255",
+            };
+            foreach (var (bank, color) in ordinaryBankColors)
+            {
+                foreach (var button in new[] { 1, 2, 4, 5 })
+                {
+                    Assert.Contains(rules, rule =>
+                        rule.GetProperty("comment").GetString() == $"Joydex M{bank} B{button} baseline"
+                        && rule.GetProperty("colorOne").GetString() == "0"
+                        && rule.GetProperty("priority").GetInt32() == 0);
+                }
+
+                foreach (var button in new[] { 3, 6 })
+                {
+                    Assert.Contains(rules, rule =>
+                        rule.GetProperty("comment").GetString() == $"Joydex M{bank} B{button} baseline"
+                        && rule.GetProperty("colorOne").GetString() == color
+                        && rule.GetProperty("priority").GetInt32() == 0);
+                }
+            }
+
+            foreach (var button in Enumerable.Range(1, 6))
+            {
+                Assert.Contains(rules, rule =>
+                    rule.GetProperty("comment").GetString() == $"Joydex M5 B{button} baseline"
+                    && rule.GetProperty("colorOne").GetString() == "6299776"
                     && rule.GetProperty("priority").GetInt32() == 0);
             }
 

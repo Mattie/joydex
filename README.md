@@ -6,9 +6,11 @@ Why pay for a purpose-built Codex Micro keyboard when you already have a joystic
 Just use Codex to set it up in a couple of hours and save yourself that extra $230. [See the prompt I started with.](docs/CASE_STUDY.md)
 
 ## What is Joydex?
-Joydex is a source example for turning a VIRPIL throttle into a physical control surface for the Codex desktop app. It reads the throttle through DirectInput, resolves the current Codex shortcuts, and injects the corresponding Windows input events. It is a small Windows tray app.
+Joydex is a source example for turning a VIRPIL throttle into a physical control surface for the Codex desktop app. Mechanically, it reads the throttle through DirectInput, resolves the current Codex shortcuts, and injects the corresponding Windows input events. The result is a small Windows tray app.
 
 It could be adapted pretty easily to other devices, but I wanted to show how easy it was to get going by using Codex itself to build the handlers. See [the case study](docs/CASE_STUDY.md) for the story of how this came together in just a few hours.
+
+The [changelog](CHANGELOG.md) gives a newest-first history of the major features and fixes since the initial public source release.
 
 Nothing rocket-science, but we live in an era where you can retrofit your own hardware to a new workflow without having to buy yet-another-device. Hopefully this inspires you to do more hacking.
 
@@ -101,7 +103,7 @@ The floating map reads its labels from the active configuration, so remapped con
 
 ## Task-status LEDs
 
-The LEDs turn the throttle into a ten-slot task monitor. Four primary tasks use B1, B2, B4, and B5 across M2-M4. Six overflow tasks use B1-B6 on M1, where every unassigned button stays dark. M5 remains available for ordinary commands. The Alpha grip LED shows the highest-priority state across all ten slots.
+The LEDs turn the throttle into a ten-slot task monitor. Four primary tasks use B1, B2, B4, and B5 across M2-M4; those positions stay dark until assigned, while B3 and B6 retain each bank's normal color. Six overflow tasks use B1-B6 on M1, where every unassigned button stays dark. M5 remains available for ordinary commands with a medium-pink baseline. The Alpha grip LED shows the highest-priority state across all ten slots.
 
 Dim gray means running, yellow means the task needs attention, and low green means completed. Red is reserved for a future fault source. Pressing an assigned button opens that Codex task. Running and attention states remain assigned after navigation; opening a completed task clears its slot and restores the button's normal binding. Here is [my CM3 lit with a few example tasks](docs/images/20260720_064606c.jpg).
 
@@ -120,7 +122,7 @@ This part matches the CM3 throttle, Alpha/WarBRD stick, and VIRPIL Controls Link
 
 Joydex sends a complete snapshot whenever a task or physical mode changes, and LinkTool holds the matching colors. A read-only VIRPIL Software Link report tells Joydex which M1-M5 position is selected, so turning the dial switches LED pages without writing to controller firmware or profiles.
 
-Task assignments, completion deadlines, and privacy-preserving attention hashes are saved in `%LOCALAPPDATA%\Joydex\task-alert-state.json`. Prompt text, commands, and tool responses are never stored there. Active slots survive a Joydex restart, expired entries are discarded during restore, and turning Task alerts off clears the saved assignments. The tray's **Task alerts status...** window installs or repairs the Codex hooks and shows current assignments, exact LinkTool telemetry, and the last 100 lifecycle events. See [the LED status guide](docs/LED_STATUS.md) for setup, troubleshooting, and the full behavior.
+Task assignments, completion deadlines, and privacy-preserving attention hashes are saved in `%LOCALAPPDATA%\Joydex\task-alert-state.json`. Prompt text, commands, and tool responses are never stored there. Codex hook events carrying a subagent `agent_id`, or lacking the persistent `transcript_path` of a sidebar task, are ignored so delegated and internal ephemeral work does not consume physical task slots. Active slots survive a Joydex restart, expired entries are discarded during restore, and turning Task alerts off clears the saved assignments. The tray's **Task alerts status...** window installs or repairs the Codex hooks and shows current assignments, exact LinkTool telemetry, and the last 100 lifecycle events. See [the LED status guide](docs/LED_STATUS.md) for setup, troubleshooting, and the full behavior.
 
 ## Prompt pickers and multiple controllers
 
@@ -163,7 +165,7 @@ The scratch path keeps this run separate from `%LOCALAPPDATA%\Joydex\config.json
 
 To explore the two-controller version, copy `config\joydex.advanced.example.json` to the scratch path instead. Its broad `MT-50CM3` and `WarBRD` product-name selectors may need adjustment if more than one matching controller is attached.
 
-Use the tracer when adapting the example to another DirectInput profile:
+When adapting the example to another DirectInput profile, use the tracer:
 
 ```powershell
 dotnet run --project .\tools\Joydex.Trace -- list
