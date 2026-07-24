@@ -10,7 +10,7 @@ Joydex is a source example for turning a VIRPIL throttle into a physical control
 
 It could be adapted pretty easily to other devices, but I wanted to show how easy it was to get going by using Codex itself to build the handlers. See [the case study](docs/CASE_STUDY.md) for the story of how this came together in just a few hours.
 
-The [changelog](CHANGELOG.md) gives a newest-first history of the major features and fixes since the initial public source release.
+See the [changelog](CHANGELOG.md) for the latest updates.
 
 Nothing rocket-science, but we live in an era where you can retrofit your own hardware to a new workflow without having to buy yet-another-device. Hopefully this inspires you to do more hacking.
 
