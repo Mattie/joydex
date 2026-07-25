@@ -65,7 +65,8 @@ FWIW, the checked-in code demonstrates:
 - Buffered joystick input, including encoder pulses that can begin and end between polling frames.
 - Banked mappings for VIRPIL's five-way shift profile, where the dial changes the logical button range instead of emitting its own button event.
 - A command catalog that resolves Codex's current shortcuts from `%USERPROFILE%\.codex\keybindings.json` immediately before dispatch.
-- Chords, sequences, held push-to-talk modifiers, mouse-wheel actions, and safe cleanup of injected key state.
+- Chords, sequences, held dictation push-to-talk modifiers, mouse-wheel actions, and safe cleanup of injected key state.
+- Experimental toggled live Voice Chat support. It is currently mostly broken because Codex's underlying Voice Chat feature is flaky.
 - Foreground-process and simulator guards around every dispatched action.
 - Dry-run inspection, hot-plug recovery, configuration validation, and a floating hardware map.
 
@@ -216,7 +217,7 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 
 ## Versions and Config
 
-Command IDs, Windows defaults, aliases, and precedence behavior were last checked on 2026-07-16 against OpenAI Codex package `26.707.12708.0`, bundled app `26.707.91948`, build `5440`.
+Command IDs, Windows defaults, aliases, and precedence behavior were last checked on 2026-07-28 against OpenAI Codex package `26.721.4979.0`, bundled app `26.721.41059`, build `5848`.
 
 Source builds use `%LOCALAPPDATA%\Joydex\config.json`, with `JOYDEX_CONFIG` and `--config` available for alternate paths. The graphical editor is the normal way to change mappings. Both checked-in example configurations are intended for dry-run exploration and contain no device GUIDs.
 

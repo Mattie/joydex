@@ -793,6 +793,7 @@ internal sealed class ButtonMapCanvas : Control
         "navigate-forward" => "Forward",
         "toggle-sidebar" => "Sidebar",
         "open-skills" => "Skills",
+        "voice-chat" => "Voice chat",
         "dictation" => "Dictation",
         "open" => "Open",
         _ => action.Replace('-', ' '),
