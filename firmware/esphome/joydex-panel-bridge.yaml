@@ -1,0 +1,576 @@
+substitutions:
+  device_name: joydex-panel
+  friendly_name: Joydex Panel
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.7.2
+  project:
+    name: joydex.wireless_touchscreen
+    version: 0.2.1-bridge
+
+esp32:
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: INFO
+  hardware_uart: UART0
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+
+web_server:
+  port: 80
+  version: 3
+  auth:
+    username: !secret web_server_username
+    password: !secret web_server_password
+    type: digest
+  log: false
+  ota: false
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+output:
+  - platform: ledc
+    id: backlight_output
+    pin: GPIO38
+    frequency: 150Hz
+    min_power: 0.01
+    zero_means_zero: true
+
+light:
+  - platform: monochromatic
+    id: display_backlight
+    name: Backlight
+    output: backlight_output
+    restore_mode: ALWAYS_ON
+    default_transition_length: 250ms
+
+spi:
+  - id: lcd_spi
+    clk_pin: GPIO48
+    mosi_pin: GPIO47
+
+i2c:
+  id: touchscreen_bus
+  sda: GPIO19
+  scl:
+    number: GPIO45
+    ignore_strapping_warning: true
+
+display:
+  - platform: mipi_rgb
+    id: tft_display
+    model: GUITION-4848S040
+    spi_id: lcd_spi
+    # Keep the exact C_I timings explicit until ESPHome issue #17810 is fixed.
+    spi_mode: MODE3
+    hsync_pulse_width: 8
+    hsync_front_porch: 10
+    hsync_back_porch: 20
+    vsync_pulse_width: 8
+    vsync_front_porch: 10
+    vsync_back_porch: 10
+    update_interval: never
+    auto_clear_enabled: false
+
+touchscreen:
+  - platform: gt911
+    id: tft_touch
+    i2c_id: touchscreen_bus
+    display: tft_display
+    transform:
+      mirror_x: true
+      mirror_y: true
+
+select:
+  - platform: template
+    id: task_1_state
+    name: Task 1 State
+    optimistic: true
+    restore_value: false
+    initial_option: EMPTY
+    options:
+      - EMPTY
+      - RUNNING
+      - ATTENTION
+      - COMPLETE
+    on_value:
+      then:
+        - lvgl.widget.update:
+            id: task_1_card
+            bg_color: !lambda |-
+              if (x == "RUNNING") {
+                return lv_color_make(255, 255, 255);
+              }
+              if (x == "ATTENTION") {
+                return lv_color_make(244, 211, 94);
+              }
+              if (x == "COMPLETE") {
+                return lv_color_make(35, 155, 86);
+              }
+              return lv_color_make(107, 114, 128);
+            border_width: !lambda |-
+              return (x == "RUNNING" || x == "ATTENTION") ? 2 : 0;
+            pressed:
+              border_color: 0x66D9EF
+              border_width: 8
+              transform_width: -6
+              transform_height: -6
+        - lvgl.label.update:
+            id: task_1_title_label
+            text: !lambda |-
+              return std::string(x == "EMPTY" ? "" : "TASK 1");
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
+        - lvgl.label.update:
+            id: task_1_state_label
+            text: !lambda |-
+              if (x == "EMPTY") {
+                return "";
+              }
+              if (x == "ATTENTION") {
+                return "WAITING";
+              }
+              if (x == "COMPLETE") {
+                return "DONE";
+              }
+              return x;
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
+
+  - platform: template
+    id: task_2_state
+    name: Task 2 State
+    optimistic: true
+    restore_value: false
+    initial_option: EMPTY
+    options:
+      - EMPTY
+      - RUNNING
+      - ATTENTION
+      - COMPLETE
+    on_value:
+      then:
+        - lvgl.widget.update:
+            id: task_2_card
+            bg_color: !lambda |-
+              if (x == "RUNNING") {
+                return lv_color_make(255, 255, 255);
+              }
+              if (x == "ATTENTION") {
+                return lv_color_make(244, 211, 94);
+              }
+              if (x == "COMPLETE") {
+                return lv_color_make(35, 155, 86);
+              }
+              return lv_color_make(107, 114, 128);
+            border_width: !lambda |-
+              return (x == "RUNNING" || x == "ATTENTION") ? 2 : 0;
+            pressed:
+              border_color: 0x66D9EF
+              border_width: 8
+              transform_width: -6
+              transform_height: -6
+        - lvgl.label.update:
+            id: task_2_title_label
+            text: !lambda |-
+              return std::string(x == "EMPTY" ? "" : "TASK 2");
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
+        - lvgl.label.update:
+            id: task_2_state_label
+            text: !lambda |-
+              if (x == "EMPTY") {
+                return "";
+              }
+              if (x == "ATTENTION") {
+                return "WAITING";
+              }
+              if (x == "COMPLETE") {
+                return "DONE";
+              }
+              return x;
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
+
+  - platform: template
+    id: task_3_state
+    name: Task 3 State
+    optimistic: true
+    restore_value: false
+    initial_option: EMPTY
+    options:
+      - EMPTY
+      - RUNNING
+      - ATTENTION
+      - COMPLETE
+    on_value:
+      then:
+        - lvgl.widget.update:
+            id: task_3_card
+            bg_color: !lambda |-
+              if (x == "RUNNING") {
+                return lv_color_make(255, 255, 255);
+              }
+              if (x == "ATTENTION") {
+                return lv_color_make(244, 211, 94);
+              }
+              if (x == "COMPLETE") {
+                return lv_color_make(35, 155, 86);
+              }
+              return lv_color_make(107, 114, 128);
+            border_width: !lambda |-
+              return (x == "RUNNING" || x == "ATTENTION") ? 2 : 0;
+            pressed:
+              border_color: 0x66D9EF
+              border_width: 8
+              transform_width: -6
+              transform_height: -6
+        - lvgl.label.update:
+            id: task_3_title_label
+            text: !lambda |-
+              return std::string(x == "EMPTY" ? "" : "TASK 3");
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
+        - lvgl.label.update:
+            id: task_3_state_label
+            text: !lambda |-
+              if (x == "EMPTY") {
+                return "";
+              }
+              if (x == "ATTENTION") {
+                return "WAITING";
+              }
+              if (x == "COMPLETE") {
+                return "DONE";
+              }
+              return x;
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
+
+  - platform: template
+    id: task_4_state
+    name: Task 4 State
+    optimistic: true
+    restore_value: false
+    initial_option: EMPTY
+    options:
+      - EMPTY
+      - RUNNING
+      - ATTENTION
+      - COMPLETE
+    on_value:
+      then:
+        - lvgl.widget.update:
+            id: task_4_card
+            bg_color: !lambda |-
+              if (x == "RUNNING") {
+                return lv_color_make(255, 255, 255);
+              }
+              if (x == "ATTENTION") {
+                return lv_color_make(244, 211, 94);
+              }
+              if (x == "COMPLETE") {
+                return lv_color_make(35, 155, 86);
+              }
+              return lv_color_make(107, 114, 128);
+            border_width: !lambda |-
+              return (x == "RUNNING" || x == "ATTENTION") ? 2 : 0;
+            pressed:
+              border_color: 0x66D9EF
+              border_width: 8
+              transform_width: -6
+              transform_height: -6
+        - lvgl.label.update:
+            id: task_4_title_label
+            text: !lambda |-
+              return std::string(x == "EMPTY" ? "" : "TASK 4");
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
+        - lvgl.label.update:
+            id: task_4_state_label
+            text: !lambda |-
+              if (x == "EMPTY") {
+                return "";
+              }
+              if (x == "ATTENTION") {
+                return "WAITING";
+              }
+              if (x == "COMPLETE") {
+                return "DONE";
+              }
+              return x;
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
+
+binary_sensor:
+  - platform: lvgl
+    id: task_1_pressed
+    name: Task 1
+    widget: task_1_card
+    state: PRESSED
+
+  - platform: lvgl
+    id: task_2_pressed
+    name: Task 2
+    widget: task_2_card
+    state: PRESSED
+
+  - platform: lvgl
+    id: task_3_pressed
+    name: Task 3
+    widget: task_3_card
+    state: PRESSED
+
+  - platform: lvgl
+    id: task_4_pressed
+    name: Task 4
+    widget: task_4_card
+    state: PRESSED
+
+  - platform: lvgl
+    id: sidebar_pressed
+    name: Sidebar
+    widget: sidebar_button
+    state: PRESSED
+
+lvgl:
+  displays:
+    - tft_display
+  touchscreens:
+    - touchscreen_id: tft_touch
+  bottom_layer:
+    bg_color: 0x09060D
+    bg_opa: COVER
+  pages:
+    - id: main_page
+      bg_color: 0x09060D
+      bg_opa: COVER
+      border_width: 0
+      pad_all: 0
+      scrollbar_mode: "OFF"
+      widgets:
+        # Static retro-futuristic bridge chrome. These objects never change after boot,
+        # keeping button and status redraws local to the affected control.
+        - obj:
+            x: 8
+            y: 8
+            width: 464
+            height: 56
+            radius: 28
+            border_width: 0
+            bg_color: 0xF1A15F
+        - obj:
+            x: 8
+            y: 8
+            width: 56
+            height: 342
+            radius: 28
+            border_width: 0
+            bg_color: 0xF1A15F
+        - obj:
+            x: 8
+            y: 76
+            width: 56
+            height: 86
+            radius: 10
+            border_width: 0
+            bg_color: 0xE98175
+        - obj:
+            x: 8
+            y: 170
+            width: 56
+            height: 118
+            radius: 10
+            border_width: 0
+            bg_color: 0xB79AD8
+        - obj:
+            x: 8
+            y: 296
+            width: 56
+            height: 54
+            radius: 10
+            border_width: 0
+            bg_color: 0x66D9EF
+
+        - label:
+            x: 72
+            y: 18
+            width: 392
+            height: 36
+            text: JOYDEX PAD
+            text_font: montserrat_28
+            text_color: 0x09060D
+            text_align: CENTER
+
+        - button:
+            id: task_1_card
+            x: 72
+            y: 82
+            width: 190
+            height: 116
+            radius: 22
+            border_width: 0
+            border_color: 0x6B7280
+            bg_color: 0x6B7280
+            pressed:
+              border_color: 0x66D9EF
+              border_width: 8
+              transform_width: -6
+              transform_height: -6
+            widgets:
+              - label:
+                  id: task_1_title_label
+                  x: 8
+                  y: 8
+                  text: ""
+                  text_font: montserrat_18
+                  text_color: 0x525252
+              - label:
+                  id: task_1_state_label
+                  align: CENTER
+                  text: ""
+                  text_font: montserrat_26
+                  text_color: 0x525252
+
+        - button:
+            id: task_2_card
+            x: 274
+            y: 82
+            width: 190
+            height: 116
+            radius: 22
+            border_width: 0
+            border_color: 0x6B7280
+            bg_color: 0x6B7280
+            pressed:
+              border_color: 0x66D9EF
+              border_width: 8
+              transform_width: -6
+              transform_height: -6
+            widgets:
+              - label:
+                  id: task_2_title_label
+                  x: 8
+                  y: 8
+                  text: ""
+                  text_font: montserrat_18
+                  text_color: 0x525252
+              - label:
+                  id: task_2_state_label
+                  align: CENTER
+                  text: ""
+                  text_font: montserrat_26
+                  text_color: 0x525252
+
+        - button:
+            id: task_3_card
+            x: 72
+            y: 210
+            width: 190
+            height: 116
+            radius: 22
+            border_width: 0
+            border_color: 0x6B7280
+            bg_color: 0x6B7280
+            pressed:
+              border_color: 0x66D9EF
+              border_width: 8
+              transform_width: -6
+              transform_height: -6
+            widgets:
+              - label:
+                  id: task_3_title_label
+                  x: 8
+                  y: 8
+                  text: ""
+                  text_font: montserrat_18
+                  text_color: 0x525252
+              - label:
+                  id: task_3_state_label
+                  align: CENTER
+                  text: ""
+                  text_font: montserrat_26
+                  text_color: 0x525252
+
+        - button:
+            id: task_4_card
+            x: 274
+            y: 210
+            width: 190
+            height: 116
+            radius: 22
+            border_width: 0
+            border_color: 0x6B7280
+            bg_color: 0x6B7280
+            pressed:
+              border_color: 0x66D9EF
+              border_width: 8
+              transform_width: -6
+              transform_height: -6
+            widgets:
+              - label:
+                  id: task_4_title_label
+                  x: 8
+                  y: 8
+                  text: ""
+                  text_font: montserrat_18
+                  text_color: 0x525252
+              - label:
+                  id: task_4_state_label
+                  align: CENTER
+                  text: ""
+                  text_font: montserrat_26
+                  text_color: 0x525252
+
+        - button:
+            id: sidebar_button
+            x: 72
+            y: 364
+            width: 392
+            height: 92
+            radius: 46
+            border_width: 3
+            border_color: 0xF1A15F
+            bg_color: 0xE98175
+            pressed:
+              border_color: 0x66D9EF
+              border_width: 8
+              transform_width: -6
+              transform_height: -6
+            widgets:
+              - label:
+                  align: CENTER
+                  text: PLAN MODE
+                  text_font: montserrat_28
+                  text_color: 0x09060D
