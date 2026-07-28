@@ -3,11 +3,13 @@ using Joydex.Core.Config;
 using Joydex.Core.Mapping;
 using Joydex.Core.Runtime;
 using Joydex.Core.TaskAlerts;
+using Joydex.WirelessPanel;
 using Joydex.Windows.Actions;
 using Joydex.Windows.Input;
 using Joydex.Windows.Interop;
 using Joydex.Windows.Runtime;
 using Joydex.Windows.TaskAlerts;
+using Joydex.Windows.WirelessPanel;
 using Microsoft.Win32;
 
 namespace Joydex.App;
@@ -45,6 +47,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly Dictionary<string, string> _deviceStatuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ToolStripMenuItem> _controllerItems = new(StringComparer.OrdinalIgnoreCase);
     private CompanionConfig? _activeConfig;
+    private EspHomePanelAdapter? _wirelessPanelAdapter;
     private DryRunActivityForm? _activityForm;
     private readonly Dictionary<string, ButtonMapForm> _buttonMapForms = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ToolStripMenuItem> _buttonMapItems = new(StringComparer.OrdinalIgnoreCase);
@@ -218,11 +221,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _promptOverlay?.Dispose();
         _promptOverlay = null;
 
-        foreach (var worker in _workers.Values)
-        {
-            worker.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        }
-        _workers.Clear();
+        StopWorkersAsync().GetAwaiter().GetResult();
 
         _shiftModeMonitor.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _taskAlertPipe.DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -452,6 +451,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _workers[device.Id] = worker;
                 worker.Start();
             }
+
+            StartWirelessPanel(config);
 
             if (showFirstRunNotice)
             {
@@ -766,11 +767,89 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task StopWorkersAsync()
     {
+        var wirelessPanelAdapter = Interlocked.Exchange(ref _wirelessPanelAdapter, null);
+        if (wirelessPanelAdapter is not null)
+        {
+            try
+            {
+                await wirelessPanelAdapter.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                _log.Write($"Could not stop the ESPHome panel adapter: {exception.Message}");
+            }
+        }
+
         foreach (var worker in _workers.Values)
         {
-            await worker.DisposeAsync();
+            await worker.DisposeAsync().ConfigureAwait(false);
         }
         _workers.Clear();
+    }
+
+    private void StartWirelessPanel(CompanionConfig config)
+    {
+        EspHomePanelAdapter? adapter = null;
+        try
+        {
+            var panelConfiguration = new WirelessPanelConfigurationStore().Load();
+            if (panelConfiguration is null)
+            {
+                _log.Write("ESPHome panel is not configured.");
+                return;
+            }
+
+            if (!panelConfiguration.Enabled)
+            {
+                _log.Write("ESPHome panel is configured and disabled.");
+                return;
+            }
+
+            var navigator = new TaskDeepLinkNavigator(config.Safety, WriteActivity);
+            var executor = new CodexActionExecutor(
+                config.Safety,
+                WriteActivity,
+                _keybindingService,
+                config.OpenWorkingDirectory,
+                internalAction: OnInternalAction);
+            var transport = new EspHomePanelTransport(
+                panelConfiguration.Endpoint,
+                panelConfiguration.Username,
+                panelConfiguration.Password,
+                _log.Write);
+            var initialSnapshot = _taskAlerts.GetSnapshot();
+            adapter = new EspHomePanelAdapter(
+                transport,
+                initialSnapshot,
+                _taskAlerts.GetSnapshot,
+                navigator,
+                _taskAlerts.AcknowledgeTerminal,
+                executor.ExecuteAsync,
+                _log.Write);
+            Volatile.Write(ref _wirelessPanelAdapter, adapter);
+            adapter.Start();
+            _log.Write(
+                $"ESPHome panel adapter started for {panelConfiguration.Endpoint.Host}:" +
+                $"{panelConfiguration.Endpoint.Port}.");
+        }
+        catch (Exception exception)
+        {
+            Interlocked.Exchange(ref _wirelessPanelAdapter, null);
+            if (adapter is not null)
+            {
+                try
+                {
+                    adapter.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                }
+                catch (Exception disposeException)
+                {
+                    _log.Write(
+                        $"Could not clean up the ESPHome panel adapter: {disposeException.Message}");
+                }
+            }
+
+            _log.Write($"ESPHome panel is unavailable: {exception.Message}");
+        }
     }
 
     private void WriteActivity(string message)
@@ -1020,6 +1099,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _ledService.Apply(snapshot);
+        Volatile.Read(ref _wirelessPanelAdapter)?.Apply(snapshot);
         _uiContext.Post(_ =>
         {
             _taskAlertsItem.Checked = snapshot.Enabled;

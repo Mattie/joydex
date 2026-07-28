@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Joydex.Core\Joydex.Core.csproj" />
+    <ProjectReference Include="..\Joydex.WirelessPanel\Joydex.WirelessPanel.csproj" />
     <ProjectReference Include="..\Joydex.Windows\Joydex.Windows.csproj" />
   </ItemGroup>
 
