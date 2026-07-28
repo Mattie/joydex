@@ -165,35 +165,45 @@ public static class Program
                 ? "Digest password (hidden; Enter keeps current): "
                 : "Digest password (hidden): ");
 
-        var password = new StringBuilder();
-        while (true)
+        var previousTreatControlCAsInput = Console.TreatControlCAsInput;
+        try
         {
-            var key = Console.ReadKey(intercept: true);
-            if (key.Key == ConsoleKey.Enter)
-            {
-                Console.WriteLine();
-                return password.ToString();
-            }
+            Console.TreatControlCAsInput = true;
 
-            if (key.Key == ConsoleKey.Backspace)
+            var password = new StringBuilder();
+            while (true)
             {
-                if (password.Length > 0)
+                var key = Console.ReadKey(intercept: true);
+                if (key.Key == ConsoleKey.Enter)
                 {
-                    password.Length--;
+                    Console.WriteLine();
+                    return password.ToString();
                 }
 
-                continue;
-            }
+                if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (password.Length > 0)
+                    {
+                        password.Length--;
+                    }
 
-            if (key.Modifiers.HasFlag(ConsoleModifiers.Control) && key.Key == ConsoleKey.C)
-            {
-                throw new OperationCanceledException();
-            }
+                    continue;
+                }
 
-            if (!char.IsControl(key.KeyChar))
-            {
-                password.Append(key.KeyChar);
+                if (key.Modifiers.HasFlag(ConsoleModifiers.Control) && key.Key == ConsoleKey.C)
+                {
+                    throw new OperationCanceledException();
+                }
+
+                if (!char.IsControl(key.KeyChar))
+                {
+                    password.Append(key.KeyChar);
+                }
             }
+        }
+        finally
+        {
+            Console.TreatControlCAsInput = previousTreatControlCAsInput;
         }
     }
 }
