@@ -2,6 +2,14 @@
 
 This file records the major capabilities and fixes added since Joydex was first uploaded to GitHub. Entries are grouped by date because the project has not used versioned releases yet. New entries go at the top.
 
+## 2026-07-27
+
+- Added an experimental direct ESPHome touchscreen example for the
+  ESP32-4848S040C_I, including neutral and bridge-console skins, live task
+  state, four task controls, PLAN MODE, authenticated REST/SSE transport,
+  DPAPI-protected host configuration, physical-device documentation, and
+  recovery guidance.
+
 ## 2026-07-24
 
 - Kept the physical task monitor focused on real Codex sidebar tasks. The [hook relay](src/Joydex.HookRelay/Program.cs) now ignores delegated agents identified by `agent_id` and internal ephemeral sessions that have no persistent `transcript_path`.

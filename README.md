@@ -29,6 +29,40 @@ Joydex is a source project, so the easiest path is to clone the repository, open
 
 The task-status LEDs need a few additional steps because they use Codex hooks and VIRPIL LinkTool.
 
+## Experimental wireless touchscreen
+
+Joydex also includes an experimental ESPHome example for the
+`ESP32-4848S040C_I`: a 4-inch, 480×480 capacitive touchscreen that joins the
+normal 2.4 GHz LAN. It displays the same four primary task states as the
+throttle LEDs and provides touch controls for Task 1 through Task 4 plus PLAN
+MODE. It talks directly to Joydex through authenticated REST and Server-Sent
+Events; Home Assistant and MQTT are not required.
+
+![ESP32-4848S040C_I running the Joydex bridge-console skin beside a Magic: The Gathering card for scale](docs/images/joydex-esp32-4848s040c-in-action.jpg)
+
+The card is shown only for scale. Magic: The Gathering and its publisher are
+not affiliated with Joydex.
+
+The example was physically tested July 25–27, 2026 on one panel purchased from
+this [AliExpress listing](https://www.aliexpress.us/item/3256808028364930.html).
+Joydex has no affiliation with the seller. Listings and board
+revisions can change, so verify the `ESP32-4848S040C_I` model, 480×480
+resolution, and capacitive-touch option before flashing. The
+[GUITION specification](https://www.guition.com/ku/icms/upload/fb081940d6fc11f09850077a33e1404f/FTPData/UEditor/file/2026121/1768961092477/ESP32-4848S040%20Specifications-EN.pdf)
+documents the tested family.
+
+Start with the
+[ESPHome firmware guide](firmware/esphome/README.md). The repository includes
+a neutral white skin and a dark bridge-console skin. Both require local
+credentials, a trusted LAN, and a private unit-specific factory backup.
+Compiled firmware is deliberately not distributed because it embeds the
+credentials used to join and manage the panel.
+
+The [wireless research record](docs/WIRELESS_TOUCHSCREEN_RESEARCH_V1.1.md)
+explains the direct ESPHome design, while the
+[device reference](docs/ESP32_4848S040C_I_DEVICE_REFERENCE.md) records the
+tested timing, pins, flashing, redraw, and recovery findings.
+
 ## What the experiment produced
 
 Joydex runs as a Windows tray app and reads one or more controllers through background, non-exclusive DirectInput. It leaves controller firmware and VPC profiles alone. The included mapping uses the CM3's shifted button ranges to expose Codex controls across three dial positions, while device-qualified bindings can also use a VIRPIL Alpha/WarBRD or another attached controller.
