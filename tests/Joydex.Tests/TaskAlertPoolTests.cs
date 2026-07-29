@@ -233,6 +233,36 @@ public sealed class TaskAlertPoolTests
     }
 
     [Fact]
+    public void CompactsOverflowAfterLeaseExpiryBeforeAssigningANewerTask()
+    {
+        var pool = new TaskAlertPool();
+        foreach (var index in Enumerable.Range(1, 6))
+        {
+            pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, $"session-{index}", Start));
+        }
+
+        foreach (var index in new[] { 1, 2, 3, 4, 6 })
+        {
+            pool.Apply(Event(
+                CodexLifecycleEvent.UserPromptSubmit,
+                $"session-{index}",
+                Start.AddHours(1)));
+        }
+
+        var expiredAt = Start + TaskAlertPool.RunningLease;
+        Assert.True(pool.Advance(expiredAt));
+        Assert.Equal(5, pool.Assignments.Single(
+            assignment => assignment.SessionId == "session-6").Slot);
+
+        Assert.True(pool.Apply(Event(
+            CodexLifecycleEvent.UserPromptSubmit,
+            "session-7",
+            expiredAt + TimeSpan.FromSeconds(1))));
+        Assert.Equal(6, pool.Assignments.Single(
+            assignment => assignment.SessionId == "session-7").Slot);
+    }
+
+    [Fact]
     public void RestoreFillsPrimaryHolesAndCompactsRemainingOverflow()
     {
         var state = new TaskAlertPoolState(

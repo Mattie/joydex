@@ -213,6 +213,7 @@ public sealed class TaskAlertPool
     {
         var changed = false;
         var vacatedPrimarySlots = new List<int>();
+        var vacatedOverflowSlot = false;
         foreach (var pair in _assignments.ToArray())
         {
             var assignment = pair.Value;
@@ -237,6 +238,10 @@ public sealed class TaskAlertPool
                 {
                     vacatedPrimarySlots.Add(pair.Key);
                 }
+                else
+                {
+                    vacatedOverflowSlot = true;
+                }
 
                 changed = true;
             }
@@ -246,6 +251,11 @@ public sealed class TaskAlertPool
         foreach (var slot in vacatedPrimarySlots)
         {
             ScheduleBackfill(slot, now);
+        }
+
+        if (vacatedOverflowSlot)
+        {
+            PromoteAndCompactOverflow([]);
         }
 
         return PromoteDueOverflow(now) || changed;
