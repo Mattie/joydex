@@ -786,6 +786,7 @@ internal sealed class ButtonMapCanvas : Control
         "end" => "End",
         "button-map" => "Button map",
         "new-task" => "New task",
+        "side-conversation" => "Side conversation",
         "previous-task" => "Previous task",
         "next-task" => "Next task",
         "navigate-back" => "Back",
