@@ -30,4 +30,11 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     --configuration Release `
     --runtime win-x64 `
     --output $output
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+& $dotnet publish (Join-Path $repositoryRoot 'tools\Joydex.WirelessPanel.Configure\Joydex.WirelessPanel.Configure.csproj') `
+    --configuration Release `
+    --runtime win-x64 `
+    --self-contained false `
+    --output $output
 exit $LASTEXITCODE

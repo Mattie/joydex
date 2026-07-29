@@ -16,7 +16,7 @@ Nothing rocket-science, but we live in an era where you can retrofit your own ha
 
 My favorite bit is I can just flip a T3 switch and see a floating map of the throttle's current bindings. The map reads its labels from the active configuration, so remapped controls are reflected in the floating window and I just flip the switch off and it instantly vanishes.
 
-![Joydex floating CM3 quick-reference map](docs/images/joydex-button-map.png)
+<img src="docs/images/joydex-button-map.png" alt="Joydex floating CM3 quick-reference map" width="640">
 
 ## Quick start
 
@@ -54,11 +54,11 @@ flowchart LR
 
 Screenshot of the UI bindings, but you can also just ask Codex to configure them for you if you wanted. UI is so much easier when it's just some "oh hey set M2 B3 to reject" and your agent does the rest.
 
-![Joydex configuration window showing the CM3 device and action mappings](docs/images/joydex-configuration.png)
+<img src="docs/images/joydex-configuration.png" alt="Joydex configuration window showing the CM3 device and action mappings" width="640">
 
 The configuration window keeps bindings, prompt pickers, button maps, and general settings on separate tabs. Software banks live under **General → Advanced** because they are only needed for hardware modes that reuse logical button numbers.
 
-![Joydex General tab showing Safety and Open plus collapsed advanced software banks](docs/images/joydex-general-configuration.png)
+<img src="docs/images/joydex-general-configuration.png" alt="Joydex General tab showing Safety and Open plus collapsed advanced software banks" width="640">
 
 FWIW, the checked-in code demonstrates:
 
@@ -83,7 +83,7 @@ This led to several concrete edge cases:
 
 Those cases are covered in the test suite. The code remains small enough to trace from a DirectInput event through binding resolution to the final `SendInput` calls.
 
-![Joydex dry-run inspector showing raw CM3 input and resolved actions](docs/images/joydex-dry-run.png)
+<img src="docs/images/joydex-dry-run.png" alt="Joydex dry-run inspector showing raw CM3 input and resolved actions" width="640">
 
 ## Included CM3 layout
 
@@ -105,6 +105,8 @@ The floating map reads its labels from the active configuration, so remapped con
 
 The LEDs turn the throttle into a ten-slot task monitor. Four primary tasks use B1, B2, B4, and B5 across M2-M4; those positions stay dark until assigned, while B3 and B6 retain each bank's normal color. Six overflow tasks use B1-B6 on M1, where every unassigned button stays dark. M5 remains available for ordinary commands with a medium-pink baseline. The Alpha grip LED shows the highest-priority state across all ten slots.
 
+When a primary task clears, its button remains dark for five seconds before the earliest M1 overflow task moves into that position. The remaining overflow tasks then compact in their existing order.
+
 Dim gray means running, yellow means the task needs attention, and low green means completed. Red is reserved for a future fault source. Pressing an assigned button opens that Codex task. Running and attention states remain assigned after navigation; opening a completed task clears its slot and restores the button's normal binding. Here is [my CM3 lit with a few example tasks](docs/images/20260720_064606c.jpg).
 
 ### Set up task-status LEDs
@@ -118,7 +120,7 @@ This part matches the CM3 throttle, Alpha/WarBRD stick, and VIRPIL Controls Link
 5. Make sure **Task alerts** is checked in the top level of the Joydex tray menu.
 6. Submit a test prompt in Codex. The Task Alerts **Event stream** should record it, **Current state** should gain a running assignment, and the corresponding LED should light.
 
-![Joydex task-alert status window showing current task assignments and integration controls](docs/images/joydex-task-alerts.png)
+<img src="docs/images/joydex-task-alerts.png" alt="Joydex task-alert status window showing current task assignments and integration controls" width="640">
 
 Joydex sends a complete snapshot whenever a task or physical mode changes, and LinkTool holds the matching colors. A read-only VIRPIL Software Link report tells Joydex which M1-M5 position is selected, so turning the dial switches LED pages without writing to controller firmware or profiles.
 
@@ -132,15 +134,36 @@ The tray's **Prompt pickers...** editor supports up to three named prompt lists.
 - Insert types the selected prompt at the current Codex caret. A per-prompt option can run the resolved Codex Submit action afterward; it is off by default.
 - **[Exit / Nevermind]**, Escape, or another controller button closes the picker without typing or submitting.
 
-![Joydex prompt-picker tab showing the default EN3, EN2, and EN1 controls](docs/images/joydex-prompt-pickers.png)
+<img src="docs/images/joydex-prompt-pickers.png" alt="Joydex prompt-picker tab showing the default EN3, EN2, and EN1 controls" width="640">
 
 Configured devices reconnect independently. Each supported device map has its own tray item, floating window position, and optional hold-to-show control from any configured controller. Configure it in **Configure Joydex → Button Maps**: select the target map row, choose its **Hold source**, click **Capture hold-to-show**, then move the control. The CM3 and Alpha/WarBRD maps can be visible at the same time.
 
 The checked-in [advanced configuration](config/joydex.advanced.example.json) is a sanitized copy of a working CM3 plus Alpha/WarBRD setup. It demonstrates two device profiles, cross-device map controls, two prompt pickers, custom task navigation, and two-notch scrolling. Its device GUIDs are removed and dry run is enabled. The prompt lists show one real workflow and are meant to be edited.
 
-![Joydex Button Maps tab showing a CM3 hold-to-show control](docs/images/joydex-button-maps-configuration.png)
+<img src="docs/images/joydex-button-maps-configuration.png" alt="Joydex Button Maps tab showing a CM3 hold-to-show control" width="640">
 
-![Joydex Alpha/WarBRD floating button map](docs/images/joydex-alpha-button-map.png)
+<img src="docs/images/joydex-alpha-button-map.png" alt="Joydex Alpha/WarBRD floating button map" width="640">
+
+## Experimental wireless touchscreen
+
+Joydex also includes an experimental ESPHome example for the
+`ESP32-4848S040C_I`: a 4-inch, 480×480 capacitive touchscreen that joins the
+normal 2.4 GHz LAN. It displays the same four primary task states as the
+throttle LEDs and provides touch controls for Task 1 through Task 4 plus PLAN
+MODE. It talks directly to Joydex through authenticated REST and Server-Sent
+Events; Home Assistant and MQTT are not required.
+
+Screenshot of it working (Magic card for scale):
+
+<img src="docs/images/joydex-esp32-4848s040c-in-action.jpg" alt="ESP32-4848S040C_I running the Joydex bridge-console skin beside a Magic: The Gathering card for scale" width="640">
+
+The example was physically tested July 25–27, 2026 on one panel purchased from this [AliExpress listing](https://www.aliexpress.us/item/3256808028364930.html).
+I have no affiliation with the seller, it could be malware-laden, I dunno, but I've bought a number of these for home assistant projects and use them in different spots. YMMV. Listings and board
+revisions can change, so verify the `ESP32-4848S040C_I` model (or ask your agent to figure it out for you). I used the [GUITION specification](https://www.guition.com/ku/icms/upload/fb081940d6fc11f09850077a33e1404f/FTPData/UEditor/file/2026121/1768961092477/ESP32-4848S040%20Specifications-EN.pdf) for the one I tested.
+
+Start with the [ESPHome firmware guide](firmware/esphome/README.md). The repository includes a neutral white skin and a dark bridge-console skin. Both require local credentials, a trusted LAN, and a private unit-specific factory backup. Compiled firmware is deliberately not distributed because it embeds the credentials used to join and manage the panel.
+
+The [wireless research record](docs/WIRELESS_TOUCHSCREEN_RESEARCH_V1.1.md) explains the direct ESPHome approach, while the [device reference](docs/ESP32_4848S040C_I_DEVICE_REFERENCE.md) records the tested timing, pins, flashing, redraw, and recovery findings.
 
 ## Build and explore the source
 

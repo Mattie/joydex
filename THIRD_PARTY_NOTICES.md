@@ -19,3 +19,13 @@ The Alpha/WarBRD button-map artwork in `docs/images/joydex-button-map_vpc-conste
 Joydex's volatile LED feature-report implementation is informed by the Apache-2.0-licensed [VLEDCONTROL](https://github.com/Nereid42/VLEDCONTROL) project by Nereid42. Joydex contains a separately adapted implementation for its limited task-alert use case.
 
 Joydex uses [HidSharp](https://github.com/SeekHisKingdom/HIDSharp), copyright 2010-2025 James F. Bellinger, under the Apache License 2.0, to open VIRPIL HID feature-report streams.
+
+## Wireless-panel scale photograph
+
+The photograph in
+`docs/images/joydex-esp32-4848s040c-in-action.jpg` was created for Joydex by
+Mattie Casper. The depicted Magic: The Gathering card is included only as a
+familiar size reference. Its artwork, text, product name, and trademarks remain
+the property of their respective rights holders and are not licensed under the
+Joydex MIT License. Those rights holders are not affiliated with or endorsing
+Joydex.
