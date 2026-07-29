@@ -76,6 +76,7 @@ internal static class CodexCommandCatalog
             [],
             "Ctrl+Alt+PageDown");
         yield return new(CodexAction.NewTask, "newTask", ["Ctrl+N", "Ctrl+Shift+O"]);
+        yield return new(CodexAction.SideConversation, "openSideChat", []);
         yield return new(CodexAction.PreviousTask, "previousThread", ["Ctrl+Shift+[", "Ctrl+PageUp"]);
         yield return new(CodexAction.NextTask, "nextThread", ["Ctrl+Shift+]", "Ctrl+PageDown"]);
         yield return new(CodexAction.NavigateBack, "navigateBack", ["Ctrl+[", "MouseBack"]);

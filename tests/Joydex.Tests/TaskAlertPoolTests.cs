@@ -146,8 +146,9 @@ public sealed class TaskAlertPoolTests
     }
 
     [Fact]
-    public void DropsOverflowWithoutBacklogAndAllowsLaterRetry()
+    public void WaitsBeforePromotingOverflowAfterAcknowledgement()
     {
+        Assert.Equal(TimeSpan.FromSeconds(5), TaskAlertPool.BackfillDelay);
         var pool = new TaskAlertPool();
         foreach (var index in Enumerable.Range(1, 10))
         {
@@ -157,12 +158,129 @@ public sealed class TaskAlertPoolTests
         Assert.Equal(Enumerable.Range(1, 10), pool.Assignments.Select(assignment => assignment.Slot));
         Assert.False(pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-11", Start)));
         Assert.Equal(1, pool.DroppedEventCount);
+        pool.Apply(Event(
+            CodexLifecycleEvent.PermissionRequest,
+            "session-5",
+            Start.AddMilliseconds(250),
+            AttentionKeyA));
         pool.Apply(Event(CodexLifecycleEvent.Fault, "session-1", Start.AddMilliseconds(500)));
-        Assert.True(pool.AcknowledgeTerminal(1, "session-1"));
+        var acknowledgedAt = Start.AddMilliseconds(500);
+        Assert.True(pool.AcknowledgeTerminal(1, "session-1", acknowledgedAt));
 
-        Assert.True(pool.Apply(Event(CodexLifecycleEvent.PermissionRequest, "session-11", Start.AddSeconds(1))));
-        Assert.Equal("session-11", pool.Assignments.Single(assignment => assignment.Slot == 1).SessionId);
+        Assert.DoesNotContain(pool.Assignments, assignment => assignment.Slot == 1);
         Assert.Equal("session-5", pool.Assignments.Single(assignment => assignment.Slot == 5).SessionId);
+        Assert.False(pool.Advance(acknowledgedAt + TaskAlertPool.BackfillDelay - TimeSpan.FromTicks(1)));
+        Assert.DoesNotContain(pool.Assignments, assignment => assignment.Slot == 1);
+
+        Assert.True(pool.Advance(acknowledgedAt + TaskAlertPool.BackfillDelay));
+        var promoted = pool.Assignments.Single(assignment => assignment.Slot == 1);
+        Assert.Equal("session-5", promoted.SessionId);
+        Assert.Equal(TaskAlertState.Approval, promoted.State);
+        Assert.Equal("session-6", pool.Assignments.Single(assignment => assignment.Slot == 5).SessionId);
+        Assert.DoesNotContain(pool.Assignments, assignment => assignment.Slot == 10);
+        Assert.True(pool.Apply(Event(
+            CodexLifecycleEvent.ToolCompleted,
+            "session-5",
+            acknowledgedAt + TaskAlertPool.BackfillDelay + TimeSpan.FromMilliseconds(250),
+            AttentionKeyA)));
+        Assert.Equal(
+            TaskAlertState.Running,
+            pool.Assignments.Single(assignment => assignment.Slot == 1).State);
+
+        Assert.True(pool.Apply(Event(
+            CodexLifecycleEvent.PermissionRequest,
+            "session-11",
+            acknowledgedAt + TaskAlertPool.BackfillDelay + TimeSpan.FromMilliseconds(500))));
+        Assert.Equal("session-11", pool.Assignments.Single(assignment => assignment.Slot == 10).SessionId);
+    }
+
+    [Fact]
+    public void ReservesExpiredPrimarySlotsUntilBackfillDelayElapses()
+    {
+        var pool = new TaskAlertPool();
+        foreach (var index in Enumerable.Range(1, 6))
+        {
+            pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, $"session-{index}", Start));
+        }
+
+        foreach (var index in new[] { 2, 4, 5, 6 })
+        {
+            pool.Apply(Event(
+                CodexLifecycleEvent.UserPromptSubmit,
+                $"session-{index}",
+                Start.AddHours(1)));
+        }
+
+        var expiredAt = Start + TaskAlertPool.RunningLease;
+        Assert.True(pool.Advance(expiredAt));
+        Assert.Equal(
+            ["session-2", "session-4", "session-5", "session-6"],
+            pool.Assignments.Select(assignment => assignment.SessionId));
+        Assert.Equal([2, 4, 5, 6], pool.Assignments.Select(assignment => assignment.Slot));
+
+        Assert.True(pool.Apply(Event(
+            CodexLifecycleEvent.UserPromptSubmit,
+            "session-7",
+            expiredAt + TimeSpan.FromSeconds(1))));
+        Assert.Equal(7, pool.Assignments.Single(assignment => assignment.SessionId == "session-7").Slot);
+        Assert.False(pool.Advance(expiredAt + TaskAlertPool.BackfillDelay - TimeSpan.FromTicks(1)));
+
+        Assert.True(pool.Advance(expiredAt + TaskAlertPool.BackfillDelay));
+        Assert.Equal(
+            ["session-5", "session-2", "session-6", "session-4", "session-7"],
+            pool.Assignments.Select(assignment => assignment.SessionId));
+        Assert.Equal([1, 2, 3, 4, 5], pool.Assignments.Select(assignment => assignment.Slot));
+    }
+
+    [Fact]
+    public void CompactsOverflowAfterLeaseExpiryBeforeAssigningANewerTask()
+    {
+        var pool = new TaskAlertPool();
+        foreach (var index in Enumerable.Range(1, 6))
+        {
+            pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, $"session-{index}", Start));
+        }
+
+        foreach (var index in new[] { 1, 2, 3, 4, 6 })
+        {
+            pool.Apply(Event(
+                CodexLifecycleEvent.UserPromptSubmit,
+                $"session-{index}",
+                Start.AddHours(1)));
+        }
+
+        var expiredAt = Start + TaskAlertPool.RunningLease;
+        Assert.True(pool.Advance(expiredAt));
+        Assert.Equal(5, pool.Assignments.Single(
+            assignment => assignment.SessionId == "session-6").Slot);
+
+        Assert.True(pool.Apply(Event(
+            CodexLifecycleEvent.UserPromptSubmit,
+            "session-7",
+            expiredAt + TimeSpan.FromSeconds(1))));
+        Assert.Equal(6, pool.Assignments.Single(
+            assignment => assignment.SessionId == "session-7").Slot);
+    }
+
+    [Fact]
+    public void RestoreFillsPrimaryHolesAndCompactsRemainingOverflow()
+    {
+        var state = new TaskAlertPoolState(
+        [
+            StoredAssignment(1, "primary-1"),
+            StoredAssignment(3, "primary-3"),
+            StoredAssignment(4, "primary-4"),
+            StoredAssignment(6, "overflow-2"),
+            StoredAssignment(9, "overflow-5"),
+        ]);
+        var pool = new TaskAlertPool();
+
+        pool.Restore(state);
+
+        Assert.Equal(
+            ["primary-1", "overflow-2", "primary-3", "primary-4", "overflow-5"],
+            pool.Assignments.Select(assignment => assignment.SessionId));
+        Assert.Equal([1, 2, 3, 4, 5], pool.Assignments.Select(assignment => assignment.Slot));
     }
 
     [Theory]
@@ -324,4 +442,14 @@ public sealed class TaskAlertPoolTests
             "turn-1",
             at,
             attentionKey);
+
+    private static TaskAlertStoredAssignment StoredAssignment(int slot, string sessionId) => new(
+        slot,
+        sessionId,
+        "turn-1",
+        TaskAlertState.Running,
+        Start,
+        null,
+        [],
+        0);
 }

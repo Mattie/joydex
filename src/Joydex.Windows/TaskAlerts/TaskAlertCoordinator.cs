@@ -159,7 +159,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         TaskAlertSnapshot? snapshot = null;
         lock (_sync)
         {
-            if (_pool.AcknowledgeTerminal(slot, sessionId))
+            if (_pool.AcknowledgeTerminal(slot, sessionId, DateTimeOffset.UtcNow))
             {
                 TrySaveStateUnsafe();
                 snapshot = SnapshotUnsafe();
