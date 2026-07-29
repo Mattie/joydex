@@ -10,6 +10,10 @@ This file records the major capabilities and fixes added since Joydex was first 
   DPAPI-protected host configuration, physical-device documentation, and
   recovery guidance.
 
+## 2026-07-25
+
+- Promoted the earliest M1 overflow task into any newly empty M2-M4 primary position after a five-second dark pause, with the remaining overflow tasks compacted in their existing order.
+
 ## 2026-07-24
 
 - Kept the physical task monitor focused on real Codex sidebar tasks. The [hook relay](src/Joydex.HookRelay/Program.cs) now ignores delegated agents identified by `agent_id` and internal ephemeral sessions that have no persistent `transcript_path`.

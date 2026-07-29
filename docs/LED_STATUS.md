@@ -1,6 +1,6 @@
 # Joydex task-status LED guide
 
-Joydex uses the CM3 throttle buttons and the Constellation Alpha grip LED as a physical task monitor for Codex. Codex lifecycle hooks supply the task state, Joydex assigns that state to a stable button, and VIRPIL Controls LinkTool v3 keeps the matching LEDs lit.
+Joydex uses the CM3 throttle buttons and the Constellation Alpha grip LED as a physical task monitor for Codex. Codex lifecycle hooks supply the task state, Joydex assigns that state to an available task button, and VIRPIL Controls LinkTool v3 keeps the matching LEDs lit.
 
 ## Set it up
 
@@ -22,7 +22,7 @@ Joydex uses the CM3 throttle buttons and the Constellation Alpha grip LED as a p
 | Completed | Low green | The task stopped and is ready to acknowledge |
 | Fault | Red | Reserved for a future fault source; current hooks do not create this state |
 
-The throttle provides ten stable task slots:
+The throttle provides ten task slots:
 
 | Page | Controls | Behavior |
 | --- | --- | --- |
@@ -31,7 +31,7 @@ The throttle provides ten stable task slots:
 | M5 | B1-B6 | Ordinary commands only; medium-pink baseline and no task overlays |
 | Alpha grip LED | Global | Highest-priority state across all ten slots |
 
-Each new task claims the lowest free slot. Existing assignments stay where they were placed, even when a lower slot becomes free. When all ten slots are occupied, later events are dropped; a later lifecycle event can claim a slot after one becomes available.
+Each new task claims the lowest free primary slot, then the lowest free overflow slot. When a primary position becomes empty, it remains dark for five seconds before the earliest M1 overflow task moves into it. The open primary position stays reserved during that pause so a newer task cannot jump the overflow queue. Remaining overflow tasks then slide forward in their existing order, keeping M1 compact. When all ten slots are occupied, later events are dropped; a later lifecycle event can claim a slot after one becomes available.
 
 Joydex ignores lifecycle events that Codex marks with a subagent `agent_id`. It also ignores events without a persistent `transcript_path`, which covers Codex's internal ephemeral sessions. Delegated and background-only agent threads therefore do not claim their own slots; the parent sidebar task remains the physical unit of attention.
 
@@ -41,7 +41,7 @@ Pressing an assigned button opens its Codex task. Running and attention states s
 
 Joydex saves active assignments, completion deadlines, and pending-attention counts in `%LOCALAPPDATA%\Joydex\task-alert-state.json`. Correlated attention is stored as SHA-256 keys. Prompt text, commands, patches, tool responses, and assistant messages are never written to this file.
 
-Assignments keep their physical slots across a Joydex restart. Running assignments expire after 12 hours; attention and terminal assignments expire after 24 hours. Invalid saved state is moved aside and Joydex starts with an empty pool. Turning **Task alerts** off clears the saved assignments.
+Assignment state and queue order survive a Joydex restart. During restore, Joydex fills any primary gaps from overflow and compacts the remaining M1 queue. Running assignments expire after 12 hours; attention and terminal assignments expire after 24 hours. Invalid saved state is moved aside and Joydex starts with an empty pool. Turning **Task alerts** off clears the saved assignments.
 
 ## How LinkTool carries the state
 

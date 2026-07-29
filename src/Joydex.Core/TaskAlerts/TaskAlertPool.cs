@@ -3,10 +3,12 @@ namespace Joydex.Core.TaskAlerts;
 public sealed class TaskAlertPool
 {
     public static readonly TimeSpan StopGrace = TimeSpan.FromSeconds(1);
+    public static readonly TimeSpan BackfillDelay = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan RunningLease = TimeSpan.FromHours(12);
     public static readonly TimeSpan AttentionLease = TimeSpan.FromHours(24);
 
     private readonly Dictionary<int, TaskAlertAssignment> _assignments = [];
+    private readonly Dictionary<int, DateTimeOffset> _backfillAfter = [];
     private readonly Dictionary<string, PendingAttention> _pendingAttention =
         new(StringComparer.Ordinal);
 
@@ -101,6 +103,10 @@ public sealed class TaskAlertPool
             _pendingAttention.Add(pair.Key, pair.Value);
         }
 
+        _backfillAfter.Clear();
+        PromoteAndCompactOverflow(TaskAlertSlots.Primary
+            .Where(slot => !_assignments.ContainsKey(slot))
+            .ToArray());
         DroppedEventCount = 0;
     }
 
@@ -125,7 +131,8 @@ public sealed class TaskAlertPool
         if (existing is null)
         {
             var slot = TaskAlertSlots.All
-                .Where(candidate => !_assignments.ContainsKey(candidate))
+                .Where(candidate => !_assignments.ContainsKey(candidate)
+                    && !_backfillAfter.ContainsKey(candidate))
                 .FirstOrDefault();
             if (slot == 0)
             {
@@ -205,6 +212,7 @@ public sealed class TaskAlertPool
     public bool Advance(DateTimeOffset now)
     {
         var changed = false;
+        var vacatedPrimarySlots = new List<int>();
         foreach (var pair in _assignments.ToArray())
         {
             var assignment = pair.Value;
@@ -225,16 +233,35 @@ public sealed class TaskAlertPool
             {
                 _assignments.Remove(pair.Key);
                 _pendingAttention.Remove(assignment.SessionId);
+                if (TaskAlertSlots.Page(pair.Key) == TaskAlertPage.Primary)
+                {
+                    vacatedPrimarySlots.Add(pair.Key);
+                }
+
                 changed = true;
             }
         }
 
-        return changed;
+        TrimBackfillReservations();
+        foreach (var slot in vacatedPrimarySlots)
+        {
+            ScheduleBackfill(slot, now);
+        }
+
+        return PromoteDueOverflow(now) || changed;
     }
 
-    public bool AcknowledgeTerminal(int slot, string sessionId)
+    public bool AcknowledgeTerminal(int slot, string sessionId) =>
+        AcknowledgeTerminal(slot, sessionId, DateTimeOffset.UtcNow);
+
+    public bool AcknowledgeTerminal(int slot, string sessionId, DateTimeOffset acknowledgedAt)
     {
         TaskAlertSlots.Validate(slot);
+        if (acknowledgedAt == default)
+        {
+            throw new ArgumentOutOfRangeException(nameof(acknowledgedAt));
+        }
+
         if (!_assignments.TryGetValue(slot, out var assignment)
             || !string.Equals(assignment.SessionId, sessionId, StringComparison.Ordinal)
             || assignment.State is not (TaskAlertState.Completed or TaskAlertState.Fault))
@@ -243,7 +270,15 @@ public sealed class TaskAlertPool
         }
 
         _pendingAttention.Remove(assignment.SessionId);
-        return _assignments.Remove(slot);
+        _assignments.Remove(slot);
+        TrimBackfillReservations();
+        if (TaskAlertSlots.Page(slot) == TaskAlertPage.Primary)
+        {
+            ScheduleBackfill(slot, acknowledgedAt);
+        }
+
+        PromoteAndCompactOverflow([]);
+        return true;
     }
 
     public bool SetEnabled(bool enabled)
@@ -255,6 +290,7 @@ public sealed class TaskAlertPool
 
         Enabled = enabled;
         _assignments.Clear();
+        _backfillAfter.Clear();
         _pendingAttention.Clear();
         return true;
     }
@@ -292,6 +328,112 @@ public sealed class TaskAlertPool
         }
 
         return pending;
+    }
+
+    private void ScheduleBackfill(int slot, DateTimeOffset vacatedAt)
+    {
+        if (_assignments.ContainsKey(slot)
+            || _backfillAfter.ContainsKey(slot)
+            || _backfillAfter.Count >= _assignments.Keys.Count(candidate =>
+                TaskAlertSlots.Page(candidate) == TaskAlertPage.Overflow))
+        {
+            return;
+        }
+
+        _backfillAfter.Add(slot, vacatedAt + BackfillDelay);
+    }
+
+    private void TrimBackfillReservations()
+    {
+        foreach (var occupiedSlot in _backfillAfter.Keys
+                     .Where(_assignments.ContainsKey)
+                     .ToArray())
+        {
+            _backfillAfter.Remove(occupiedSlot);
+        }
+
+        var overflowCount = _assignments.Keys.Count(slot =>
+            TaskAlertSlots.Page(slot) == TaskAlertPage.Overflow);
+        var excessReservations = _backfillAfter
+            .OrderBy(pair => pair.Value)
+            .ThenBy(pair => pair.Key)
+            .Skip(overflowCount)
+            .Select(pair => pair.Key)
+            .ToArray();
+        foreach (var slot in excessReservations)
+        {
+            _backfillAfter.Remove(slot);
+        }
+    }
+
+    private bool PromoteDueOverflow(DateTimeOffset now)
+    {
+        TrimBackfillReservations();
+        var dueSlots = _backfillAfter
+            .Where(pair => pair.Value <= now)
+            .OrderBy(pair => pair.Value)
+            .ThenBy(pair => pair.Key)
+            .Select(pair => pair.Key)
+            .ToArray();
+        if (dueSlots.Length == 0)
+        {
+            return false;
+        }
+
+        var changed = PromoteAndCompactOverflow(dueSlots);
+        foreach (var slot in dueSlots)
+        {
+            _backfillAfter.Remove(slot);
+        }
+
+        return changed;
+    }
+
+    private bool PromoteAndCompactOverflow(IReadOnlyList<int> primaryVacancies)
+    {
+        var overflowAssignments = TaskAlertSlots.Overflow
+            .Where(_assignments.ContainsKey)
+            .Select(slot => _assignments[slot])
+            .ToArray();
+        var promotionCount = Math.Min(primaryVacancies.Count, overflowAssignments.Length);
+        var requiresRebalance = false;
+
+        for (var index = 0; index < promotionCount; index++)
+        {
+            requiresRebalance |= overflowAssignments[index].Slot != primaryVacancies[index];
+        }
+
+        for (var index = promotionCount; index < overflowAssignments.Length; index++)
+        {
+            requiresRebalance |= overflowAssignments[index].Slot
+                != TaskAlertSlots.Overflow[index - promotionCount];
+        }
+
+        if (!requiresRebalance)
+        {
+            return false;
+        }
+
+        foreach (var slot in TaskAlertSlots.Overflow)
+        {
+            _assignments.Remove(slot);
+        }
+
+        for (var index = 0; index < promotionCount; index++)
+        {
+            var assignment = overflowAssignments[index];
+            var slot = primaryVacancies[index];
+            _assignments.Add(slot, assignment with { Slot = slot });
+        }
+
+        for (var index = promotionCount; index < overflowAssignments.Length; index++)
+        {
+            var assignment = overflowAssignments[index];
+            var slot = TaskAlertSlots.Overflow[index - promotionCount];
+            _assignments.Add(slot, assignment with { Slot = slot });
+        }
+
+        return true;
     }
 
     private sealed class PendingAttention
