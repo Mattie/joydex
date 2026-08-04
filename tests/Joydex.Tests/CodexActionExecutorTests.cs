@@ -31,7 +31,7 @@ public sealed class CodexActionExecutorTests
         { CodexAction.NavigateForward, "navigateForward" },
         { CodexAction.ToggleSidebar, "toggleSidebar" },
         { CodexAction.OpenSkills, "openSkills" },
-        { CodexAction.ToggleVoiceChat, "realtimeVoice" },
+        { CodexAction.ToggleVoiceChat, "composer.startVoiceMode" },
         { CodexAction.Dictation, "composer.startDictation" },
         { CodexAction.OpenWorkingDirectory, "copyWorkingDirectory" },
     };

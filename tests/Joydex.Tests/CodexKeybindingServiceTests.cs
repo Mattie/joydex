@@ -60,17 +60,17 @@ public sealed class CodexKeybindingServiceTests
     }
 
     [Fact]
-    public async Task VoiceChatUsesTheProvisionedGlobalHotkey()
+    public async Task VoiceChatUsesTheVerifiedInWindowToggle()
     {
-        var fixture = CreateFixtureForProvisioning(
-            Entry("openSkills", "Ctrl+Alt+Shift+S"));
-        await using var service = await fixture.StartAsync(existingCompanionInstall: false);
+        var fixture = CreateFixture(
+            Entry("realtimeVoice", "Ctrl+Alt+Shift+V"));
+        await using var service = await fixture.StartAsync();
 
         var resolution = await service.ResolveAsync(CodexAction.ToggleVoiceChat, CancellationToken.None);
 
-        Assert.Equal("realtimeVoice", resolution.CommandId);
-        Assert.Equal("Ctrl+Alt+Shift+V", resolution.Sequence!.NormalizedText);
-        Assert.Equal(CodexBindingSource.Provisioned, resolution.Source);
+        Assert.Equal("composer.startVoiceMode", resolution.CommandId);
+        Assert.Equal("Ctrl+Shift+V", resolution.Sequence!.NormalizedText);
+        Assert.Equal(CodexBindingSource.Default, resolution.Source);
     }
 
     [Fact]
@@ -550,7 +550,6 @@ public sealed class CodexKeybindingServiceTests
     {
         yield return Entry("globalDictationHold", "Ctrl+CapsLock");
         yield return Entry("openSkills", "Ctrl+Alt+Shift+S");
-        yield return Entry("realtimeVoice", "Ctrl+Alt+Shift+V");
     }
 
     private static Dictionary<string, object?> Entry(string command, string? key) => new()
