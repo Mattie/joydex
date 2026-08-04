@@ -712,7 +712,8 @@ internal sealed class ConfigurationForm : ThemedForm
                 || label.StartsWith("T7", StringComparison.OrdinalIgnoreCase),
             BindingCluster.Talk => label.Contains("talk", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(action, "push-to-talk", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(action, "voice-chat", StringComparison.OrdinalIgnoreCase),
+                || string.Equals(action, "voice-chat", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "end-voice-chat", StringComparison.OrdinalIgnoreCase),
             _ => true,
         };
     }

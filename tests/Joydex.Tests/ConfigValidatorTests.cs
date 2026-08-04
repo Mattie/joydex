@@ -249,6 +249,22 @@ public sealed class ConfigValidatorTests
         Assert.Empty(ConfigValidator.Validate(config));
     }
 
+    [Fact]
+    public void AcceptsReleaseBindingForEndingVoiceChat()
+    {
+        var config = CreateConfig(
+            new ButtonBinding
+            {
+                Name = "voice-off",
+                Bank = "work",
+                Button = 4,
+                Trigger = "release",
+                Action = "end-voice-chat",
+            });
+
+        Assert.Empty(ConfigValidator.Validate(config));
+    }
+
     private static CompanionConfig CreateConfig(params ButtonBinding[] bindings) => new()
     {
         BankSelectors = new Dictionary<string, int> { ["work"] = 10 },

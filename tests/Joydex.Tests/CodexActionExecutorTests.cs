@@ -32,6 +32,7 @@ public sealed class CodexActionExecutorTests
         { CodexAction.ToggleSidebar, "toggleSidebar" },
         { CodexAction.OpenSkills, "openSkills" },
         { CodexAction.ToggleVoiceChat, "composer.startVoiceMode" },
+        { CodexAction.EndVoiceChat, "realtimeVoice.endCall" },
         { CodexAction.Dictation, "composer.startDictation" },
         { CodexAction.OpenWorkingDirectory, "copyWorkingDirectory" },
     };
@@ -61,6 +62,7 @@ public sealed class CodexActionExecutorTests
         CodexAction.ToggleSidebar,
         CodexAction.OpenSkills,
         CodexAction.ToggleVoiceChat,
+        CodexAction.EndVoiceChat,
         CodexAction.Dictation,
     };
 

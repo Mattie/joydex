@@ -177,7 +177,11 @@ public static class ConfigValidator
                 errors.Add($"binding '{binding.Name}' uses unsupported action '{binding.Action}'");
             }
             else if (string.Equals(binding.Trigger, "release", StringComparison.OrdinalIgnoreCase)
-                && action is not (CodexAction.PushToTalk or CodexAction.ButtonMap or CodexAction.ToggleVoiceChat))
+                && action is not (
+                    CodexAction.PushToTalk
+                    or CodexAction.ButtonMap
+                    or CodexAction.ToggleVoiceChat
+                    or CodexAction.EndVoiceChat))
             {
                 errors.Add($"binding '{binding.Name}' cannot use a release trigger with action '{binding.Action}'");
             }
