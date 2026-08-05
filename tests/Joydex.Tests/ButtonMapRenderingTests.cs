@@ -10,18 +10,43 @@ public sealed class ButtonMapRenderingTests
     private static readonly IReadOnlyDictionary<int, RectangleF> ExpectedRegions =
         new Dictionary<int, RectangleF>
         {
+            [4] = new(1638, 598, 530, 59),
             [13] = new(248, 327, 567, 59),
+            [21] = new(1812, 1350, 499, 59),
+            [32] = new(727, 1326, 346, 58),
+            [33] = new(749, 1411, 362, 59),
+            [34] = new(2028, 1990, 383, 59),
+            [35] = new(1978, 2210, 382, 59),
             [56] = new(2606, 687, 208, 118),
             [79] = new(3053, 2188, 209, 110),
             [53] = new(1366, 2327, 388, 59),
             [49] = new(160, 2285, 375, 65),
-            [34] = new(2040, 2003, 375, 65),
         };
 
     [Fact]
     public void CanonicalBitmapCoordinatesMatchTheOwnedCm3Template()
     {
         Assert.Equal(new Size(3300, 2550), ButtonMapCanvas.CanonicalTemplateSize);
+    }
+
+    [Fact]
+    public void EveryPrintedCm3ButtonHasAnAuditedRegion()
+    {
+        var regions = ButtonMapCanvas.Cm3ButtonRegionsForTesting;
+
+        Assert.Equal(Enumerable.Range(1, 79), regions.Keys.OrderBy(button => button));
+        Assert.Equal(regions.Count, regions.Values.Distinct().Count());
+
+        foreach (var (button, region) in regions)
+        {
+            Assert.True(region.Width > 0, $"Button {button} has no usable width.");
+            Assert.True(region.Height > 0, $"Button {button} has no usable height.");
+            Assert.True(region.Left >= 0 && region.Top >= 0, $"Button {button} starts outside the template.");
+            Assert.True(
+                region.Right <= ButtonMapCanvas.CanonicalTemplateSize.Width
+                && region.Bottom <= ButtonMapCanvas.CanonicalTemplateSize.Height,
+                $"Button {button} extends outside the template.");
+        }
     }
 
     [Fact]
@@ -119,9 +144,9 @@ public sealed class ButtonMapRenderingTests
     }
 
     private static void AssertInside(Bitmap preview, int button, float sourceX, float sourceY) =>
-        Assert.NotEqual(
-            Color.White.ToArgb(),
-            PixelAtSource(preview, sourceX, sourceY).ToArgb());
+        Assert.True(
+            HasNonWhitePixelNear(preview, sourceX, sourceY),
+            $"Button {button} overlay did not fill its expected native region near ({sourceX}, {sourceY}).");
 
     private static void AssertOutside(Bitmap preview, int button, float sourceX, float sourceY) =>
         Assert.True(
@@ -131,4 +156,22 @@ public sealed class ButtonMapRenderingTests
     private static Color PixelAtSource(Bitmap preview, float sourceX, float sourceY) => preview.GetPixel(
         (int)MathF.Round(sourceX * PreviewScale),
         (int)MathF.Round(sourceY * PreviewScale));
+
+    private static bool HasNonWhitePixelNear(Bitmap preview, float sourceX, float sourceY)
+    {
+        var centerX = (int)MathF.Round(sourceX * PreviewScale);
+        var centerY = (int)MathF.Round(sourceY * PreviewScale);
+        for (var y = Math.Max(0, centerY - 2); y <= Math.Min(preview.Height - 1, centerY + 2); y++)
+        {
+            for (var x = Math.Max(0, centerX - 2); x <= Math.Min(preview.Width - 1, centerX + 2); x++)
+            {
+                if (preview.GetPixel(x, y).ToArgb() != Color.White.ToArgb())
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
 }

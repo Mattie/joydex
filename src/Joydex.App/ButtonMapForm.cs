@@ -217,6 +217,8 @@ internal sealed class ButtonMapCanvas : Control
 
     internal static Size CanonicalTemplateSize => new(TemplateWidth, TemplateHeight);
 
+    internal static IReadOnlyDictionary<int, RectangleF> Cm3ButtonRegionsForTesting => ButtonRegions;
+
     public void UpdateConfig(CompanionConfig config)
     {
         _labels = BuildLabels(CompanionConfigNormalizer.Normalize(config), _deviceId);
@@ -807,12 +809,16 @@ internal sealed class ButtonMapCanvas : Control
 
         AddRows(regions, [13], 244, 324, 819, 65);
         AddRows(regions, [3, 2, 1], 1844, 342, 2394, 64.7F);
+        AddRows(regions, [4], 1634, 595, 2172, 65);
         AddRows(regions, [7, 6, 5], 966, 679, 1427, 64.7F);
         AddRows(regions, [15, 14], 1811, 767, 2337, 64.5F);
         AddRows(regions, [11, 10, 9, 12, 8], 311, 528, 850, 64.8F);
         AddRows(regions, [20, 17, 18, 19, 16], 2002, 999, 2540, 64.6F);
+        AddRows(regions, [21], 1808, 1347, 2315, 65);
         AddRows(regions, [25, 26, 23, 24, 22], 439, 977, 978, 64.8F);
         AddRows(regions, [30, 31, 28, 29, 27], 2027, 1491, 2566, 64.8F);
+        AddRows(regions, [32], 723, 1323, 1077, 64);
+        AddRows(regions, [33], 745, 1408, 1115, 65);
 
         regions[36] = new RectangleF(160, 1401, 376, 65);
         regions[37] = new RectangleF(160, 1607, 375, 64);
@@ -822,7 +828,8 @@ internal sealed class ButtonMapCanvas : Control
         regions[47] = new RectangleF(160, 2082, 375, 64);
         regions[48] = new RectangleF(160, 2220, 375, 65);
         regions[49] = new RectangleF(160, 2285, 375, 65);
-        regions[34] = new RectangleF(2040, 2003, 375, 65);
+        AddRows(regions, [34], 2024, 1987, 2415, 65);
+        AddRows(regions, [35], 1974, 2207, 2364, 65);
 
         AddRows(regions, [52, 51, 50], 723, 2194, 1119, 65);
         AddRows(regions, [54, 55, 53], 1362, 2194, 1758, 65);
