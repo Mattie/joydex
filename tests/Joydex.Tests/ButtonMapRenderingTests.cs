@@ -54,6 +54,12 @@ public sealed class ButtonMapRenderingTests
     }
 
     [Fact]
+    public void ReviewedCm3CoordinatesMatchTheRuntimeCatalog()
+    {
+        AssertReviewedRegions(ButtonMapCanvas.Cm3ButtonRegionsForTesting, ExpectedRegions);
+    }
+
+    [Fact]
     public void EveryPrintedAlphaButtonHasAnAuditedRegion()
     {
         AssertCompleteRegionCatalog(
@@ -61,6 +67,12 @@ public sealed class ButtonMapRenderingTests
             firstButton: 1,
             lastButton: 31,
             ButtonMapCanvas.AlphaTemplateSizeForTesting);
+    }
+
+    [Fact]
+    public void ReviewedAlphaCoordinatesMatchTheRuntimeCatalog()
+    {
+        AssertReviewedRegions(ButtonMapCanvas.AlphaButtonRegionsForTesting, ExpectedAlphaRegions);
     }
 
     [Fact]
@@ -124,27 +136,30 @@ public sealed class ButtonMapRenderingTests
     [Fact]
     public void BitmapAndRepresentativeLabelsUseTheSameNativePixelCoordinates()
     {
-        var config = new CompanionConfig
-        {
-            Bindings = ExpectedRegions.Keys.Select(button => new ButtonBinding
-            {
-                Name = $"Button {button}",
-                Bank = CompanionConfig.AlwaysBank,
-                Button = button,
-                Action = "reject",
-            }).ToList(),
-        };
-        using var template = new Bitmap(3300, 2550);
-        using (var graphics = Graphics.FromImage(template))
-        {
-            graphics.Clear(Color.White);
-        }
-
-        using var canvas = ButtonMapCanvas.CreateWithTemplateForTesting(config, template);
-        using var preview = canvas.RenderPreview(new Size(1320, 1020));
-
         foreach (var (button, region) in ExpectedRegions)
         {
+            var config = new CompanionConfig
+            {
+                Bindings =
+                [
+                    new ButtonBinding
+                    {
+                        Name = $"Button {button}",
+                        Bank = CompanionConfig.AlwaysBank,
+                        Button = button,
+                        Action = "reject",
+                    },
+                ],
+            };
+            using var template = new Bitmap(3300, 2550);
+            using (var graphics = Graphics.FromImage(template))
+            {
+                graphics.Clear(Color.White);
+            }
+
+            using var canvas = ButtonMapCanvas.CreateWithTemplateForTesting(config, template);
+            using var preview = canvas.RenderPreview(new Size(1320, 1020));
+
             AssertInside(preview, button, region.Left + 20, region.Top + region.Height / 2);
             AssertInside(preview, button, region.Right - 20, region.Top + region.Height / 2);
             AssertInside(preview, button, region.Left + region.Width / 2, region.Top + 20);
@@ -205,6 +220,17 @@ public sealed class ButtonMapRenderingTests
             AssertOutside(preview, button, region.Right + 6, region.Top + region.Height / 2, scale: 1F);
             AssertOutside(preview, button, region.Left + region.Width / 2, region.Top - 6, scale: 1F);
             AssertOutside(preview, button, region.Left + region.Width / 2, region.Bottom + 6, scale: 1F);
+        }
+    }
+
+    private static void AssertReviewedRegions(
+        IReadOnlyDictionary<int, RectangleF> actual,
+        IReadOnlyDictionary<int, RectangleF> expected)
+    {
+        foreach (var (button, expectedRegion) in expected)
+        {
+            Assert.True(actual.TryGetValue(button, out var actualRegion), $"Button {button} has no region.");
+            Assert.Equal(expectedRegion, actualRegion);
         }
     }
 

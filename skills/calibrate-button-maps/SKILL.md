@@ -18,6 +18,7 @@ Build the region catalog from the template's native pixels, then prove the catal
 
    ```json
    {
+     "image_size": [1180, 748],
      "expected_buttons": [1, 2, 3],
      "regions": {
        "1": [120, 80, 210, 24],
@@ -45,9 +46,12 @@ The script requires Python and Pillow. If Pillow is unavailable, report that dep
 python scripts/region_tool.py scan controller.png --crop 850,495,1145,568
 python scripts/region_tool.py validate controller.png regions.json
 python scripts/region_tool.py preview controller.png regions.json region-preview.png
+python -m unittest discover tests
 ```
 
 Adjust `--threshold`, `--min-row-fraction`, and `--min-column-fraction` when the grid is gray, antialiased, or broken by artwork. Repeat scans with smaller crops before lowering thresholds enough to admit unrelated image features.
+
+The manifest's `image_size` is required. `image_sha256` is optional and pins the regions to one exact revision of the source image. Preview refuses to replace either input or an existing output; pass `--force` only when intentionally replacing a previously generated preview.
 
 ## Acceptance
 

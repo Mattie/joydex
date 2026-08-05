@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
+import os
 import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -17,6 +20,21 @@ except ImportError as error:  # pragma: no cover - exercised only without the de
 
 
 Rect = tuple[float, float, float, float]
+ImageSize = tuple[int, int]
+
+
+def reject_json_constant(value: str) -> None:
+    """Reject JSON extensions such as NaN and Infinity."""
+    raise ValueError(f"manifest contains a non-finite number: {value}")
+
+
+def sha256_file(path: Path) -> str:
+    """Return the lowercase SHA-256 digest for a file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def parse_crop(value: str) -> tuple[int, int, int, int]:
@@ -100,12 +118,35 @@ def scan_lines(
     }
 
 
-def load_manifest(path: Path) -> tuple[list[int], dict[int, Rect]]:
+def load_manifest(path: Path) -> tuple[ImageSize, str | None, list[int], dict[int, Rect]]:
     """Load and type-check a button-region manifest."""
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"), parse_constant=reject_json_constant)
+    if not isinstance(data, dict):
+        raise ValueError("manifest must be a JSON object")
+
+    image_size_raw = data.get("image_size")
+    if (
+        not isinstance(image_size_raw, list)
+        or len(image_size_raw) != 2
+        or not all(isinstance(value, int) and not isinstance(value, bool) and value > 0 for value in image_size_raw)
+    ):
+        raise ValueError("image_size must be [width, height] using positive integers")
+    image_size = (image_size_raw[0], image_size_raw[1])
+
+    image_sha256_raw = data.get("image_sha256")
+    if image_sha256_raw is not None and (
+        not isinstance(image_sha256_raw, str)
+        or len(image_sha256_raw) != 64
+        or any(character not in "0123456789abcdefABCDEF" for character in image_sha256_raw)
+    ):
+        raise ValueError("image_sha256 must be a 64-character hexadecimal string")
+    image_sha256 = image_sha256_raw.lower() if image_sha256_raw is not None else None
+
     expected_raw = data.get("expected_buttons")
     regions_raw = data.get("regions")
-    if not isinstance(expected_raw, list) or not all(isinstance(button, int) for button in expected_raw):
+    if not isinstance(expected_raw, list) or not all(
+        isinstance(button, int) and not isinstance(button, bool) for button in expected_raw
+    ):
         raise ValueError("expected_buttons must be an array of integers")
     if not isinstance(regions_raw, dict):
         raise ValueError("regions must be an object keyed by button number")
@@ -116,23 +157,41 @@ def load_manifest(path: Path) -> tuple[list[int], dict[int, Rect]]:
             button = int(raw_button)
         except (TypeError, ValueError) as error:
             raise ValueError(f"invalid region key: {raw_button!r}") from error
-        if (
-            not isinstance(raw_rect, list)
-            or len(raw_rect) != 4
-            or not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in raw_rect)
-        ):
+        if not isinstance(raw_rect, list) or len(raw_rect) != 4:
             raise ValueError(f"button {button} region must be [x, y, width, height]")
-        regions[button] = tuple(float(value) for value in raw_rect)  # type: ignore[assignment]
-    return expected_raw, regions
+        coordinates: list[float] = []
+        for value in raw_rect:
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(f"button {button} region must be [x, y, width, height]")
+            try:
+                coordinate = float(value)
+            except OverflowError as error:
+                raise ValueError(f"button {button} region contains a non-finite number") from error
+            if not math.isfinite(coordinate):
+                raise ValueError(f"button {button} region contains a non-finite number")
+            coordinates.append(coordinate)
+        regions[button] = tuple(coordinates)  # type: ignore[assignment]
+    return image_size, image_sha256, expected_raw, regions
 
 
 def validate_regions(image_path: Path, manifest_path: Path) -> dict[str, Any]:
     """Check expected coverage, uniqueness, dimensions, and image bounds."""
-    expected, regions = load_manifest(manifest_path)
+    expected_image_size, expected_image_sha256, expected, regions = load_manifest(manifest_path)
     with Image.open(image_path) as image:
         width, height = image.size
 
     errors: list[str] = []
+    if expected_image_size != (width, height):
+        errors.append(
+            f"manifest image_size {expected_image_size[0]}x{expected_image_size[1]} "
+            f"does not match image {width}x{height}"
+        )
+    if expected_image_sha256 is not None:
+        actual_image_sha256 = sha256_file(image_path)
+        if expected_image_sha256 != actual_image_sha256:
+            errors.append(
+                f"manifest image_sha256 {expected_image_sha256} does not match image {actual_image_sha256}"
+            )
     if len(expected) != len(set(expected)):
         errors.append("expected_buttons contains duplicates")
     expected_set = set(expected)
@@ -165,12 +224,32 @@ def validate_regions(image_path: Path, manifest_path: Path) -> dict[str, Any]:
     }
 
 
-def preview_regions(image_path: Path, manifest_path: Path, output_path: Path) -> dict[str, Any]:
+def paths_refer_to_same_file(left: Path, right: Path) -> bool:
+    """Compare paths safely even when an output is a symlink or hard link."""
+    if os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve())):
+        return True
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
+def validate_output_path(image_path: Path, manifest_path: Path, output_path: Path, force: bool) -> None:
+    """Prevent previews from replacing either input or an existing output by accident."""
+    for source_path, source_name in ((image_path, "source image"), (manifest_path, "manifest")):
+        if paths_refer_to_same_file(output_path, source_path):
+            raise ValueError(f"preview output must differ from the {source_name}: {source_path}")
+    if output_path.exists() and not force:
+        raise ValueError(f"preview output already exists: {output_path}; pass --force to replace it")
+
+
+def preview_regions(image_path: Path, manifest_path: Path, output_path: Path, force: bool = False) -> dict[str, Any]:
     """Render translucent numbered regions over a copy of the source image."""
+    validate_output_path(image_path, manifest_path, output_path, force)
     validation = validate_regions(image_path, manifest_path)
     if not validation["valid"]:
         raise ValueError("manifest is invalid; run validate before preview")
-    _, regions = load_manifest(manifest_path)
+    _, _, _, regions = load_manifest(manifest_path)
 
     with Image.open(image_path) as opened:
         base = opened.convert("RGBA")
@@ -186,7 +265,12 @@ def preview_regions(image_path: Path, manifest_path: Path, output_path: Path) ->
         right = int(round(x + width)) - 1
         bottom = int(round(y + height)) - 1
         red, green, blue = palette[index % len(palette)]
-        draw.rectangle((left, top, right, bottom), fill=(red, green, blue, 52), outline=(red, green, blue, 255), width=2)
+        draw.rectangle(
+            (left, top, right, bottom),
+            fill=(red, green, blue, 52),
+            outline=(red, green, blue, 255),
+            width=2,
+        )
         label = str(button)
         label_box = draw.textbbox((0, 0), label, font=font)
         label_width = label_box[2] - label_box[0]
@@ -231,6 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("image", type=Path)
     preview.add_argument("manifest", type=Path)
     preview.add_argument("output", type=Path)
+    preview.add_argument("--force", action="store_true", help="replace an existing preview output")
     return parser
 
 
@@ -257,7 +342,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             write_result(result)
             return 0 if result["valid"] else 1
         else:
-            result = preview_regions(args.image, args.manifest, args.output)
+            result = preview_regions(args.image, args.manifest, args.output, args.force)
         write_result(result)
         return 0
     except (OSError, ValueError, json.JSONDecodeError) as error:
