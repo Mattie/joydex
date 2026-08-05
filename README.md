@@ -147,7 +147,7 @@ The checked-in [advanced configuration](config/joydex.advanced.example.json) is 
 
 ### Custom button-map images
 
-The repository includes a small [`calibrate-button-maps`](skills/calibrate-button-maps/SKILL.md) agent skill for adapting Joydex to another controller or repairing a shifted label region. Copy the skill folder into your agent's skill directory, or point the agent directly at its `SKILL.md`. The bundled utility scans likely table borders, validates complete in-bounds region manifests, and renders numbered previews for visual review. Its image commands require Python and Pillow.
+The repository includes a small [`calibrate-button-maps`](skills/calibrate-button-maps/SKILL.md) agent skill for adapting Joydex to another controller or repairing a shifted label region. Give this skill to your agent to help it build these dynamic button map diagrams.
 
 ## Experimental wireless touchscreen
 
