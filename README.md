@@ -66,7 +66,7 @@ FWIW, the checked-in code demonstrates:
 - Banked mappings for VIRPIL's five-way shift profile, where the dial changes the logical button range instead of emitting its own button event.
 - A command catalog that resolves Codex's current shortcuts from `%USERPROFILE%\.codex\keybindings.json` immediately before dispatch.
 - Chords, sequences, held dictation push-to-talk modifiers, mouse-wheel actions, and safe cleanup of injected key state.
-- Experimental live Voice Chat controls for toggling and explicitly ending a call, including maintained-switch bindings.
+- Experimental live Voice Chat controls for toggling and explicitly ending a call, including maintained-switch bindings. The maintained-switch flow was verified on physical VIRPIL hardware on 2026-08-05.
 - Foreground-process and simulator guards around every dispatched action.
 - Dry-run inspection, hot-plug recovery, configuration validation, and a floating hardware map.
 
