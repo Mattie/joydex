@@ -1,0 +1,4 @@
+interface:
+  display_name: "Calibrate Button Maps"
+  short_description: "Measure, validate, and preview button overlays"
+  default_prompt: "Use $calibrate-button-maps to align and verify the regions on my controller button-map image."
