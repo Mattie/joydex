@@ -60,13 +60,13 @@ public sealed class CodexKeybindingServiceTests
     }
 
     [Fact]
-    public async Task VoiceChatUsesTheVerifiedInWindowToggle()
+    public async Task StartVoiceChatIgnoresTheLegacyRealtimeVoiceBinding()
     {
         var fixture = CreateFixture(
             Entry("realtimeVoice", "Ctrl+Alt+Shift+V"));
         await using var service = await fixture.StartAsync();
 
-        var resolution = await service.ResolveAsync(CodexAction.ToggleVoiceChat, CancellationToken.None);
+        var resolution = await service.ResolveAsync(CodexAction.StartVoiceChat, CancellationToken.None);
 
         Assert.Equal("composer.startVoiceMode", resolution.CommandId);
         Assert.Equal("Ctrl+Shift+V", resolution.Sequence!.NormalizedText);

@@ -226,7 +226,7 @@ public sealed class ConfigValidatorTests
     }
 
     [Fact]
-    public void AcceptsPressAndReleaseBindingsForVoiceChatSwitches()
+    public void AcceptsMaintainedVoiceChatSwitchBindings()
     {
         var config = CreateConfig(
             new ButtonBinding
@@ -243,14 +243,14 @@ public sealed class ConfigValidatorTests
                 Bank = "work",
                 Button = 4,
                 Trigger = "release",
-                Action = "voice-chat",
+                Action = "end-voice-chat",
             });
 
         Assert.Empty(ConfigValidator.Validate(config));
     }
 
     [Fact]
-    public void AcceptsReleaseBindingForEndingVoiceChat()
+    public void RejectsReleaseBindingForStartingVoiceChat()
     {
         var config = CreateConfig(
             new ButtonBinding
@@ -259,10 +259,11 @@ public sealed class ConfigValidatorTests
                 Bank = "work",
                 Button = 4,
                 Trigger = "release",
-                Action = "end-voice-chat",
+                Action = "voice-chat",
             });
 
-        Assert.Empty(ConfigValidator.Validate(config));
+        var error = Assert.Single(ConfigValidator.Validate(config));
+        Assert.Contains("cannot use a release trigger", error, StringComparison.Ordinal);
     }
 
     private static CompanionConfig CreateConfig(params ButtonBinding[] bindings) => new()

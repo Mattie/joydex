@@ -180,7 +180,6 @@ public static class ConfigValidator
                 && action is not (
                     CodexAction.PushToTalk
                     or CodexAction.ButtonMap
-                    or CodexAction.ToggleVoiceChat
                     or CodexAction.EndVoiceChat))
             {
                 errors.Add($"binding '{binding.Name}' cannot use a release trigger with action '{binding.Action}'");
