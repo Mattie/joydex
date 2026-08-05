@@ -4,7 +4,7 @@ This file records the major capabilities and fixes added since Joydex was first 
 
 ## 2026-08-05
 
-- Added a Voice Chat microphone mute toggle action backed by Codex's current `realtimeVoice.toggleMicrophoneMute` command.
+- Added a Voice Chat microphone mute toggle action backed by Codex's current `realtimeVoice.toggleMicrophoneMute` command, verified to mute and unmute an active call on physical VIRPIL hardware.
 - Verified the experimental maintained Voice Chat switch on physical VIRPIL hardware: switching on opens Voice Chat, and switching off ends the active call.
 
 ## 2026-07-27
