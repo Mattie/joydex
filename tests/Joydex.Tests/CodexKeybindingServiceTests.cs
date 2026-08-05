@@ -60,6 +60,34 @@ public sealed class CodexKeybindingServiceTests
     }
 
     [Fact]
+    public async Task StartVoiceChatIgnoresTheLegacyRealtimeVoiceBinding()
+    {
+        var fixture = CreateFixture(
+            Entry("realtimeVoice", "Ctrl+Alt+Shift+V"));
+        await using var service = await fixture.StartAsync();
+
+        var resolution = await service.ResolveAsync(CodexAction.StartVoiceChat, CancellationToken.None);
+
+        Assert.Equal("composer.startVoiceMode", resolution.CommandId);
+        Assert.Equal("Ctrl+Shift+V", resolution.Sequence!.NormalizedText);
+        Assert.Equal(CodexBindingSource.Default, resolution.Source);
+    }
+
+    [Fact]
+    public async Task EndVoiceChatUsesTheConfiguredShortcut()
+    {
+        var fixture = CreateFixture(
+            Entry("realtimeVoice.endCall", "Ctrl+Alt+Shift+G"));
+        await using var service = await fixture.StartAsync();
+
+        var resolution = await service.ResolveAsync(CodexAction.EndVoiceChat, CancellationToken.None);
+
+        Assert.Equal("realtimeVoice.endCall", resolution.CommandId);
+        Assert.Equal("Ctrl+Alt+Shift+G", resolution.Sequence!.NormalizedText);
+        Assert.Equal(CodexBindingSource.User, resolution.Source);
+    }
+
+    [Fact]
     public async Task NormalizesLegacyCommandAliases()
     {
         var fixture = CreateFixture(Entry("newThread", "Ctrl+Alt+N"));

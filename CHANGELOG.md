@@ -2,6 +2,10 @@
 
 This file records the major capabilities and fixes added since Joydex was first uploaded to GitHub. Entries are grouped by date because the project has not used versioned releases yet. New entries go at the top.
 
+## 2026-08-05
+
+- Verified the experimental maintained Voice Chat switch on physical VIRPIL hardware: switching on opens Voice Chat, and switching off ends the active call.
+
 ## 2026-07-27
 
 - Added an experimental direct ESPHome touchscreen example for the
@@ -13,6 +17,7 @@ This file records the major capabilities and fixes added since Joydex was first 
 ## 2026-07-25
 
 - Promoted the earliest M1 overflow task into any newly empty M2-M4 primary position after a five-second dark pause, with the remaining overflow tasks compacted in their existing order.
+- Added experimental live Voice Chat controls for starting and explicitly ending a call, including maintained-switch bindings.
 
 ## 2026-07-24
 

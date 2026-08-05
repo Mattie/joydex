@@ -30,6 +30,8 @@ public enum CodexAction
     NavigateForward,
     ToggleSidebar,
     OpenSkills,
+    StartVoiceChat,
+    EndVoiceChat,
     Dictation,
     OpenWorkingDirectory,
 }
@@ -67,6 +69,8 @@ public static class CodexActionCatalog
             ["navigate-forward"] = CodexAction.NavigateForward,
             ["toggle-sidebar"] = CodexAction.ToggleSidebar,
             ["open-skills"] = CodexAction.OpenSkills,
+            ["voice-chat"] = CodexAction.StartVoiceChat,
+            ["end-voice-chat"] = CodexAction.EndVoiceChat,
             ["dictation"] = CodexAction.Dictation,
             ["open"] = CodexAction.OpenWorkingDirectory,
         };

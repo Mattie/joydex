@@ -225,6 +225,47 @@ public sealed class ConfigValidatorTests
         Assert.Empty(ConfigValidator.Validate(config));
     }
 
+    [Fact]
+    public void AcceptsMaintainedVoiceChatSwitchBindings()
+    {
+        var config = CreateConfig(
+            new ButtonBinding
+            {
+                Name = "voice-on",
+                Bank = "work",
+                Button = 4,
+                Trigger = "press",
+                Action = "voice-chat",
+            },
+            new ButtonBinding
+            {
+                Name = "voice-off",
+                Bank = "work",
+                Button = 4,
+                Trigger = "release",
+                Action = "end-voice-chat",
+            });
+
+        Assert.Empty(ConfigValidator.Validate(config));
+    }
+
+    [Fact]
+    public void RejectsReleaseBindingForStartingVoiceChat()
+    {
+        var config = CreateConfig(
+            new ButtonBinding
+            {
+                Name = "voice-off",
+                Bank = "work",
+                Button = 4,
+                Trigger = "release",
+                Action = "voice-chat",
+            });
+
+        var error = Assert.Single(ConfigValidator.Validate(config));
+        Assert.Contains("cannot use a release trigger", error, StringComparison.Ordinal);
+    }
+
     private static CompanionConfig CreateConfig(params ButtonBinding[] bindings) => new()
     {
         BankSelectors = new Dictionary<string, int> { ["work"] = 10 },
