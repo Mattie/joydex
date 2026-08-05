@@ -173,6 +173,7 @@ internal sealed class ButtonMapCanvas : Control
     private static readonly IReadOnlyDictionary<int, RectangleF> ButtonRegions = CreateButtonRegions();
     private static readonly Size AlphaTemplateSize = new(1180, 748);
     private const string AlphaTemplateAssetPath = "Assets/alpha-warbrd-button-map.png";
+    private static readonly IReadOnlyDictionary<int, RectangleF> AlphaButtonRegions = CreateAlphaButtonRegions();
     private readonly Bitmap? _templateBitmap;
     private readonly Size _templateSize;
     private readonly IReadOnlyDictionary<int, RectangleF> _buttonRegions;
@@ -198,7 +199,7 @@ internal sealed class ButtonMapCanvas : Control
             string.Equals(candidate.Id, deviceId, StringComparison.OrdinalIgnoreCase));
         _deviceId = deviceId;
         _isCm3 = !string.Equals(device.ButtonMapTemplate, "alpha-warbrd", StringComparison.OrdinalIgnoreCase);
-        _buttonRegions = _isCm3 ? ButtonRegions : CreateAlphaButtonRegions();
+        _buttonRegions = _isCm3 ? ButtonRegions : AlphaButtonRegions;
         _labels = BuildLabels(normalized, deviceId);
         _templateBitmap = templateBitmap;
         _templateSize = _templateBitmap?.Size ?? (_isCm3 ? CanonicalTemplateSize : AlphaTemplateSize);
@@ -215,9 +216,18 @@ internal sealed class ButtonMapCanvas : Control
             CompanionConfigNormalizer.Normalize(config).Devices[0].Id,
             templateBitmap);
 
+    internal static ButtonMapCanvas CreateWithTemplateForTesting(
+        CompanionConfig config,
+        string deviceId,
+        Bitmap templateBitmap) => new(config, deviceId, templateBitmap);
+
     internal static Size CanonicalTemplateSize => new(TemplateWidth, TemplateHeight);
 
     internal static IReadOnlyDictionary<int, RectangleF> Cm3ButtonRegionsForTesting => ButtonRegions;
+
+    internal static IReadOnlyDictionary<int, RectangleF> AlphaButtonRegionsForTesting => AlphaButtonRegions;
+
+    internal static Size AlphaTemplateSizeForTesting => AlphaTemplateSize;
 
     public void UpdateConfig(CompanionConfig config)
     {
@@ -848,14 +858,15 @@ internal sealed class ButtonMapCanvas : Control
         var regions = new Dictionary<int, RectangleF>();
         AddAlphaRows(regions, [14, 15, 16, 17, 13], 93, 75, 306, 24);
         AddAlphaRows(regions, [8, 9, 10, 11, 7], 93, 245, 306, 24);
-        AddAlphaRows(regions, [5], 93, 459, 306, 25);
+        AddAlphaRows(regions, [5], 93, 459, 306, 24);
         AddAlphaRows(regions, [12, 6], 495, 75, 710, 24);
         AddAlphaRows(regions, [26, 27, 28, 29, 25], 496, 581, 710, 24);
         AddAlphaRows(regions, [24, 23, 21, 22], 923, 75, 1136, 24);
         AddAlphaRows(regions, [19, 20, 18], 923, 228, 1136, 24);
-        AddAlphaRows(regions, [3, 4], 923, 346, 1136, 25);
-        AddAlphaRows(regions, [1, 2], 923, 443, 1136, 25);
-        AddAlphaRows(regions, [30], 923, 535, 1136, 30);
+        AddAlphaRows(regions, [3, 4], 923, 346, 1136, 24);
+        AddAlphaRows(regions, [1], 923, 443, 1136, 24);
+        AddAlphaRows(regions, [2], 923, 468, 1136, 24);
+        AddAlphaRows(regions, [30], 923, 535, 1136, 24);
         AddAlphaRows(regions, [31], 923, 624, 1136, 25);
         return regions;
     }
