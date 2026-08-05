@@ -33,6 +33,7 @@ public sealed class CodexActionExecutorTests
         { CodexAction.OpenSkills, "openSkills" },
         { CodexAction.StartVoiceChat, "composer.startVoiceMode" },
         { CodexAction.EndVoiceChat, "realtimeVoice.endCall" },
+        { CodexAction.ToggleVoiceChatMicrophone, "realtimeVoice.toggleMicrophoneMute" },
         { CodexAction.Dictation, "composer.startDictation" },
         { CodexAction.OpenWorkingDirectory, "copyWorkingDirectory" },
     };
@@ -63,6 +64,7 @@ public sealed class CodexActionExecutorTests
         CodexAction.OpenSkills,
         CodexAction.StartVoiceChat,
         CodexAction.EndVoiceChat,
+        CodexAction.ToggleVoiceChatMicrophone,
         CodexAction.Dictation,
     };
 

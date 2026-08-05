@@ -88,6 +88,22 @@ public sealed class CodexKeybindingServiceTests
     }
 
     [Fact]
+    public async Task ToggleVoiceChatMicrophoneUsesTheConfiguredShortcut()
+    {
+        var fixture = CreateFixture(
+            Entry("realtimeVoice.toggleMicrophoneMute", "Ctrl+Alt+Shift+M"));
+        await using var service = await fixture.StartAsync();
+
+        var resolution = await service.ResolveAsync(
+            CodexAction.ToggleVoiceChatMicrophone,
+            CancellationToken.None);
+
+        Assert.Equal("realtimeVoice.toggleMicrophoneMute", resolution.CommandId);
+        Assert.Equal("Ctrl+Alt+Shift+M", resolution.Sequence!.NormalizedText);
+        Assert.Equal(CodexBindingSource.User, resolution.Source);
+    }
+
+    [Fact]
     public async Task NormalizesLegacyCommandAliases()
     {
         var fixture = CreateFixture(Entry("newThread", "Ctrl+Alt+N"));

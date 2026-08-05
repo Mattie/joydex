@@ -32,6 +32,7 @@ public enum CodexAction
     OpenSkills,
     StartVoiceChat,
     EndVoiceChat,
+    ToggleVoiceChatMicrophone,
     Dictation,
     OpenWorkingDirectory,
 }
@@ -71,6 +72,7 @@ public static class CodexActionCatalog
             ["open-skills"] = CodexAction.OpenSkills,
             ["voice-chat"] = CodexAction.StartVoiceChat,
             ["end-voice-chat"] = CodexAction.EndVoiceChat,
+            ["toggle-voice-mic"] = CodexAction.ToggleVoiceChatMicrophone,
             ["dictation"] = CodexAction.Dictation,
             ["open"] = CodexAction.OpenWorkingDirectory,
         };
