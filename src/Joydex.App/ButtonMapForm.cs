@@ -173,6 +173,7 @@ internal sealed class ButtonMapCanvas : Control
     private static readonly IReadOnlyDictionary<int, RectangleF> ButtonRegions = CreateButtonRegions();
     private static readonly Size AlphaTemplateSize = new(1180, 748);
     private const string AlphaTemplateAssetPath = "Assets/alpha-warbrd-button-map.png";
+    private static readonly IReadOnlyDictionary<int, RectangleF> AlphaButtonRegions = CreateAlphaButtonRegions();
     private readonly Bitmap? _templateBitmap;
     private readonly Size _templateSize;
     private readonly IReadOnlyDictionary<int, RectangleF> _buttonRegions;
@@ -198,7 +199,7 @@ internal sealed class ButtonMapCanvas : Control
             string.Equals(candidate.Id, deviceId, StringComparison.OrdinalIgnoreCase));
         _deviceId = deviceId;
         _isCm3 = !string.Equals(device.ButtonMapTemplate, "alpha-warbrd", StringComparison.OrdinalIgnoreCase);
-        _buttonRegions = _isCm3 ? ButtonRegions : CreateAlphaButtonRegions();
+        _buttonRegions = _isCm3 ? ButtonRegions : AlphaButtonRegions;
         _labels = BuildLabels(normalized, deviceId);
         _templateBitmap = templateBitmap;
         _templateSize = _templateBitmap?.Size ?? (_isCm3 ? CanonicalTemplateSize : AlphaTemplateSize);
@@ -215,7 +216,20 @@ internal sealed class ButtonMapCanvas : Control
             CompanionConfigNormalizer.Normalize(config).Devices[0].Id,
             templateBitmap);
 
+    internal static ButtonMapCanvas CreateWithTemplateForTesting(
+        CompanionConfig config,
+        string deviceId,
+        Bitmap templateBitmap) => new(config, deviceId, templateBitmap);
+
     internal static Size CanonicalTemplateSize => new(TemplateWidth, TemplateHeight);
+
+    internal static IReadOnlyDictionary<int, RectangleF> Cm3ButtonRegionsForTesting =>
+        ButtonRegions.ToDictionary(pair => pair.Key, pair => pair.Value);
+
+    internal static IReadOnlyDictionary<int, RectangleF> AlphaButtonRegionsForTesting =>
+        AlphaButtonRegions.ToDictionary(pair => pair.Key, pair => pair.Value);
+
+    internal static Size AlphaTemplateSizeForTesting => AlphaTemplateSize;
 
     public void UpdateConfig(CompanionConfig config)
     {
@@ -807,12 +821,16 @@ internal sealed class ButtonMapCanvas : Control
 
         AddRows(regions, [13], 244, 324, 819, 65);
         AddRows(regions, [3, 2, 1], 1844, 342, 2394, 64.7F);
+        AddRows(regions, [4], 1634, 595, 2172, 65);
         AddRows(regions, [7, 6, 5], 966, 679, 1427, 64.7F);
         AddRows(regions, [15, 14], 1811, 767, 2337, 64.5F);
         AddRows(regions, [11, 10, 9, 12, 8], 311, 528, 850, 64.8F);
         AddRows(regions, [20, 17, 18, 19, 16], 2002, 999, 2540, 64.6F);
+        AddRows(regions, [21], 1808, 1347, 2315, 65);
         AddRows(regions, [25, 26, 23, 24, 22], 439, 977, 978, 64.8F);
         AddRows(regions, [30, 31, 28, 29, 27], 2027, 1491, 2566, 64.8F);
+        AddRows(regions, [32], 723, 1323, 1077, 64);
+        AddRows(regions, [33], 745, 1408, 1115, 65);
 
         regions[36] = new RectangleF(160, 1401, 376, 65);
         regions[37] = new RectangleF(160, 1607, 375, 64);
@@ -822,7 +840,8 @@ internal sealed class ButtonMapCanvas : Control
         regions[47] = new RectangleF(160, 2082, 375, 64);
         regions[48] = new RectangleF(160, 2220, 375, 65);
         regions[49] = new RectangleF(160, 2285, 375, 65);
-        regions[34] = new RectangleF(2040, 2003, 375, 65);
+        AddRows(regions, [34], 2024, 1987, 2415, 65);
+        AddRows(regions, [35], 1974, 2207, 2364, 65);
 
         AddRows(regions, [52, 51, 50], 723, 2194, 1119, 65);
         AddRows(regions, [54, 55, 53], 1362, 2194, 1758, 65);
@@ -841,14 +860,15 @@ internal sealed class ButtonMapCanvas : Control
         var regions = new Dictionary<int, RectangleF>();
         AddAlphaRows(regions, [14, 15, 16, 17, 13], 93, 75, 306, 24);
         AddAlphaRows(regions, [8, 9, 10, 11, 7], 93, 245, 306, 24);
-        AddAlphaRows(regions, [5], 93, 459, 306, 25);
+        AddAlphaRows(regions, [5], 93, 459, 306, 24);
         AddAlphaRows(regions, [12, 6], 495, 75, 710, 24);
         AddAlphaRows(regions, [26, 27, 28, 29, 25], 496, 581, 710, 24);
         AddAlphaRows(regions, [24, 23, 21, 22], 923, 75, 1136, 24);
         AddAlphaRows(regions, [19, 20, 18], 923, 228, 1136, 24);
-        AddAlphaRows(regions, [3, 4], 923, 346, 1136, 25);
-        AddAlphaRows(regions, [1, 2], 923, 443, 1136, 25);
-        AddAlphaRows(regions, [30], 923, 535, 1136, 30);
+        AddAlphaRows(regions, [3, 4], 923, 346, 1136, 24);
+        AddAlphaRows(regions, [1], 923, 443, 1136, 24);
+        AddAlphaRows(regions, [2], 923, 468, 1136, 24);
+        AddAlphaRows(regions, [30], 923, 535, 1136, 24);
         AddAlphaRows(regions, [31], 923, 624, 1136, 25);
         return regions;
     }

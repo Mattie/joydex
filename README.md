@@ -145,6 +145,10 @@ The checked-in [advanced configuration](config/joydex.advanced.example.json) is 
 
 <img src="docs/images/joydex-alpha-button-map.png" alt="Joydex Alpha/WarBRD floating button map" width="640">
 
+### Custom button-map images
+
+The repository includes a small [`calibrate-button-maps`](skills/calibrate-button-maps/SKILL.md) agent skill for adapting Joydex to another controller or repairing a shifted label region. Give this skill to your agent to help it build these dynamic button map diagrams.
+
 ## Experimental wireless touchscreen
 
 Joydex also includes an experimental ESPHome example for the
@@ -211,6 +215,7 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 | `src/Joydex.Guardian` | Crash cleanup for active task-status LEDs |
 | `tools/Joydex.Trace` | DirectInput discovery and event tracing |
 | `tests/Joydex.Tests` | Unit and Windows interop coverage |
+| `skills/calibrate-button-maps` | Agent workflow and utility for custom button-map region calibration |
 | `config/joydex.example.json` | Safe, machine-neutral starter configuration |
 | `config/joydex.advanced.example.json` | Sanitized two-controller working example |
 | `docs/` | Case study, setup guides, research notes, and images |
