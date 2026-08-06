@@ -28,6 +28,16 @@ def reject_json_constant(value: str) -> None:
     raise ValueError(f"manifest contains a non-finite number: {value}")
 
 
+def reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object while rejecting repeated source keys."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
+
+
 def sha256_file(path: Path) -> str:
     """Return the lowercase SHA-256 digest for a file."""
     digest = hashlib.sha256()
@@ -86,7 +96,9 @@ def scan_lines(
 ) -> dict[str, Any]:
     """Return likely long dark horizontal and vertical line runs within a crop."""
     with Image.open(image_path) as opened:
-        gray = opened.convert("L")
+        rgba = opened.convert("RGBA")
+        white_background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        gray = Image.alpha_composite(white_background, rgba).convert("L")
         width, height = gray.size
         bounds = crop or (0, 0, width, height)
         x1, y1, x2, y2 = bounds
@@ -120,7 +132,11 @@ def scan_lines(
 
 def load_manifest(path: Path) -> tuple[ImageSize, str | None, list[int], dict[int, Rect]]:
     """Load and type-check a button-region manifest."""
-    data = json.loads(path.read_text(encoding="utf-8"), parse_constant=reject_json_constant)
+    data = json.loads(
+        path.read_text(encoding="utf-8"),
+        parse_constant=reject_json_constant,
+        object_pairs_hook=reject_duplicate_object_keys,
+    )
     if not isinstance(data, dict):
         raise ValueError("manifest must be a JSON object")
 
@@ -157,6 +173,8 @@ def load_manifest(path: Path) -> tuple[ImageSize, str | None, list[int], dict[in
             button = int(raw_button)
         except (TypeError, ValueError) as error:
             raise ValueError(f"invalid region key: {raw_button!r}") from error
+        if button in regions:
+            raise ValueError(f"duplicate region key: {raw_button!r} also identifies button {button}")
         if not isinstance(raw_rect, list) or len(raw_rect) != 4:
             raise ValueError(f"button {button} region must be [x, y, width, height]")
         coordinates: list[float] = []

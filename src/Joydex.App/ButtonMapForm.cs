@@ -223,9 +223,11 @@ internal sealed class ButtonMapCanvas : Control
 
     internal static Size CanonicalTemplateSize => new(TemplateWidth, TemplateHeight);
 
-    internal static IReadOnlyDictionary<int, RectangleF> Cm3ButtonRegionsForTesting => ButtonRegions;
+    internal static IReadOnlyDictionary<int, RectangleF> Cm3ButtonRegionsForTesting =>
+        ButtonRegions.ToDictionary(pair => pair.Key, pair => pair.Value);
 
-    internal static IReadOnlyDictionary<int, RectangleF> AlphaButtonRegionsForTesting => AlphaButtonRegions;
+    internal static IReadOnlyDictionary<int, RectangleF> AlphaButtonRegionsForTesting =>
+        AlphaButtonRegions.ToDictionary(pair => pair.Key, pair => pair.Value);
 
     internal static Size AlphaTemplateSizeForTesting => AlphaTemplateSize;
 

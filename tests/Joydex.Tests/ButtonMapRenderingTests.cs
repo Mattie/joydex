@@ -76,6 +76,23 @@ public sealed class ButtonMapRenderingTests
     }
 
     [Fact]
+    public void TestingRegionCatalogsAreIndependentSnapshots()
+    {
+        var cm3Snapshot = Assert.IsAssignableFrom<IDictionary<int, RectangleF>>(
+            ButtonMapCanvas.Cm3ButtonRegionsForTesting);
+        var alphaSnapshot = Assert.IsAssignableFrom<IDictionary<int, RectangleF>>(
+            ButtonMapCanvas.AlphaButtonRegionsForTesting);
+        var expectedCm3 = ButtonMapCanvas.Cm3ButtonRegionsForTesting[1];
+        var expectedAlpha = ButtonMapCanvas.AlphaButtonRegionsForTesting[1];
+
+        cm3Snapshot[1] = RectangleF.Empty;
+        alphaSnapshot[1] = RectangleF.Empty;
+
+        Assert.Equal(expectedCm3, ButtonMapCanvas.Cm3ButtonRegionsForTesting[1]);
+        Assert.Equal(expectedAlpha, ButtonMapCanvas.AlphaButtonRegionsForTesting[1]);
+    }
+
+    [Fact]
     public void LoaderRejectsMismatchedBitmapsBeforeTheyCanMisalignLabels()
     {
         var root = Path.Combine(Path.GetTempPath(), $"virpil-button-map-{Guid.NewGuid():N}");

@@ -78,6 +78,26 @@ class RegionToolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "array of integers"):
             region_tool.load_manifest(self.manifest_path)
 
+    def test_manifest_rejects_repeated_source_region_keys(self) -> None:
+        self.manifest_path.write_text(
+            '{"image_size":[40,30],"expected_buttons":[1],'
+            '"regions":{"1":[2,3,10,8],"1":[20,12,12,10]}}',
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "duplicate JSON object key: '1'"):
+            region_tool.load_manifest(self.manifest_path)
+
+    def test_manifest_rejects_normalized_region_key_aliases(self) -> None:
+        self.manifest_path.write_text(
+            '{"image_size":[40,30],"expected_buttons":[1],'
+            '"regions":{"1":[2,3,10,8],"01":[20,12,12,10]}}',
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "also identifies button 1"):
+            region_tool.load_manifest(self.manifest_path)
+
     def test_non_object_manifest_returns_a_structured_cli_error(self) -> None:
         self.manifest_path.write_text("[]", encoding="utf-8")
         output = io.StringIO()
@@ -141,6 +161,24 @@ class RegionToolTests(unittest.TestCase):
 
         self.assertEqual(10, result["horizontal_runs"][0]["peak"])
         self.assertEqual(20, result["vertical_runs"][0]["peak"])
+
+    def test_scan_treats_transparent_pixels_as_white(self) -> None:
+        with Image.new("RGBA", (40, 30), (0, 0, 0, 0)) as image:
+            draw = ImageDraw.Draw(image)
+            draw.line((0, 10, 39, 10), fill=(0, 0, 0, 255))
+            draw.line((20, 0, 20, 29), fill=(0, 0, 0, 255))
+            image.save(self.image_path)
+
+        result = region_tool.scan_lines(
+            self.image_path,
+            crop=None,
+            threshold=10,
+            min_row_fraction=0.9,
+            min_column_fraction=0.9,
+        )
+
+        self.assertEqual([10], [run["peak"] for run in result["horizontal_runs"]])
+        self.assertEqual([20], [run["peak"] for run in result["vertical_runs"]])
 
 
 if __name__ == "__main__":
