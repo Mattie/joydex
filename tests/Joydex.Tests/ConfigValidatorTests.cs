@@ -266,6 +266,22 @@ public sealed class ConfigValidatorTests
         Assert.Contains("cannot use a release trigger", error, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AcceptsVoiceChatMicrophoneToggleOnPress()
+    {
+        var config = CreateConfig(
+            new ButtonBinding
+            {
+                Name = "toggle-voice-mic",
+                Bank = "work",
+                Button = 4,
+                Trigger = "press",
+                Action = "toggle-voice-mic",
+            });
+
+        Assert.Empty(ConfigValidator.Validate(config));
+    }
+
     private static CompanionConfig CreateConfig(params ButtonBinding[] bindings) => new()
     {
         BankSelectors = new Dictionary<string, int> { ["work"] = 10 },

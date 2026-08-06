@@ -217,9 +217,9 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 
 ## Versions and Config
 
-Command IDs, Windows defaults, aliases, and precedence behavior were last checked on 2026-08-04 against OpenAI Codex package `26.727.6591.0`, bundled app `26.727.51351`, build `0.146.0-alpha.9.2`.
+Command IDs, Windows defaults, aliases, and precedence behavior were last checked on 2026-08-05 against OpenAI Codex package `26.730.8199.0`, bundled app release `26.730`, build `0.147.0-alpha.1.2`.
 
-The `voice-chat` action uses Codex's current **Toggle voice chat** shortcut. The tested Codex build has no default shortcut for **End Voice Chat**, so assign one in Codex's Keyboard shortcuts before mapping `end-voice-chat` to a maintained switch release.
+The `voice-chat` action uses Codex's current **Toggle voice chat** shortcut. Before mapping `end-voice-chat` or `toggle-voice-mic`, make sure **End Voice Chat** and **Toggle Voice Chat microphone** have shortcuts assigned in Codex's Keyboard shortcuts.
 
 Source builds use `%LOCALAPPDATA%\Joydex\config.json`, with `JOYDEX_CONFIG` and `--config` available for alternate paths. The graphical editor is the normal way to change mappings. Both checked-in example configurations are intended for dry-run exploration and contain no device GUIDs.
 

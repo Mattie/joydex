@@ -85,6 +85,7 @@ internal static class CodexCommandCatalog
         yield return new(CodexAction.OpenSkills, "openSkills", [], "Ctrl+Alt+Shift+S");
         yield return new(CodexAction.StartVoiceChat, "composer.startVoiceMode", ["Ctrl+Shift+V"]);
         yield return new(CodexAction.EndVoiceChat, "realtimeVoice.endCall", []);
+        yield return new(CodexAction.ToggleVoiceChatMicrophone, "realtimeVoice.toggleMicrophoneMute", []);
         yield return new(CodexAction.Dictation, "composer.startDictation", ["Ctrl+Shift+D"]);
         yield return new(CodexAction.OpenWorkingDirectory, "copyWorkingDirectory", ["Ctrl+Shift+C"]);
     }

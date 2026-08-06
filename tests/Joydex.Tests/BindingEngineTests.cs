@@ -82,6 +82,33 @@ public sealed class BindingEngineTests
     }
 
     [Fact]
+    public void ResolvesVoiceMicrophoneToggleFromItsPublicActionId()
+    {
+        var engine = new BindingEngine(new CompanionConfig
+        {
+            Bindings =
+            [
+                new ButtonBinding
+                {
+                    Name = "voice-microphone",
+                    Bank = CompanionConfig.AlwaysBank,
+                    Button = 32,
+                    Action = "toggle-voice-mic",
+                },
+            ],
+        });
+        var now = DateTimeOffset.UtcNow;
+
+        var request = Assert.Single(engine.Resolve(
+            new JoystickSnapshot(now, new bool[32], [-1], [0]),
+            [new JoystickEvent(JoystickEventKind.ButtonPressed, ControlIndex: 31, Value: 1)],
+            now));
+
+        Assert.Equal(CodexAction.ToggleVoiceChatMicrophone, request.Action);
+        Assert.Equal("toggle-voice-mic", CodexActionCatalog.GetId(request.Action));
+    }
+
+    [Fact]
     public void ReasoningEncoderPulsesAreNotDebounced()
     {
         var engine = new BindingEngine(new CompanionConfig
