@@ -54,7 +54,7 @@ public sealed class ButtonMapRenderingTests
     }
 
     [Fact]
-    public void ReviewedCm3CoordinatesMatchTheRuntimeCatalog()
+    public void AuditedCm3CoordinateSubsetMatchesTheRuntimeCatalog()
     {
         AssertReviewedRegions(ButtonMapCanvas.Cm3ButtonRegionsForTesting, ExpectedRegions);
     }
@@ -70,7 +70,7 @@ public sealed class ButtonMapRenderingTests
     }
 
     [Fact]
-    public void ReviewedAlphaCoordinatesMatchTheRuntimeCatalog()
+    public void AuditedAlphaCoordinateSubsetMatchesTheRuntimeCatalog()
     {
         AssertReviewedRegions(ButtonMapCanvas.AlphaButtonRegionsForTesting, ExpectedAlphaRegions);
     }

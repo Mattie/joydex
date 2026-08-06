@@ -47,6 +47,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def flatten_onto_white(image: Image.Image) -> Image.Image:
+    """Return an opaque RGBA copy with transparent pixels composited over white."""
+    rgba = image.convert("RGBA")
+    white_background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+    return Image.alpha_composite(white_background, rgba)
+
+
 def parse_crop(value: str) -> tuple[int, int, int, int]:
     """Parse an exclusive x1,y1,x2,y2 crop specification."""
     try:
@@ -96,9 +103,7 @@ def scan_lines(
 ) -> dict[str, Any]:
     """Return likely long dark horizontal and vertical line runs within a crop."""
     with Image.open(image_path) as opened:
-        rgba = opened.convert("RGBA")
-        white_background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
-        gray = Image.alpha_composite(white_background, rgba).convert("L")
+        gray = flatten_onto_white(opened).convert("L")
         width, height = gray.size
         bounds = crop or (0, 0, width, height)
         x1, y1, x2, y2 = bounds
@@ -298,7 +303,8 @@ def preview_regions(image_path: Path, manifest_path: Path, output_path: Path, fo
         draw.text((left + 6, top + 4), label, fill=(255, 255, 255, 255), font=font)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.alpha_composite(base, overlay).convert("RGB").save(output_path)
+    annotated = Image.alpha_composite(base, overlay)
+    flatten_onto_white(annotated).convert("RGB").save(output_path)
     return {"output": str(output_path), "region_count": len(regions), "image_size": list(base.size)}
 
 

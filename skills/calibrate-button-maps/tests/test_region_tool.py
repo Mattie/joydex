@@ -144,6 +144,17 @@ class RegionToolTests(unittest.TestCase):
         with Image.open(output_path) as preview:
             self.assertEqual((40, 30), preview.size)
 
+    def test_preview_flattens_transparent_pixels_onto_white(self) -> None:
+        with Image.new("RGBA", (40, 30), (0, 0, 0, 0)) as image:
+            image.save(self.image_path)
+        output_path = self.root / "transparent-preview.png"
+
+        region_tool.preview_regions(self.image_path, self.manifest_path, output_path)
+
+        with Image.open(output_path) as preview:
+            self.assertEqual("RGB", preview.mode)
+            self.assertEqual((255, 255, 255), preview.getpixel((39, 29)))
+
     def test_scan_finds_dark_horizontal_and_vertical_runs(self) -> None:
         with Image.new("RGB", (40, 30), "white") as image:
             draw = ImageDraw.Draw(image)
