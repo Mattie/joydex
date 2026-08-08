@@ -175,7 +175,7 @@ Assistant and MQTT are not required.
 
 Screenshot of it working (Magic card for scale):
 
-<img src="docs/images/joydex-esp32-4848s040c-in-action.jpg" alt="ESP32-4848S040C_I running the Joydex bridge-console skin beside a Magic: The Gathering card for scale" width="640">
+<img src="docs/images/joydex-esp32-4848s040c-in-action2.jpg" alt="ESP32-4848S040C_I running the current Joydex task page with workspace labels and five bottom controls beside a Magic: The Gathering card for scale" width="640">
 
 The example was physically tested July 25–27, 2026 on one panel purchased from this [AliExpress listing](https://www.aliexpress.us/item/3256808028364930.html).
 I have no affiliation with the seller, it could be malware-laden, I dunno, but I've bought a number of these for home assistant projects and use them in different spots. YMMV. Listings and board
