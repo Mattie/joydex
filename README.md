@@ -115,7 +115,7 @@ Dim gray means running, yellow means the task needs attention, and low green mea
 This part matches the CM3 throttle, Alpha/WarBRD stick, and VIRPIL Controls LinkTool v3 used for this project. If your hardware differs, adapt the LED mappings before continuing.
 
 1. Connect both VIRPIL devices, then start Joydex. Joydex generates the LinkTool profile while both devices are available.
-2. Open **Testing / Advanced > Task alerts** from the Joydex tray. Choose **Show LED profile**, then load the selected `joydex-linktool.led.json` file in LinkTool.
+2. Open **Testing / Advanced > Task alerts / ignored tasks...** from the Joydex tray. Choose **Show LED profile**, then load the selected `joydex-linktool.led.json` file in LinkTool.
 3. Start LinkTool's telemetry listener on its default UDP endpoint, `127.0.0.1:4123`.
 4. In the same Joydex window, choose **Install / Repair hooks** and confirm the status reads `Hooks: installed`. If Codex marks the new handlers for review, open its Hooks screen and trust the Joydex handlers; untrusted command hooks do not run.
 5. Make sure **Task alerts** is checked in the top level of the Joydex tray menu.

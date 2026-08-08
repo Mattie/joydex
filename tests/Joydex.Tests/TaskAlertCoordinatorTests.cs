@@ -426,6 +426,58 @@ public sealed class TaskAlertCoordinatorTests
     }
 
     [Fact]
+    public async Task DelayedSuppressedWorkspaceEventDoesNotRemoveNewerAssignment()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var ignoredWorkspace = Path.Combine(directory, "ignored");
+        var activeWorkspace = Path.Combine(directory, "active");
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
+            Assert.True(coordinator.AddSuppression(
+                TaskAlertSuppressionScope.Workspace,
+                ignoredWorkspace));
+
+            var delayedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            var activeAt = delayedAt.AddSeconds(1);
+            Assert.True(coordinator.TryPublish(new TaskAlertEvent(
+                CodexLifecycleEvent.UserPromptSubmit,
+                "shared-session",
+                "active-turn",
+                activeAt,
+                Workspace: activeWorkspace)));
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().Assignments.Count == 1,
+                TimeSpan.FromSeconds(3));
+
+            Assert.True(coordinator.TryPublish(new TaskAlertEvent(
+                CodexLifecycleEvent.UserPromptSubmit,
+                "shared-session",
+                "delayed-turn",
+                delayedAt,
+                Workspace: ignoredWorkspace)));
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().RecentEvents?.Count == 2,
+                TimeSpan.FromSeconds(3));
+
+            var snapshot = coordinator.GetSnapshot();
+            var assignment = Assert.Single(snapshot.Assignments);
+            Assert.Equal("shared-session", assignment.SessionId);
+            Assert.Equal("active-turn", assignment.TurnId);
+            Assert.Equal(activeAt, assignment.UpdatedAt);
+            Assert.Equal(
+                TaskAlertSuppression.CreateWorkspaceKey(activeWorkspace),
+                assignment.WorkspaceKey);
+            Assert.Equal(TaskAlertEventResult.Suppressed, snapshot.RecentEvents![^1].Result);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task PersistedWorkspaceSuppressionFiltersRestoredHashedAssignment()
     {
         var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));

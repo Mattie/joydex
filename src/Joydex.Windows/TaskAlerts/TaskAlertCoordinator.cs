@@ -274,12 +274,29 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
                 {
                     var workspace = TaskAlertSuppression.NormalizeWorkspace(taskEvent.Workspace);
                     var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace);
-                    if (IsSuppressedUnsafe(taskEvent.SessionId, workspaceKey))
+                    var taskSuppressed = IsSuppressedUnsafe(
+                        TaskAlertSuppressionScope.Task,
+                        taskEvent.SessionId,
+                        workspaceKey);
+                    var workspaceSuppressed = IsSuppressedUnsafe(
+                        TaskAlertSuppressionScope.Workspace,
+                        taskEvent.SessionId,
+                        workspaceKey);
+                    if (taskSuppressed || workspaceSuppressed)
                     {
-                        var removed = _pool.RemoveAssignments(assignment => string.Equals(
-                            assignment.SessionId,
-                            taskEvent.SessionId,
-                            StringComparison.Ordinal), taskEvent.ReceivedAt);
+                        var removed = _pool.RemoveAssignments(
+                            assignment => string.Equals(
+                                    assignment.SessionId,
+                                    taskEvent.SessionId,
+                                    StringComparison.Ordinal)
+                                && taskEvent.ReceivedAt >= assignment.UpdatedAt
+                                && (taskSuppressed
+                                    || assignment.WorkspaceKey is null
+                                    || string.Equals(
+                                        assignment.WorkspaceKey,
+                                        workspaceKey,
+                                        StringComparison.Ordinal)),
+                            taskEvent.ReceivedAt);
                         AddRecentEventUnsafe(new TaskAlertEventTrace(
                             taskEvent.ReceivedAt,
                             taskEvent.Event,
@@ -418,6 +435,13 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             rule,
             sessionId,
             workspaceKey));
+
+    private bool IsSuppressedUnsafe(
+        TaskAlertSuppressionScope scope,
+        string sessionId,
+        string? workspaceKey) =>
+        (_preferences.Suppressions ?? []).Any(rule => rule.Scope == scope
+            && TaskAlertSuppression.Matches(rule, sessionId, workspaceKey));
 
     private void AddRecentEventUnsafe(TaskAlertEventTrace trace)
     {

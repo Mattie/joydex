@@ -1118,11 +1118,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (status.Contains("pending", StringComparison.OrdinalIgnoreCase)
             || status.Contains("inactive", StringComparison.OrdinalIgnoreCase))
         {
-            _uiContext.Post(_ => _taskAlertsStatusItem.Text = $"Task alerts status... ({status})", null);
+            _uiContext.Post(
+                _ => _taskAlertsStatusItem.Text = $"Task alerts / ignored tasks... ({status})",
+                null);
         }
         else
         {
-            _uiContext.Post(_ => _taskAlertsStatusItem.Text = "Task alerts status...", null);
+            _uiContext.Post(
+                _ => _taskAlertsStatusItem.Text = "Task alerts / ignored tasks...",
+                null);
         }
     }
 
