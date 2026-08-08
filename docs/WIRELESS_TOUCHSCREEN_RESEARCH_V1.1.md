@@ -13,7 +13,7 @@ Windows web listener, Home Assistant, MQTT, and a separate runtime network.
 Joydex only needed a small adapter that:
 
 - projects its four primary task slots into four coarse display states;
-- receives five fixed touch intents;
+- receives five original or fifteen bridge-v2 host-facing touch intents;
 - invokes the existing task-navigation and semantic-action paths;
 - reconnects and restores the complete visible state after an interruption.
 
@@ -26,7 +26,8 @@ The implemented path uses:
 - the ESPHome `GUITION-4848S040` integrated display model;
 - explicit sync timing already proven on the `C_I` variant;
 - GT911 touch and LVGL;
-- four task controls and one PLAN MODE control;
+- four task controls, with either one PLAN MODE control or the bridge-v2
+  PLAN/FAST/SIDE/MUTE command row;
 - Digest-authenticated REST state updates;
 - Digest-authenticated Server-Sent Events for touch;
 - USB for the first flash and password-protected ESPHome OTA afterward.
@@ -86,12 +87,23 @@ The panel exposes these host-facing entities:
 | Entity | Direction | Purpose |
 | --- | --- | --- |
 | `Task 1 State` … `Task 4 State` | Joydex → panel | Writable optimistic selects |
+| `Task 1 Workspace` … `Task 4 Workspace` | Joydex → panel | Bridge-v2 writable text labels containing only display-safe workspace folder names |
 | `Task 1` … `Task 4` | Panel → Joydex | Momentary LVGL-backed binary sensors |
 | `Sidebar` | Panel → Joydex | Legacy wire name for the visible PLAN MODE control |
+| `Fast Mode` | Panel → Joydex | Bridge-v2 Fast Mode command |
+| `Side Chat` | Panel → Joydex | Bridge-v2 Side Chat command |
+| `Voice Mute` | Panel → Joydex | Bridge-v2 Voice Chat microphone command |
+| `Approve` / `Reject` | Panel → Joydex | Bridge-v2 approval workflow commands |
+| `New Task` / `Fork Task` | Panel → Joydex | Bridge-v2 task creation commands |
+| `Previous Task` / `Submit` / `Next Task` | Panel → Joydex | Bridge-v2 task workflow commands |
 | `/events` | Panel → Joydex | ESPHome SSE stream |
 
-The host models the fifth intent as Plan Mode. The firmware retains `Sidebar`
-and `sidebar_pressed` solely for compatibility with the deployed entity name.
+The host models `Sidebar` as Plan Mode. The firmware retains `Sidebar` and
+`sidebar_pressed` solely for compatibility with the deployed entity name.
+Bridge-v2 changes pages with local LVGL actions. The task-page `>` opens TASK
+CONTROLS, and that page's `<` returns to the task page. Neither arrow has a
+binary sensor, so page navigation produces no host intent. The gray final `>`
+is a non-interactive placeholder for a future third page.
 
 ## Touch and state findings
 
@@ -135,8 +147,9 @@ Important behaviors:
 - Host actions are never replayed because state feedback failed.
 
 The adapter owns no task identities. A task press resolves the current slot
-assignment at press time and uses the existing deep-link navigator. PLAN MODE
-uses the existing semantic action executor and its foreground/dry-run policy.
+assignment at press time and uses the existing deep-link navigator. PLAN MODE,
+FAST, SIDE, MUTE, APPROVE, DECLINE, NEW TASK, FORK, PREV, SUBMIT, and NEXT use
+the existing semantic action executor and its foreground/dry-run policy.
 
 ## Security boundary
 
@@ -186,8 +199,9 @@ device enrollment should be reconsidered before adding more controls.
 
 ## Current boundary
 
-The public example supports four primary Joydex task slots and PLAN MODE on the
-tested `ESP32-4848S040C_I` family. It does not claim:
+The public example supports four primary Joydex task slots, PLAN MODE, and an
+opt-in bridge-v2 command row on the tested `ESP32-4848S040C_I` family. It does
+not claim:
 
 - complete Codex sidebar visibility;
 - support for every similarly named 4-inch ESP32 panel;

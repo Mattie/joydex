@@ -127,7 +127,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             CheckOnClick = false,
             Checked = _taskAlerts.GetSnapshot().Enabled,
         };
-        _taskAlertsStatusItem = new ToolStripMenuItem("Task alerts status...", image: null, OnTaskAlertsStatus);
+        _taskAlertsStatusItem = new ToolStripMenuItem("Task alerts / ignored tasks...", image: null, OnTaskAlertsStatus);
         var reloadItem = new ToolStripMenuItem("Reload configuration", image: null, OnReloadConfig);
         var openConfigItem = new ToolStripMenuItem("Open config JSON...", image: null, (_, _) => OpenPath(_configPath));
         var openLogItem = new ToolStripMenuItem("Open log", image: null, (_, _) => OpenPath(_log.Path));
@@ -1118,11 +1118,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (status.Contains("pending", StringComparison.OrdinalIgnoreCase)
             || status.Contains("inactive", StringComparison.OrdinalIgnoreCase))
         {
-            _uiContext.Post(_ => _taskAlertsStatusItem.Text = $"Task alerts status... ({status})", null);
+            _uiContext.Post(
+                _ => _taskAlertsStatusItem.Text = $"Task alerts / ignored tasks... ({status})",
+                null);
         }
         else
         {
-            _uiContext.Post(_ => _taskAlertsStatusItem.Text = "Task alerts status...", null);
+            _uiContext.Post(
+                _ => _taskAlertsStatusItem.Text = "Task alerts / ignored tasks...",
+                null);
         }
     }
 

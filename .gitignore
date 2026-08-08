@@ -12,6 +12,7 @@ __pycache__/
 # Workstation-only agent and scratch data
 /.agents/
 /.codex-dev-logs/
+/.todo/
 /tmp/
 AGENTS.local.md
 AGENTS.override.md

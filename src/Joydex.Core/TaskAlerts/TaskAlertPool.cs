@@ -35,7 +35,8 @@ public sealed class TaskAlertPool
                     assignment.UpdatedAt,
                     assignment.CompleteAfter,
                     pending?.CaptureCorrelated() ?? [],
-                    pending?.UncorrelatedCount ?? 0);
+                    pending?.UncorrelatedCount ?? 0,
+                    assignment.WorkspaceKey);
             })
             .ToArray());
 
@@ -60,6 +61,8 @@ public sealed class TaskAlertPool
                 || string.IsNullOrWhiteSpace(stored.SessionId)
                 || !Enum.IsDefined(stored.State)
                 || stored.UpdatedAt == default
+                || stored.WorkspaceKey is not null
+                    && !TaskAlertSuppression.IsWorkspaceKey(stored.WorkspaceKey)
                 || stored.CompleteAfter is { } completeAfter
                     && (completeAfter == default || completeAfter <= stored.UpdatedAt)
                 || !restoredAssignments.TryAdd(
@@ -70,7 +73,8 @@ public sealed class TaskAlertPool
                         stored.TurnId,
                         stored.State,
                         stored.UpdatedAt,
-                        stored.CompleteAfter))
+                        stored.CompleteAfter,
+                        stored.WorkspaceKey))
                 || !sessions.Add(stored.SessionId))
             {
                 throw new InvalidDataException("The task-alert state contains an invalid assignment.");
@@ -119,13 +123,29 @@ public sealed class TaskAlertPool
         }
 
         Advance(taskEvent.ReceivedAt);
+        var workspace = TaskAlertSuppression.NormalizeWorkspace(taskEvent.Workspace);
+        var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace);
         var existing = _assignments.Values.FirstOrDefault(candidate =>
             string.Equals(candidate.SessionId, taskEvent.SessionId, StringComparison.Ordinal));
         if (taskEvent.Event == CodexLifecycleEvent.ToolCompleted)
         {
-            return existing is not null
-                && taskEvent.ReceivedAt >= existing.UpdatedAt
-                && ApplyToolCompletion(existing, taskEvent);
+            if (existing is null || taskEvent.ReceivedAt < existing.UpdatedAt)
+            {
+                return false;
+            }
+
+            var withWorkspace = existing with
+            {
+                WorkspaceKey = workspaceKey ?? existing.WorkspaceKey,
+                Workspace = workspace ?? existing.Workspace,
+            };
+            var workspaceChanged = withWorkspace != existing;
+            if (workspaceChanged)
+            {
+                _assignments[existing.Slot] = withWorkspace;
+            }
+
+            return ApplyToolCompletion(withWorkspace, taskEvent) || workspaceChanged;
         }
 
         if (existing is null)
@@ -145,7 +165,9 @@ public sealed class TaskAlertPool
                 taskEvent.SessionId,
                 taskEvent.TurnId,
                 TaskAlertState.Running,
-                taskEvent.ReceivedAt);
+                taskEvent.ReceivedAt,
+                WorkspaceKey: workspaceKey,
+                Workspace: workspace);
         }
         else if (taskEvent.ReceivedAt < existing.UpdatedAt)
         {
@@ -189,6 +211,11 @@ public sealed class TaskAlertPool
                 CompleteAfter = null,
             },
             _ => throw new ArgumentOutOfRangeException(nameof(taskEvent)),
+        };
+        updated = updated with
+        {
+            WorkspaceKey = workspaceKey ?? updated.WorkspaceKey,
+            Workspace = workspace ?? updated.Workspace,
         };
 
         if (taskEvent.Event == CodexLifecycleEvent.UserPromptSubmit)
@@ -303,6 +330,46 @@ public sealed class TaskAlertPool
         _backfillAfter.Clear();
         _pendingAttention.Clear();
         return true;
+    }
+
+    public int RemoveAssignments(
+        Predicate<TaskAlertAssignment> predicate,
+        DateTimeOffset removedAt)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+        if (removedAt == default)
+        {
+            throw new ArgumentOutOfRangeException(nameof(removedAt));
+        }
+
+        var removed = _assignments
+            .Where(pair => predicate(pair.Value))
+            .ToArray();
+        if (removed.Length == 0)
+        {
+            return 0;
+        }
+
+        var primaryVacancies = new List<int>();
+        foreach (var pair in removed)
+        {
+            _assignments.Remove(pair.Key);
+            _backfillAfter.Remove(pair.Key);
+            _pendingAttention.Remove(pair.Value.SessionId);
+            if (TaskAlertSlots.Page(pair.Key) == TaskAlertPage.Primary)
+            {
+                primaryVacancies.Add(pair.Key);
+            }
+        }
+
+        TrimBackfillReservations();
+        foreach (var slot in primaryVacancies.Order())
+        {
+            ScheduleBackfill(slot, removedAt);
+        }
+
+        PromoteAndCompactOverflow([]);
+        return removed.Length;
     }
 
     private bool ApplyToolCompletion(TaskAlertAssignment existing, TaskAlertEvent taskEvent)

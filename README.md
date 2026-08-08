@@ -115,7 +115,7 @@ Dim gray means running, yellow means the task needs attention, and low green mea
 This part matches the CM3 throttle, Alpha/WarBRD stick, and VIRPIL Controls LinkTool v3 used for this project. If your hardware differs, adapt the LED mappings before continuing.
 
 1. Connect both VIRPIL devices, then start Joydex. Joydex generates the LinkTool profile while both devices are available.
-2. Open **Testing / Advanced > Task alerts status...** from the Joydex tray. Choose **Show LED profile**, then load the selected `joydex-linktool.led.json` file in LinkTool.
+2. Open **Testing / Advanced > Task alerts / ignored tasks...** from the Joydex tray. Choose **Show LED profile**, then load the selected `joydex-linktool.led.json` file in LinkTool.
 3. Start LinkTool's telemetry listener on its default UDP endpoint, `127.0.0.1:4123`.
 4. In the same Joydex window, choose **Install / Repair hooks** and confirm the status reads `Hooks: installed`. If Codex marks the new handlers for review, open its Hooks screen and trust the Joydex handlers; untrusted command hooks do not run.
 5. Make sure **Task alerts** is checked in the top level of the Joydex tray menu.
@@ -125,7 +125,13 @@ This part matches the CM3 throttle, Alpha/WarBRD stick, and VIRPIL Controls Link
 
 Joydex sends a complete snapshot whenever a task or physical mode changes, and LinkTool holds the matching colors. A read-only VIRPIL Software Link report tells Joydex which M1-M5 position is selected, so turning the dial switches LED pages without writing to controller firmware or profiles.
 
-Task assignments, completion deadlines, and privacy-preserving attention hashes are saved in `%LOCALAPPDATA%\Joydex\task-alert-state.json`. Prompt text, commands, and tool responses are never stored there. Codex hook events carrying a subagent `agent_id`, or lacking the persistent `transcript_path` of a sidebar task, are ignored so delegated and internal ephemeral work does not consume physical task slots. Active slots survive a Joydex restart, expired entries are discarded during restore, and turning Task alerts off clears the saved assignments. The tray's **Task alerts status...** window installs or repairs the Codex hooks and shows current assignments, exact LinkTool telemetry, and the last 100 lifecycle events. See [the LED status guide](docs/LED_STATUS.md) for setup, troubleshooting, and the full behavior.
+If you have a noisy chat (e.g. GPT-live voice chat) that you wish to ignore for the throttle LEDs and wireless pad, you can do this in the UI by selecting it under **Current state** or **Event stream**, then click **Ignore selected ▾** to set that up.
+
+<img src="docs/images/joydex-ignored-task-sources.png" alt="Joydex ignored task status sources window with one workspace rule and an explicit re-enable action" width="520">
+
+AFAICT, Codex hooks do not expose task titles or project names. Joydex uses the task ID and working-directory folder name where it can show that.
+
+See [the LED status guide](docs/LED_STATUS.md) for setup, troubleshooting, and the full behavior for LED status tracking.
 
 ## Prompt pickers and multiple controllers
 
@@ -154,19 +160,28 @@ The repository includes a small [`calibrate-button-maps`](skills/calibrate-butto
 Joydex also includes an experimental ESPHome example for the
 `ESP32-4848S040C_I`: a 4-inch, 480×480 capacitive touchscreen that joins the
 normal 2.4 GHz LAN. It displays the same four primary task states as the
-throttle LEDs and provides touch controls for Task 1 through Task 4 plus PLAN
-MODE. It talks directly to Joydex through authenticated REST and Server-Sent
-Events; Home Assistant and MQTT are not required.
+throttle LEDs and provides touch controls for Task 1 through Task 4. The
+original firmware adds one large PLAN MODE control, while the opt-in bridge-v2
+firmware provides two local pages. The task page has five wider footer controls:
+PLAN, FAST, SIDE, MUTE, and `>`. The arrow opens a TASK CONTROLS page with large
+APPROVE, DECLINE, NEW TASK, and FORK controls plus a `<`, PREV, SUBMIT, NEXT,
+`>` footer. The left arrow returns to the task page, and the gray final arrow is
+reserved for a future third page. Arrow presses stay on the panel; named commands
+use Joydex's existing semantic actions. Each bridge-v2 task card also shows the
+available working-directory folder name in a small centered footer; long names
+end in an ellipsis and full paths never reach the panel. The panel uses
+authenticated REST and Server-Sent Events to communicate with Joydex; Home
+Assistant and MQTT are not required.
 
 Screenshot of it working (Magic card for scale):
 
-<img src="docs/images/joydex-esp32-4848s040c-in-action.jpg" alt="ESP32-4848S040C_I running the Joydex bridge-console skin beside a Magic: The Gathering card for scale" width="640">
+<img src="docs/images/joydex-esp32-4848s040c-in-action2.jpg" alt="ESP32-4848S040C_I running the current Joydex task page with workspace labels and five bottom controls beside a Magic: The Gathering card for scale" width="640">
 
 The example was physically tested July 25–27, 2026 on one panel purchased from this [AliExpress listing](https://www.aliexpress.us/item/3256808028364930.html).
 I have no affiliation with the seller, it could be malware-laden, I dunno, but I've bought a number of these for home assistant projects and use them in different spots. YMMV. Listings and board
 revisions can change, so verify the `ESP32-4848S040C_I` model (or ask your agent to figure it out for you). I used the [GUITION specification](https://www.guition.com/ku/icms/upload/fb081940d6fc11f09850077a33e1404f/FTPData/UEditor/file/2026121/1768961092477/ESP32-4848S040%20Specifications-EN.pdf) for the one I tested.
 
-Start with the [ESPHome firmware guide](firmware/esphome/README.md). The repository includes a neutral white skin and a dark bridge-console skin. Both require local credentials, a trusted LAN, and a private unit-specific factory backup. Compiled firmware is deliberately not distributed because it embeds the credentials used to join and manage the panel.
+Start with the [ESPHome firmware guide](firmware/esphome/README.md). The repository includes a neutral white skin, the original dark bridge-console skin, and an opt-in bridge-v2 command-row skin. The original files remain available as rollback configurations. All variants require local credentials, a trusted LAN, and a private unit-specific factory backup. Compiled firmware is deliberately not distributed because it embeds the credentials used to join and manage the panel.
 
 The [wireless research record](docs/WIRELESS_TOUCHSCREEN_RESEARCH_V1.1.md) explains the direct ESPHome approach, while the [device reference](docs/ESP32_4848S040C_I_DEVICE_REFERENCE.md) records the tested timing, pins, flashing, redraw, and recovery findings.
 
@@ -224,7 +239,7 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 
 Command IDs, Windows defaults, aliases, and precedence behavior were last checked on 2026-08-05 against OpenAI Codex package `26.730.8199.0`, bundled app release `26.730`, build `0.147.0-alpha.1.2`.
 
-The `voice-chat` action uses Codex's current **Toggle voice chat** shortcut. Before mapping `end-voice-chat` or `toggle-voice-mic`, make sure **End Voice Chat** and **Toggle Voice Chat microphone** have shortcuts assigned in Codex's Keyboard shortcuts.
+The `voice-chat` action uses Codex's current **Toggle voice chat** shortcut. Before mapping `side-conversation`, `end-voice-chat`, or `toggle-voice-mic`, make sure **Open Side Chat**, **End Voice Chat**, and **Toggle Voice Chat microphone** have shortcuts assigned in Codex's Keyboard shortcuts.
 
 Source builds use `%LOCALAPPDATA%\Joydex\config.json`, with `JOYDEX_CONFIG` and `--config` available for alternate paths. The graphical editor is the normal way to change mappings. Both checked-in example configurations are intended for dry-run exploration and contain no device GUIDs.
 

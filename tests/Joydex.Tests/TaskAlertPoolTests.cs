@@ -362,6 +362,45 @@ public sealed class TaskAlertPoolTests
     }
 
     [Fact]
+    public void RemovingAssignmentsKeepsOtherSlotsStableUntilNormalBackfillDelay()
+    {
+        var pool = new TaskAlertPool();
+        var workspace = Path.Combine(Path.GetTempPath(), "joydex-voice-chat");
+        foreach (var index in Enumerable.Range(1, 6))
+        {
+            pool.Apply(new TaskAlertEvent(
+                CodexLifecycleEvent.UserPromptSubmit,
+                $"session-{index}",
+                "turn-1",
+                Start,
+                Workspace: index == 1 ? workspace : null));
+        }
+
+        Assert.Equal(1, pool.RemoveAssignments(item => item.SessionId == "session-1", Start));
+
+        Assert.DoesNotContain(pool.Assignments, item => item.Slot == 1);
+        Assert.Equal("session-5", pool.Assignments.Single(item => item.Slot == 5).SessionId);
+        Assert.Equal("session-6", pool.Assignments.Single(item => item.Slot == 6).SessionId);
+        Assert.False(pool.Advance(Start + TaskAlertPool.BackfillDelay - TimeSpan.FromTicks(1)));
+        Assert.True(pool.Advance(Start + TaskAlertPool.BackfillDelay));
+        Assert.Equal("session-5", pool.Assignments.Single(item => item.Slot == 1).SessionId);
+        Assert.Equal("session-6", pool.Assignments.Single(item => item.Slot == 5).SessionId);
+        var stored = pool.CaptureState().Assignments.Single(item => item.SessionId == "session-5");
+        Assert.Null(stored.WorkspaceKey);
+
+        var separate = new TaskAlertPool();
+        separate.Apply(new TaskAlertEvent(
+            CodexLifecycleEvent.UserPromptSubmit,
+            "voice",
+            "turn-1",
+            Start,
+            Workspace: workspace));
+        var voiceState = Assert.Single(separate.CaptureState().Assignments);
+        Assert.Equal(TaskAlertSuppression.CreateWorkspaceKey(workspace), voiceState.WorkspaceKey);
+        Assert.DoesNotContain(workspace, System.Text.Json.JsonSerializer.Serialize(voiceState), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LateConcurrentEventCannotReplaceNewerState()
     {
         var pool = new TaskAlertPool();

@@ -2,6 +2,10 @@
 
 Defer to `%USERPROFILE%\.agents\AGENTS.md`.
 
+## Concepts and architectural decisions
+
+Before changing domain language or architecture, review the applicable `CONCEPTS.md` and the ADRs in `docs/adr/`. These files may live at the repository root or at the root of the relevant project, app, or service. Keep them current when concepts are resolved or durable architectural decisions are made.
+
 ## Codex App compatibility
 
 The Codex command IDs, Windows default bindings, and keybinding precedence behavior in this repository were last validated on 2026-08-05 against:

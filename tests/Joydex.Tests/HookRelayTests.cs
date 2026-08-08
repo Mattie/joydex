@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Joydex.Tests;
 
 public sealed class HookRelayTests
@@ -40,5 +42,24 @@ public sealed class HookRelayTests
             default);
 
         Assert.Equal(expected, HookRelay.IsTrackableSession(input));
+    }
+
+    [Fact]
+    public void ReadsCodexWorkspaceMetadataWithoutTranscriptContent()
+    {
+        const string json = """
+            {
+              "hook_event_name": "UserPromptSubmit",
+              "session_id": "session",
+              "turn_id": "turn",
+              "transcript_path": "C:\\transcripts\\session.jsonl",
+              "cwd": "C:\\voice\\realtime-voice-chat"
+            }
+            """;
+
+        var input = JsonSerializer.Deserialize(json, HookJsonContext.Default.HookInput);
+
+        Assert.NotNull(input);
+        Assert.Equal(@"C:\voice\realtime-voice-chat", input.Cwd);
     }
 }

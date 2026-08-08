@@ -138,9 +138,18 @@ internal static class DocumentationScreenshotRenderer
                         linkToolProfilePath,
                         _ => Task.CompletedTask);
                     taskAlerts.SetSnapshotForDocumentation(CreateTaskAlertDocumentationSnapshot());
+                    taskAlerts.SelectAssignmentForDocumentation("00000000-0000-7000-8000-000000000002");
                     taskAlerts.Size = size;
                     RenderForm(taskAlerts, Path.Combine(outputDirectory, fileName));
                 }
+
+                _ = taskAlertCoordinator.AddSuppression(
+                    TaskAlertSuppressionScope.Workspace,
+                    @"C:\Users\Mattie\Documents\Codex\realtime-voice-chat");
+                using var ignoredSources = new IgnoredTaskSourcesForm(taskAlertCoordinator);
+                RenderForm(
+                    ignoredSources,
+                    Path.Combine(outputDirectory, "joydex-ignored-task-sources.png"));
             }
             finally
             {
@@ -184,13 +193,14 @@ internal static class DocumentationScreenshotRenderer
     private static TaskAlertSnapshot CreateTaskAlertDocumentationSnapshot()
     {
         var now = DateTimeOffset.Now;
+        var workspace = @"C:\Users\Mattie\Documents\Codex\project-name";
         var assignments = new[]
         {
-            new TaskAlertAssignment(1, "00000000-0000-7000-8000-000000000001", "turn-01", TaskAlertState.Running, now),
-            new TaskAlertAssignment(2, "00000000-0000-7000-8000-000000000002", "turn-02", TaskAlertState.Completed, now),
-            new TaskAlertAssignment(3, "00000000-0000-7000-8000-000000000003", "turn-03", TaskAlertState.Completed, now),
-            new TaskAlertAssignment(4, "00000000-0000-7000-8000-000000000004", "turn-04", TaskAlertState.Completed, now),
-            new TaskAlertAssignment(5, "00000000-0000-7000-8000-000000000005", "turn-05", TaskAlertState.Completed, now),
+            new TaskAlertAssignment(1, "00000000-0000-7000-8000-000000000001", "turn-01", TaskAlertState.Running, now, Workspace: workspace),
+            new TaskAlertAssignment(2, "00000000-0000-7000-8000-000000000002", "turn-02", TaskAlertState.Completed, now, Workspace: workspace),
+            new TaskAlertAssignment(3, "00000000-0000-7000-8000-000000000003", "turn-03", TaskAlertState.Completed, now, Workspace: workspace),
+            new TaskAlertAssignment(4, "00000000-0000-7000-8000-000000000004", "turn-04", TaskAlertState.Completed, now, Workspace: workspace),
+            new TaskAlertAssignment(5, "00000000-0000-7000-8000-000000000005", "turn-05", TaskAlertState.Completed, now, Workspace: workspace),
         };
         var recentEvents = assignments.Select((assignment, index) => new TaskAlertEventTrace(
             now.AddSeconds(-index),
@@ -199,14 +209,19 @@ internal static class DocumentationScreenshotRenderer
             assignment.TurnId,
             assignment.Slot,
             assignment.State,
-            index == 0 ? TaskAlertEventResult.Assigned : TaskAlertEventResult.Updated)).ToArray();
+            index == 0 ? TaskAlertEventResult.Assigned : TaskAlertEventResult.Updated,
+            workspace)).ToArray();
         return new TaskAlertSnapshot(
             Enabled: true,
             Assignments: assignments,
             DroppedEventCount: 0,
             Bank: 2,
             BankAutomaticallyDetected: true,
-            RecentEvents: recentEvents);
+            RecentEvents: recentEvents,
+            Suppressions:
+            [
+                new(TaskAlertSuppressionScope.Workspace, @"C:\Users\Mattie\Documents\Codex\realtime-voice-chat"),
+            ]);
     }
 
     private static CompanionConfig CreateAlphaDocumentationConfig()

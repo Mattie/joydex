@@ -42,6 +42,7 @@ internal static partial class HookRelay
                         turnId,
                         input?.ToolName,
                         input?.ToolInput ?? default),
+                    TaskAlertSuppression.NormalizeWorkspace(input?.Cwd),
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             }
         }
@@ -64,6 +65,7 @@ internal static partial class HookRelay
         string sessionId,
         string? turnId,
         string? attentionKey,
+        string? workspace,
         long receivedAtUnixMs)
     {
         try
@@ -105,6 +107,15 @@ internal static partial class HookRelay
             else
             {
                 writer.WriteString("attentionKey", attentionKey);
+            }
+
+            if (workspace is null)
+            {
+                writer.WriteNull("workspace");
+            }
+            else
+            {
+                writer.WriteString("workspace", workspace);
             }
 
             writer.WriteNumber("receivedAtUnixMs", receivedAtUnixMs);
@@ -167,7 +178,8 @@ internal sealed record HookInput(
     [property: JsonPropertyName("agent_id")] string? AgentId,
     [property: JsonPropertyName("transcript_path")] string? TranscriptPath,
     [property: JsonPropertyName("tool_name")] string? ToolName,
-    [property: JsonPropertyName("tool_input")] JsonElement ToolInput);
+    [property: JsonPropertyName("tool_input")] JsonElement ToolInput,
+    [property: JsonPropertyName("cwd")] string? Cwd = null);
 
 [JsonSerializable(typeof(HookInput))]
 internal sealed partial class HookJsonContext : JsonSerializerContext;

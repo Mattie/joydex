@@ -13,8 +13,8 @@ public sealed class EspHomePanelAdapterTests
     {
         var projected = EspHomePanelAdapter.Project(Snapshot(
             enabled: true,
-            Assignment(1, TaskAlertState.Running, "running"),
-            Assignment(2, TaskAlertState.Approval, "approval"),
+            Assignment(1, TaskAlertState.Running, "running", @"D:\Dev\alpha"),
+            Assignment(2, TaskAlertState.Approval, "approval", @"D:\Dev\beta"),
             Assignment(3, TaskAlertState.Completed, "complete"),
             Assignment(4, TaskAlertState.Fault, "fault")));
 
@@ -22,11 +22,41 @@ public sealed class EspHomePanelAdapterTests
         Assert.Equal(EspHomeTaskState.Attention, projected.Task2);
         Assert.Equal(EspHomeTaskState.Complete, projected.Task3);
         Assert.Equal(EspHomeTaskState.Attention, projected.Task4);
+        Assert.Equal("alpha", projected.Task1Workspace);
+        Assert.Equal("beta", projected.Task2Workspace);
+        Assert.Equal(string.Empty, projected.Task3Workspace);
+        Assert.Equal(string.Empty, projected.Task4Workspace);
         Assert.Equal(
             EspHomePanelSnapshot.Empty,
             EspHomePanelAdapter.Project(Snapshot(
                 enabled: false,
                 Assignment(1, TaskAlertState.Running, "hidden"))));
+    }
+
+    [Fact]
+    public void WorkspaceProjectionUsesASafeBoundedFolderName()
+    {
+        var longName = new string('x', EspHomePanelAdapter.MaximumWorkspaceLabelLength + 12);
+        var projected = EspHomePanelAdapter.Project(Snapshot(
+            enabled: true,
+            Assignment(1, TaskAlertState.Running, "accented", @"D:\Dev\café voice"),
+            Assignment(2, TaskAlertState.Running, "unicode", @"D:\Dev\項目"),
+            Assignment(3, TaskAlertState.Running, "long", $@"D:\Dev\{longName}"),
+            Assignment(4, TaskAlertState.Running, "spacing", "D:\\Dev\\one\t  two")));
+
+        Assert.Equal("cafe voice", projected.Task1Workspace);
+        Assert.Equal("??", projected.Task2Workspace);
+        Assert.Equal(
+            new string('x', EspHomePanelAdapter.MaximumWorkspaceLabelLength),
+            projected.Task3Workspace);
+        Assert.Equal("one two", projected.Task4Workspace);
+        Assert.Equal(
+            "C-",
+            EspHomePanelAdapter.ProjectWorkspaceLabel(
+                Snapshot(
+                    enabled: true,
+                    Assignment(1, TaskAlertState.Running, "root", @"C:\")),
+                1));
     }
 
     [Fact]
@@ -140,16 +170,24 @@ public sealed class EspHomePanelAdapterTests
     }
 
     [Fact]
-    public async Task PlanModeUsesTheExistingSemanticAction()
+    public async Task CommandButtonsUseTheExistingSemanticActions()
     {
         var snapshot = Snapshot(enabled: true);
+        var expected = new[]
+        {
+            (EspHomePanelButton.PlanMode, "Plan Mode", CodexAction.TogglePlanMode),
+            (EspHomePanelButton.FastMode, "Fast Mode", CodexAction.ToggleFastMode),
+            (EspHomePanelButton.SideChat, "Side Chat", CodexAction.SideConversation),
+            (EspHomePanelButton.VoiceMute, "Voice Mute", CodexAction.ToggleVoiceChatMicrophone),
+            (EspHomePanelButton.Approve, "Approve", CodexAction.Approve),
+            (EspHomePanelButton.Reject, "Reject", CodexAction.Reject),
+            (EspHomePanelButton.NewTask, "New Task", CodexAction.NewTask),
+            (EspHomePanelButton.ForkTask, "Fork Task", CodexAction.ForkTask),
+            (EspHomePanelButton.PreviousTask, "Previous Task", CodexAction.PreviousTask),
+            (EspHomePanelButton.Submit, "Submit", CodexAction.Submit),
+            (EspHomePanelButton.NextTask, "Next Task", CodexAction.NextTask),
+        };
         var requests = new List<ActionRequest>();
-        var results = new Queue<ActionExecutionResult>(
-        [
-            ActionExecutionResult.Success("sent"),
-            ActionExecutionResult.Simulated("dry run"),
-            ActionExecutionResult.Blocked("blocked"),
-        ]);
         await using var transport = new RecordingTransport();
         await using var adapter = CreateAdapter(
             transport,
@@ -158,22 +196,48 @@ public sealed class EspHomePanelAdapterTests
             executeAction: (request, _) =>
             {
                 requests.Add(request);
-                return Task.FromResult(results.Dequeue());
+                return Task.FromResult(ActionExecutionResult.Success("sent"));
             });
         adapter.Start();
 
-        await transport.PressAsync(EspHomePanelButton.PlanMode);
-        await transport.PressAsync(EspHomePanelButton.PlanMode);
-        await transport.PressAsync(EspHomePanelButton.PlanMode);
-
-        Assert.All(requests, request =>
+        foreach (var (button, _, _) in expected)
         {
-            Assert.Equal("ESPHome panel Plan Mode", request.BindingName);
-            Assert.Equal(CodexAction.TogglePlanMode, request.Action);
+            await transport.PressAsync(button);
+        }
+
+        Assert.Equal(expected.Length, requests.Count);
+        for (var index = 0; index < expected.Length; index++)
+        {
+            var (button, displayName, action) = expected[index];
+            var request = requests[index];
+            Assert.Equal($"ESPHome panel {displayName}", request.BindingName);
+            Assert.Equal(action, request.Action);
+            Assert.Equal((int)button, request.Button);
             Assert.Equal("press", request.Trigger);
             Assert.Equal("always", request.Bank);
             Assert.Equal("esphome-panel", request.DeviceId);
-        });
+        }
+    }
+
+    [Theory]
+    [InlineData(EspHomePanelButton.Task1, 1)]
+    [InlineData(EspHomePanelButton.Task2, 2)]
+    [InlineData(EspHomePanelButton.Task3, 3)]
+    [InlineData(EspHomePanelButton.Task4, 4)]
+    [InlineData(EspHomePanelButton.PlanMode, 5)]
+    [InlineData(EspHomePanelButton.FastMode, 6)]
+    [InlineData(EspHomePanelButton.SideChat, 7)]
+    [InlineData(EspHomePanelButton.VoiceMute, 8)]
+    [InlineData(EspHomePanelButton.Approve, 9)]
+    [InlineData(EspHomePanelButton.Reject, 10)]
+    [InlineData(EspHomePanelButton.NewTask, 11)]
+    [InlineData(EspHomePanelButton.ForkTask, 12)]
+    [InlineData(EspHomePanelButton.PreviousTask, 13)]
+    [InlineData(EspHomePanelButton.Submit, 14)]
+    [InlineData(EspHomePanelButton.NextTask, 15)]
+    public void PanelButtonNumericValuesRemainStable(EspHomePanelButton button, int expected)
+    {
+        Assert.Equal(expected, (int)button);
     }
 
     [Fact]
@@ -201,7 +265,7 @@ public sealed class EspHomePanelAdapterTests
     {
         var current = Snapshot(
             enabled: true,
-            Assignment(1, TaskAlertState.Running, "one"));
+            Assignment(1, TaskAlertState.Running, "one", @"D:\Dev\alpha"));
         await using var transport = new RecordingTransport();
         await using var adapter = CreateAdapter(
             transport,
@@ -211,10 +275,11 @@ public sealed class EspHomePanelAdapterTests
         await transport.WaitForStateCountAsync(1);
         current = Snapshot(
             enabled: true,
-            Assignment(4, TaskAlertState.Fault, "four"));
+            Assignment(4, TaskAlertState.Fault, "four", @"D:\Dev\beta"));
 
         await transport.ConnectAsync();
         await transport.WaitForStateCountAsync(2);
+        await transport.WaitForWorkspaceLabelCountAsync(2);
 
         Assert.Equal(
             new EspHomePanelSnapshot(
@@ -223,6 +288,7 @@ public sealed class EspHomePanelAdapterTests
                 EspHomeTaskState.Empty,
                 EspHomeTaskState.Attention),
             transport.States.Last());
+        Assert.Equal("beta", transport.WorkspaceLabels.Last().Task4Workspace);
     }
 
     [Fact]
@@ -241,9 +307,12 @@ public sealed class EspHomePanelAdapterTests
 
         await transport.ConnectAsync();
         await transport.WaitForStateCountAsync(2);
+        await transport.WaitForWorkspaceLabelCountAsync(2);
 
         Assert.Equal(2, transport.States.Count);
         Assert.Equal(transport.States[0], transport.States[1]);
+        Assert.Equal(2, transport.WorkspaceLabels.Count);
+        Assert.Equal(transport.WorkspaceLabels[0], transport.WorkspaceLabels[1]);
     }
 
     [Fact]
@@ -378,6 +447,31 @@ public sealed class EspHomePanelAdapterTests
     }
 
     [Fact]
+    public async Task ApplyPublishesWorkspaceChangesWithoutRedrawingTaskState()
+    {
+        var initial = Snapshot(
+            enabled: true,
+            Assignment(1, TaskAlertState.Running, "one", @"D:\Dev\alpha"));
+        await using var transport = new RecordingTransport();
+        await using var adapter = CreateAdapter(
+            transport,
+            initial,
+            () => initial);
+        adapter.Start();
+        await transport.WaitForStateCountAsync(1);
+
+        adapter.Apply(Snapshot(
+            enabled: true,
+            Assignment(1, TaskAlertState.Running, "one", @"D:\Dev\beta")));
+        await transport.WaitForWorkspaceLabelCountAsync(2);
+
+        Assert.Single(transport.States);
+        var update = Assert.Single(Assert.Single(transport.WorkspaceUpdateBatches));
+        Assert.Equal(new EspHomeTaskWorkspaceLabelUpdate(1, "beta"), update);
+        Assert.Equal("beta", transport.WorkspaceLabels.Last().Task1Workspace);
+    }
+
+    [Fact]
     public async Task FailedStateUpdateRetriesTheLatestCompleteSnapshot()
     {
         var snapshot = Snapshot(
@@ -464,8 +558,9 @@ public sealed class EspHomePanelAdapterTests
     private static TaskAlertAssignment Assignment(
         int slot,
         TaskAlertState state,
-        string sessionId) =>
-        new(slot, sessionId, TurnId: null, state, DateTimeOffset.UtcNow);
+        string sessionId,
+        string? workspace = null) =>
+        new(slot, sessionId, TurnId: null, state, DateTimeOffset.UtcNow, Workspace: workspace);
 
     private sealed class RecordingNavigator(bool result) : ITaskAlertNavigator
     {
@@ -492,10 +587,15 @@ public sealed class EspHomePanelAdapterTests
         private StateBlock? _nextStateBlock;
         private bool _failNextState;
         private EspHomePanelSnapshot _currentState = EspHomePanelSnapshot.Empty;
+        private EspHomePanelSnapshot _currentWorkspace = EspHomePanelSnapshot.Empty;
 
         public List<EspHomePanelSnapshot> States { get; } = [];
 
         public List<IReadOnlyList<EspHomeTaskStateUpdate>> StateUpdateBatches { get; } = [];
+
+        public List<EspHomePanelSnapshot> WorkspaceLabels { get; } = [];
+
+        public List<IReadOnlyList<EspHomeTaskWorkspaceLabelUpdate>> WorkspaceUpdateBatches { get; } = [];
 
         public Task RunAsync(
             Func<EspHomePanelButton, CancellationToken, ValueTask> onPressed,
@@ -530,6 +630,69 @@ public sealed class EspHomePanelAdapterTests
                 completeState: null,
                 updates,
                 cancellationToken);
+        }
+
+        public Task SetTaskWorkspaceLabelsAsync(
+            string task1,
+            string task2,
+            string task3,
+            string task4,
+            CancellationToken cancellationToken = default) =>
+            RecordWorkspaceAsync(
+                new EspHomePanelSnapshot(
+                    EspHomeTaskState.Empty,
+                    EspHomeTaskState.Empty,
+                    EspHomeTaskState.Empty,
+                    EspHomeTaskState.Empty,
+                    task1,
+                    task2,
+                    task3,
+                    task4),
+                updates: null,
+                cancellationToken);
+
+        public Task SetTaskWorkspaceLabelUpdatesAsync(
+            IReadOnlyList<EspHomeTaskWorkspaceLabelUpdate> updates,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(updates);
+            return RecordWorkspaceAsync(
+                completeState: null,
+                updates,
+                cancellationToken);
+        }
+
+        private Task RecordWorkspaceAsync(
+            EspHomePanelSnapshot? completeState,
+            IReadOnlyList<EspHomeTaskWorkspaceLabelUpdate>? updates,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_sync)
+            {
+                var next = completeState ?? _currentWorkspace;
+                if (updates is not null)
+                {
+                    foreach (var update in updates)
+                    {
+                        next = update.Slot switch
+                        {
+                            1 => next with { Task1Workspace = update.Label },
+                            2 => next with { Task2Workspace = update.Label },
+                            3 => next with { Task3Workspace = update.Label },
+                            4 => next with { Task4Workspace = update.Label },
+                            _ => throw new ArgumentOutOfRangeException(nameof(updates)),
+                        };
+                    }
+
+                    WorkspaceUpdateBatches.Add(updates.ToArray());
+                }
+
+                _currentWorkspace = next;
+                WorkspaceLabels.Add(next);
+            }
+
+            return Task.CompletedTask;
         }
 
         private async Task RecordStateAsync(
@@ -626,6 +789,27 @@ public sealed class EspHomePanelAdapterTests
             }
 
             throw new TimeoutException($"Expected {count} panel state updates.");
+        }
+
+        public async Task WaitForWorkspaceLabelCountAsync(
+            int count,
+            TimeSpan? timeout = null)
+        {
+            var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromSeconds(2));
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                lock (_sync)
+                {
+                    if (WorkspaceLabels.Count >= count)
+                    {
+                        return;
+                    }
+                }
+
+                await Task.Delay(10);
+            }
+
+            throw new TimeoutException($"Expected {count} panel workspace-label updates.");
         }
 
         public ValueTask DisposeAsync()

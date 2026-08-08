@@ -9,6 +9,19 @@ namespace Joydex.Tests;
 public sealed class EspHomePanelTransportTests
 {
     [Fact]
+    public void PanelButtonValuesPreserveTheDeployedWireContract()
+    {
+        Assert.Equal(1, (int)EspHomePanelButton.Task1);
+        Assert.Equal(2, (int)EspHomePanelButton.Task2);
+        Assert.Equal(3, (int)EspHomePanelButton.Task3);
+        Assert.Equal(4, (int)EspHomePanelButton.Task4);
+        Assert.Equal(5, (int)EspHomePanelButton.PlanMode);
+        Assert.Equal(6, (int)EspHomePanelButton.FastMode);
+        Assert.Equal(7, (int)EspHomePanelButton.SideChat);
+        Assert.Equal(8, (int)EspHomePanelButton.VoiceMute);
+    }
+
+    [Fact]
     public async Task SseParserDispatchesCompleteEventBeforeReadingTheNextChunk()
     {
         var text =
@@ -129,11 +142,31 @@ public sealed class EspHomePanelTransportTests
     [InlineData("binary_sensor/Task 3", EspHomePanelButton.Task3)]
     [InlineData("binary_sensor/Task 4", EspHomePanelButton.Task4)]
     [InlineData("binary_sensor/Sidebar", EspHomePanelButton.PlanMode)]
+    [InlineData("binary_sensor/Fast Mode", EspHomePanelButton.FastMode)]
+    [InlineData("binary_sensor/Side Chat", EspHomePanelButton.SideChat)]
+    [InlineData("binary_sensor/Voice Mute", EspHomePanelButton.VoiceMute)]
+    [InlineData("binary_sensor/Approve", EspHomePanelButton.Approve)]
+    [InlineData("binary_sensor/Reject", EspHomePanelButton.Reject)]
+    [InlineData("binary_sensor/New Task", EspHomePanelButton.NewTask)]
+    [InlineData("binary_sensor/Fork Task", EspHomePanelButton.ForkTask)]
+    [InlineData("binary_sensor/Previous Task", EspHomePanelButton.PreviousTask)]
+    [InlineData("binary_sensor/Submit", EspHomePanelButton.Submit)]
+    [InlineData("binary_sensor/Next Task", EspHomePanelButton.NextTask)]
     [InlineData("binary_sensor-task_1", EspHomePanelButton.Task1)]
     [InlineData("binary_sensor-task_2", EspHomePanelButton.Task2)]
     [InlineData("binary_sensor-task_3", EspHomePanelButton.Task3)]
     [InlineData("binary_sensor-task_4", EspHomePanelButton.Task4)]
     [InlineData("binary_sensor-sidebar", EspHomePanelButton.PlanMode)]
+    [InlineData("binary_sensor-fast_mode", EspHomePanelButton.FastMode)]
+    [InlineData("binary_sensor-side_chat", EspHomePanelButton.SideChat)]
+    [InlineData("binary_sensor-voice_mute", EspHomePanelButton.VoiceMute)]
+    [InlineData("binary_sensor-approve", EspHomePanelButton.Approve)]
+    [InlineData("binary_sensor-reject", EspHomePanelButton.Reject)]
+    [InlineData("binary_sensor-new_task", EspHomePanelButton.NewTask)]
+    [InlineData("binary_sensor-fork_task", EspHomePanelButton.ForkTask)]
+    [InlineData("binary_sensor-previous_task", EspHomePanelButton.PreviousTask)]
+    [InlineData("binary_sensor-submit", EspHomePanelButton.Submit)]
+    [InlineData("binary_sensor-next_task", EspHomePanelButton.NextTask)]
     public void PressTrackerMapsEverySupportedEntity(
         string identifier,
         EspHomePanelButton expected)
@@ -143,6 +176,19 @@ public sealed class EspHomePanelTransportTests
         Assert.False(tracker.TryObserve(new EspHomeStateEvent(identifier, false), out _));
         Assert.True(tracker.TryObserve(new EspHomeStateEvent(identifier, true), out var pressed));
         Assert.Equal(expected, pressed);
+    }
+
+    [Theory]
+    [InlineData("binary_sensor/Previous Page")]
+    [InlineData("binary_sensor/Next Page")]
+    [InlineData("binary_sensor-previous_page")]
+    [InlineData("binary_sensor-next_page")]
+    public void PressTrackerIgnoresNavigationEntityIds(string identifier)
+    {
+        var tracker = new EspHomePressTracker();
+
+        Assert.False(tracker.TryObserve(new EspHomeStateEvent(identifier, false), out _));
+        Assert.False(tracker.TryObserve(new EspHomeStateEvent(identifier, true), out _));
     }
 
     [Fact]
@@ -205,6 +251,99 @@ public sealed class EspHomePanelTransportTests
     }
 
     [Fact]
+    public async Task WorkspaceLabelPostsUseExactTextEntitiesAndRemainSerialized()
+    {
+        var handler = new SerializedRecordingHandler();
+        using var httpClient = new HttpClient(handler);
+        await using var transport = new EspHomePanelTransport(
+            httpClient,
+            new Uri("http://panel.local"));
+
+        var labels = transport.SetTaskWorkspaceLabelsAsync(
+            "realtime-voice-chat",
+            string.Empty,
+            "two words",
+            "a&b");
+        await handler.FirstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var state = transport.SetTaskStateUpdatesAsync(
+            [new EspHomeTaskStateUpdate(1, EspHomeTaskState.Running)]);
+        handler.ReleaseFirstRequest();
+
+        await Task.WhenAll(labels, state);
+
+        Assert.Equal(1, handler.MaxActiveRequests);
+        Assert.Equal(
+            [
+                "POST /text/Task%201%20Workspace/set?value=realtime-voice-chat",
+                "POST /text/Task%202%20Workspace/set?value=",
+                "POST /text/Task%203%20Workspace/set?value=two%20words",
+                "POST /text/Task%204%20Workspace/set?value=a%26b",
+                "POST /select/Task%201%20State/set?option=RUNNING",
+            ],
+            handler.Requests);
+    }
+
+    [Fact]
+    public async Task WorkspaceLabelUpdatesPostOnlyChangedEntities()
+    {
+        var handler = new SerializedRecordingHandler();
+        using var httpClient = new HttpClient(handler);
+        await using var transport = new EspHomePanelTransport(
+            httpClient,
+            new Uri("http://panel.local"));
+
+        var updates = transport.SetTaskWorkspaceLabelUpdatesAsync(
+            [
+                new EspHomeTaskWorkspaceLabelUpdate(2, "lorebubble"),
+                new EspHomeTaskWorkspaceLabelUpdate(4, string.Empty),
+            ]);
+        await handler.FirstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        handler.ReleaseFirstRequest();
+        await updates;
+
+        Assert.Equal(
+            [
+                "POST /text/Task%202%20Workspace/set?value=lorebubble",
+                "POST /text/Task%204%20Workspace/set?value=",
+            ],
+            handler.Requests);
+    }
+
+    [Fact]
+    public async Task MissingWorkspaceEntitiesDoNotBlockTaskStatesAndAreCapabilityCached()
+    {
+        var handler = new WorkspaceLabelsUnsupportedHandler();
+        using var httpClient = new HttpClient(handler);
+        var logs = new List<string>();
+        await using var transport = new EspHomePanelTransport(
+            httpClient,
+            new Uri("http://panel.local"),
+            logs.Add);
+
+        await transport.SetTaskWorkspaceLabelsAsync("one", "two", "three", "four");
+        await transport.SetTaskStatesAsync(
+            EspHomeTaskState.Running,
+            EspHomeTaskState.Attention,
+            EspHomeTaskState.Complete,
+            EspHomeTaskState.Empty);
+        await transport.SetTaskWorkspaceLabelUpdatesAsync(
+            [new EspHomeTaskWorkspaceLabelUpdate(1, "changed")]);
+
+        Assert.Equal(
+            [
+                "/text/Task%201%20Workspace/set?value=one",
+                "/select/Task%201%20State/set?option=RUNNING",
+                "/select/Task%202%20State/set?option=ATTENTION",
+                "/select/Task%203%20State/set?option=COMPLETE",
+                "/select/Task%204%20State/set?option=EMPTY",
+            ],
+            handler.Paths);
+        Assert.Contains(
+            logs,
+            message => message.Contains("workspace labels", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task TaskStateUpdatesRejectSlotsOutsideThePanel()
     {
         using var httpClient = new HttpClient(new SerializedRecordingHandler());
@@ -215,6 +354,29 @@ public sealed class EspHomePanelTransportTests
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
             () => transport.SetTaskStateUpdatesAsync(
                 [new EspHomeTaskStateUpdate(5, EspHomeTaskState.Running)]));
+    }
+
+    [Fact]
+    public async Task WorkspaceLabelUpdatesRejectInvalidSlotsAndOversizedValues()
+    {
+        using var httpClient = new HttpClient(new SerializedRecordingHandler());
+        await using var transport = new EspHomePanelTransport(
+            httpClient,
+            new Uri("http://panel.local"));
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => transport.SetTaskWorkspaceLabelUpdatesAsync(
+                [new EspHomeTaskWorkspaceLabelUpdate(5, "workspace")]));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => transport.SetTaskWorkspaceLabelUpdatesAsync(
+                [
+                    new EspHomeTaskWorkspaceLabelUpdate(
+                        1,
+                        new string('x', EspHomePanelAdapter.MaximumWorkspaceLabelLength + 1)),
+                ]));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => transport.SetTaskWorkspaceLabelUpdatesAsync(
+                [new EspHomeTaskWorkspaceLabelUpdate(1, @"D:\Dev\private")]));
     }
 
     [Fact]
@@ -305,6 +467,69 @@ public sealed class EspHomePanelTransportTests
             data: {"name_id":"binary_sensor/Sidebar","state":"ON"}
 
             event: state
+            data: {"name_id":"binary_sensor/Fast Mode","state":"OFF"}
+
+            event: state
+            data: {"name_id":"binary_sensor/Fast Mode","state":"ON"}
+
+            event: state
+            data: {"name_id":"binary_sensor/Side Chat","state":"ON"}
+
+            event: state
+            data: {"name_id":"binary_sensor/Side Chat","state":"OFF"}
+
+            event: state
+            data: {"name_id":"binary_sensor/Side Chat","state":"ON"}
+
+            event: state
+            data: {"id":"binary_sensor-voice_mute","state":"OFF"}
+
+            event: state
+            data: {"id":"binary_sensor-voice_mute","state":"ON"}
+
+            event: state
+            data: {"name_id":"binary_sensor/Approve","state":"OFF"}
+
+            event: state
+            data: {"name_id":"binary_sensor/Approve","state":"ON"}
+
+            event: state
+            data: {"id":"binary_sensor-reject","state":"OFF"}
+
+            event: state
+            data: {"id":"binary_sensor-reject","state":"ON"}
+
+            event: state
+            data: {"name_id":"binary_sensor/New Task","state":"OFF"}
+
+            event: state
+            data: {"name_id":"binary_sensor/New Task","state":"ON"}
+
+            event: state
+            data: {"id":"binary_sensor-fork_task","state":"OFF"}
+
+            event: state
+            data: {"id":"binary_sensor-fork_task","state":"ON"}
+
+            event: state
+            data: {"name_id":"binary_sensor/Previous Task","state":"OFF"}
+
+            event: state
+            data: {"name_id":"binary_sensor/Previous Task","state":"ON"}
+
+            event: state
+            data: {"id":"binary_sensor-submit","state":"OFF"}
+
+            event: state
+            data: {"id":"binary_sensor-submit","state":"ON"}
+
+            event: state
+            data: {"name_id":"binary_sensor/Next Task","state":"OFF"}
+
+            event: state
+            data: {"name_id":"binary_sensor/Next Task","state":"ON"}
+
+            event: state
             data: {"id":"binary_sensor/Task 2","state":"OFF"}
 
             event: state
@@ -322,7 +547,7 @@ public sealed class EspHomePanelTransportTests
             (button, _) =>
             {
                 presses.Add(button);
-                if (presses.Count == 3)
+                if (presses.Count == 13)
                 {
                     cancellation.Cancel();
                 }
@@ -332,7 +557,21 @@ public sealed class EspHomePanelTransportTests
             cancellationToken: cancellation.Token);
 
         Assert.Equal(
-            [EspHomePanelButton.Task1, EspHomePanelButton.PlanMode, EspHomePanelButton.Task2],
+            [
+                EspHomePanelButton.Task1,
+                EspHomePanelButton.PlanMode,
+                EspHomePanelButton.FastMode,
+                EspHomePanelButton.SideChat,
+                EspHomePanelButton.VoiceMute,
+                EspHomePanelButton.Approve,
+                EspHomePanelButton.Reject,
+                EspHomePanelButton.NewTask,
+                EspHomePanelButton.ForkTask,
+                EspHomePanelButton.PreviousTask,
+                EspHomePanelButton.Submit,
+                EspHomePanelButton.NextTask,
+                EspHomePanelButton.Task2,
+            ],
             presses);
         var request = Assert.Single(handler.Requests);
         Assert.Equal("GET /events", request.MethodAndPath);
@@ -608,6 +847,24 @@ public sealed class EspHomePanelTransportTests
             return Task.FromResult(new HttpResponseMessage(
                 requestNumber == 3
                     ? HttpStatusCode.InternalServerError
+                    : HttpStatusCode.OK));
+        }
+    }
+
+    private sealed class WorkspaceLabelsUnsupportedHandler : HttpMessageHandler
+    {
+        public List<string> Paths { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = request.RequestUri!.PathAndQuery;
+            Paths.Add(path);
+            return Task.FromResult(new HttpResponseMessage(
+                path.StartsWith("/text/", StringComparison.Ordinal)
+                    ? HttpStatusCode.NotFound
                     : HttpStatusCode.OK));
         }
     }

@@ -1,5 +1,6 @@
 using System.IO.Pipes;
 using System.Text;
+using System.Text.Json;
 using Joydex.Core.TaskAlerts;
 using Joydex.Windows.TaskAlerts;
 
@@ -62,6 +63,42 @@ public sealed class TaskAlertPipeServerTests
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Running,
                 TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task CarriesWorkspaceMetadataIntoAssignmentsAndEventTrace()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-pipe-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
+            var pipeName = $"Joydex.Tests.{Guid.NewGuid():N}";
+            await using var server = new TaskAlertPipeServer(coordinator, _ => { }, pipeName);
+            server.Start();
+            var workspace = Path.Combine(directory, "realtime-voice-chat");
+            var payload = JsonSerializer.Serialize(new
+            {
+                @event = "UserPromptSubmit",
+                sessionId = "voice-session",
+                turnId = "voice-turn",
+                workspace,
+                receivedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            });
+
+            await SendPayloadAsync(pipeName, payload);
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().Assignments.Count == 1,
+                TimeSpan.FromSeconds(3));
+
+            var snapshot = coordinator.GetSnapshot();
+            Assert.Equal(Path.GetFullPath(workspace), Assert.Single(snapshot.Assignments).Workspace);
+            Assert.Equal(Path.GetFullPath(workspace), Assert.Single(snapshot.RecentEvents!).Workspace);
         }
         finally
         {

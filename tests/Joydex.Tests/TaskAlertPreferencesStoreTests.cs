@@ -15,6 +15,7 @@ public sealed class TaskAlertPreferencesStoreTests : IDisposable
 
         Assert.True(preferences.Enabled);
         Assert.Equal(2, preferences.Bank);
+        Assert.Empty(preferences.Suppressions!);
         Assert.True(File.Exists(path));
     }
 
@@ -54,6 +55,37 @@ public sealed class TaskAlertPreferencesStoreTests : IDisposable
 
         Assert.False(loaded.Enabled);
         Assert.Equal(3, loaded.Bank);
+    }
+
+    [Fact]
+    public void PersistsNormalizedTaskAndWorkspaceSuppressions()
+    {
+        var path = Path.Combine(_directory, "task-alerts.json");
+        var workspace = Path.Combine(_directory, "voice-chat");
+        var preferences = new TaskAlertPreferences(
+            Suppressions:
+            [
+                new(TaskAlertSuppressionScope.Task, " task-1 "),
+                new(TaskAlertSuppressionScope.Workspace, workspace + Path.DirectorySeparatorChar),
+                new(TaskAlertSuppressionScope.Task, "task-1"),
+            ]);
+
+        TaskAlertPreferencesStore.Save(path, preferences);
+        var loaded = TaskAlertPreferencesStore.LoadOrCreate(path);
+
+        Assert.Collection(
+            loaded.Suppressions!,
+            rule => Assert.Equal(
+                new TaskAlertSuppressionRule(TaskAlertSuppressionScope.Task, "task-1"),
+                rule),
+            rule => Assert.Equal(
+                new TaskAlertSuppressionRule(
+                    TaskAlertSuppressionScope.Workspace,
+                    Path.GetFullPath(workspace)),
+                rule));
+        var json = File.ReadAllText(path);
+        Assert.Contains("\"scope\": \"task\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"scope\": \"workspace\"", json, StringComparison.Ordinal);
     }
 
     public void Dispose()

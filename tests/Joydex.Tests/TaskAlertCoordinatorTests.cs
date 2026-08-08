@@ -151,6 +151,7 @@ public sealed class TaskAlertCoordinatorTests
                     "turnId",
                     "uncorrelatedAttentionCount",
                     "updatedAt",
+                    "workspaceKey",
                 ],
                 document.RootElement
                     .GetProperty("assignments")[0]
@@ -211,6 +212,64 @@ public sealed class TaskAlertCoordinatorTests
 
             await using var coordinator = new TaskAlertCoordinator(preferencesPath, statePath);
 
+            Assert.Empty(coordinator.GetSnapshot().Assignments);
+            Assert.Empty(TaskAlertStateStore.Load(statePath).Assignments);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task VersionOneAssignmentLearnsWorkspaceFromToolCompletionAndCanBeSuppressed()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var preferencesPath = Path.Combine(directory, "task-alerts.json");
+            var statePath = Path.Combine(directory, "task-alert-state.json");
+            var updatedAt = DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O");
+            File.WriteAllText(statePath, $$"""
+                {
+                  "schemaVersion": 1,
+                  "assignments": [
+                    {
+                      "slot": 1,
+                      "sessionId": "legacy-session",
+                      "turnId": "legacy-turn",
+                      "state": "running",
+                      "updatedAt": "{{updatedAt}}",
+                      "completeAfter": null,
+                      "correlatedAttention": [],
+                      "uncorrelatedAttentionCount": 0
+                    }
+                  ]
+                }
+                """);
+
+            await using var coordinator = new TaskAlertCoordinator(preferencesPath, statePath);
+
+            var restored = Assert.Single(coordinator.GetSnapshot().Assignments);
+            Assert.Equal("legacy-session", restored.SessionId);
+            Assert.Null(restored.WorkspaceKey);
+
+            var workspace = Path.Combine(directory, "realtime-voice-chat");
+            Assert.True(coordinator.TryPublish(new TaskAlertEvent(
+                CodexLifecycleEvent.ToolCompleted,
+                "legacy-session",
+                "legacy-turn",
+                DateTimeOffset.UtcNow,
+                AttentionKey,
+                workspace)));
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().Assignments.Single().WorkspaceKey is not null,
+                TimeSpan.FromSeconds(3));
+
+            Assert.True(coordinator.AddSuppression(
+                TaskAlertSuppressionScope.Workspace,
+                workspace));
             Assert.Empty(coordinator.GetSnapshot().Assignments);
             Assert.Empty(TaskAlertStateStore.Load(statePath).Assignments);
         }
@@ -286,11 +345,174 @@ public sealed class TaskAlertCoordinatorTests
         }
     }
 
-    private static TaskAlertEvent Event(int index) => new(
+    [Fact]
+    public async Task TaskSuppressionImmediatelyClearsAndBlocksOnlyThatTask()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
+            foreach (var index in Enumerable.Range(1, 5))
+            {
+                Assert.True(coordinator.TryPublish(Event(index)));
+            }
+
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().Assignments.Count == 5,
+                TimeSpan.FromSeconds(3));
+
+            Assert.True(coordinator.AddSuppression(TaskAlertSuppressionScope.Task, "session-1"));
+            Assert.Equal(
+                new Dictionary<string, int>
+                {
+                    ["session-2"] = 2,
+                    ["session-3"] = 3,
+                    ["session-4"] = 4,
+                    ["session-5"] = 5,
+                },
+                coordinator.GetSnapshot().Assignments.ToDictionary(item => item.SessionId, item => item.Slot));
+            Assert.True(coordinator.TryPublish(Event(1)));
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().RecentEvents?.Last().Result == TaskAlertEventResult.Suppressed,
+                TimeSpan.FromSeconds(3));
+            Assert.DoesNotContain(
+                coordinator.GetSnapshot().Assignments,
+                item => item.SessionId == "session-1");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task WorkspaceSuppressionCoversNewTaskIdsAndCanBeReenabled()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var voiceWorkspace = Path.Combine(directory, "realtime-voice-chat");
+        try
+        {
+            var preferencesPath = Path.Combine(directory, "task-alerts.json");
+            await using var coordinator = new TaskAlertCoordinator(preferencesPath);
+            Assert.True(coordinator.AddSuppression(
+                TaskAlertSuppressionScope.Workspace,
+                voiceWorkspace + Path.DirectorySeparatorChar));
+
+            Assert.True(coordinator.TryPublish(Event(1, voiceWorkspace)));
+            Assert.True(coordinator.TryPublish(Event(2, Path.Combine(directory, "other"))));
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().RecentEvents?.Count == 2,
+                TimeSpan.FromSeconds(3));
+
+            var snapshot = coordinator.GetSnapshot();
+            Assert.Equal(TaskAlertEventResult.Suppressed, snapshot.RecentEvents![0].Result);
+            Assert.Equal("session-2", Assert.Single(snapshot.Assignments).SessionId);
+            var rule = Assert.Single(snapshot.Suppressions!);
+            Assert.Equal(TaskAlertSuppressionScope.Workspace, rule.Scope);
+            Assert.True(coordinator.RemoveSuppression(rule));
+
+            Assert.True(coordinator.TryPublish(Event(3, voiceWorkspace)));
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().Assignments.Any(item => item.SessionId == "session-3"),
+                TimeSpan.FromSeconds(3));
+            Assert.Empty(TaskAlertPreferencesStore.LoadOrCreate(preferencesPath).Suppressions!);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DelayedSuppressedWorkspaceEventDoesNotRemoveNewerAssignment()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var ignoredWorkspace = Path.Combine(directory, "ignored");
+        var activeWorkspace = Path.Combine(directory, "active");
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
+            Assert.True(coordinator.AddSuppression(
+                TaskAlertSuppressionScope.Workspace,
+                ignoredWorkspace));
+
+            var delayedAt = DateTimeOffset.UtcNow.AddMinutes(-1);
+            var activeAt = delayedAt.AddSeconds(1);
+            Assert.True(coordinator.TryPublish(new TaskAlertEvent(
+                CodexLifecycleEvent.UserPromptSubmit,
+                "shared-session",
+                "active-turn",
+                activeAt,
+                Workspace: activeWorkspace)));
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().Assignments.Count == 1,
+                TimeSpan.FromSeconds(3));
+
+            Assert.True(coordinator.TryPublish(new TaskAlertEvent(
+                CodexLifecycleEvent.UserPromptSubmit,
+                "shared-session",
+                "delayed-turn",
+                delayedAt,
+                Workspace: ignoredWorkspace)));
+            await WaitUntilAsync(
+                () => coordinator.GetSnapshot().RecentEvents?.Count == 2,
+                TimeSpan.FromSeconds(3));
+
+            var snapshot = coordinator.GetSnapshot();
+            var assignment = Assert.Single(snapshot.Assignments);
+            Assert.Equal("shared-session", assignment.SessionId);
+            Assert.Equal("active-turn", assignment.TurnId);
+            Assert.Equal(activeAt, assignment.UpdatedAt);
+            Assert.Equal(
+                TaskAlertSuppression.CreateWorkspaceKey(activeWorkspace),
+                assignment.WorkspaceKey);
+            Assert.Equal(TaskAlertEventResult.Suppressed, snapshot.RecentEvents![^1].Result);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PersistedWorkspaceSuppressionFiltersRestoredHashedAssignment()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var voiceWorkspace = Path.Combine(directory, "realtime-voice-chat");
+        try
+        {
+            var preferencesPath = Path.Combine(directory, "task-alerts.json");
+            var statePath = Path.Combine(directory, "task-alert-state.json");
+            TaskAlertPreferencesStore.Save(preferencesPath, new TaskAlertPreferences(
+                Suppressions:
+                [
+                    new(TaskAlertSuppressionScope.Workspace, voiceWorkspace),
+                ]));
+            var pool = new TaskAlertPool();
+            pool.Apply(Event(1, voiceWorkspace));
+            TaskAlertStateStore.Save(statePath, pool.CaptureState());
+
+            await using var coordinator = new TaskAlertCoordinator(preferencesPath, statePath);
+
+            Assert.Empty(coordinator.GetSnapshot().Assignments);
+            Assert.Empty(TaskAlertStateStore.Load(statePath).Assignments);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static TaskAlertEvent Event(int index, string? workspace = null) => new(
         CodexLifecycleEvent.UserPromptSubmit,
         $"session-{index}",
         $"turn-{index}",
-        DateTimeOffset.UtcNow);
+        DateTimeOffset.UtcNow,
+        Workspace: workspace);
 
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
