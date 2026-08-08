@@ -26,6 +26,19 @@ public interface IEspHomePanelTransport : IAsyncDisposable
     Task SetTaskStateUpdatesAsync(
         IReadOnlyList<EspHomeTaskStateUpdate> updates,
         CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="EspHomePanelTransport.SetTaskWorkspaceLabelsAsync"/>
+    Task SetTaskWorkspaceLabelsAsync(
+        string task1,
+        string task2,
+        string task3,
+        string task4,
+        CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="EspHomePanelTransport.SetTaskWorkspaceLabelUpdatesAsync"/>
+    Task SetTaskWorkspaceLabelUpdatesAsync(
+        IReadOnlyList<EspHomeTaskWorkspaceLabelUpdate> updates,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -34,6 +47,10 @@ public interface IEspHomePanelTransport : IAsyncDisposable
 /// </summary>
 public sealed class EspHomePanelTransport : IEspHomePanelTransport
 {
+    private const int WorkspaceLabelSupportUnknown = 0;
+    private const int WorkspaceLabelSupportAvailable = 1;
+    private const int WorkspaceLabelSupportUnavailable = 2;
+
     private static readonly TimeSpan DefaultReconnectDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan DefaultPostTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DefaultSseIdleTimeout = TimeSpan.FromSeconds(45);
@@ -49,6 +66,7 @@ public sealed class EspHomePanelTransport : IEspHomePanelTransport
     private readonly CancellationTokenSource _disposeCancellation = new();
     private readonly object _lifecycleGate = new();
     private Task? _runTask;
+    private int _workspaceLabelSupport;
     private bool _disposed;
 
     /// <summary>
@@ -155,12 +173,12 @@ public sealed class EspHomePanelTransport : IEspHomePanelTransport
         EspHomeTaskState task3,
         EspHomeTaskState task4,
         CancellationToken cancellationToken = default) =>
-        PostSelectsAsync(
+        PostEntityUpdatesAsync(
             [
-                new("Task 1 State", ToOption(task1)),
-                new("Task 2 State", ToOption(task2)),
-                new("Task 3 State", ToOption(task3)),
-                new("Task 4 State", ToOption(task4)),
+                EntityUpdate.Select("Task 1 State", ToOption(task1)),
+                EntityUpdate.Select("Task 2 State", ToOption(task2)),
+                EntityUpdate.Select("Task 3 State", ToOption(task3)),
+                EntityUpdate.Select("Task 4 State", ToOption(task4)),
             ],
             cancellationToken);
 
@@ -173,7 +191,7 @@ public sealed class EspHomePanelTransport : IEspHomePanelTransport
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(updates);
-        var selects = new SelectUpdate[updates.Count];
+        var selects = new EntityUpdate[updates.Count];
         for (var index = 0; index < updates.Count; index++)
         {
             var update = updates[index];
@@ -188,10 +206,58 @@ public sealed class EspHomePanelTransport : IEspHomePanelTransport
                     update.Slot,
                     "ESPHome task slots must be between 1 and 4."),
             };
-            selects[index] = new SelectUpdate(entityName, ToOption(update.State));
+            selects[index] = EntityUpdate.Select(entityName, ToOption(update.State));
         }
 
-        return PostSelectsAsync(selects, cancellationToken);
+        return PostEntityUpdatesAsync(selects, cancellationToken);
+    }
+
+    /// <summary>
+    /// Replaces all four task-card workspace footers as one serialized group of ESPHome text
+    /// requests. Values are display labels and must not contain full workspace paths.
+    /// </summary>
+    public Task SetTaskWorkspaceLabelsAsync(
+        string task1,
+        string task2,
+        string task3,
+        string task4,
+        CancellationToken cancellationToken = default) =>
+        PostEntityUpdatesAsync(
+            [
+                EntityUpdate.Text("Task 1 Workspace", ValidateWorkspaceLabel(task1)),
+                EntityUpdate.Text("Task 2 Workspace", ValidateWorkspaceLabel(task2)),
+                EntityUpdate.Text("Task 3 Workspace", ValidateWorkspaceLabel(task3)),
+                EntityUpdate.Text("Task 4 Workspace", ValidateWorkspaceLabel(task4)),
+            ],
+            cancellationToken);
+
+    /// <summary>Updates only the task-card workspace footers whose labels changed.</summary>
+    public Task SetTaskWorkspaceLabelUpdatesAsync(
+        IReadOnlyList<EspHomeTaskWorkspaceLabelUpdate> updates,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(updates);
+        var texts = new EntityUpdate[updates.Count];
+        for (var index = 0; index < updates.Count; index++)
+        {
+            var update = updates[index];
+            var entityName = update.Slot switch
+            {
+                1 => "Task 1 Workspace",
+                2 => "Task 2 Workspace",
+                3 => "Task 3 Workspace",
+                4 => "Task 4 Workspace",
+                _ => throw new ArgumentOutOfRangeException(
+                    nameof(updates),
+                    update.Slot,
+                    "ESPHome task slots must be between 1 and 4."),
+            };
+            texts[index] = EntityUpdate.Text(
+                entityName,
+                ValidateWorkspaceLabel(update.Label));
+        }
+
+        return PostEntityUpdatesAsync(texts, cancellationToken);
     }
 
     /// <summary>Cancels the active stream and waits for in-flight transport work to stop.</summary>
@@ -343,6 +409,7 @@ public sealed class EspHomePanelTransport : IEspHomePanelTransport
                 $"ESPHome /events returned unexpected content type '{mediaType ?? "<missing>"}'.");
         }
 
+        Volatile.Write(ref _workspaceLabelSupport, WorkspaceLabelSupportUnknown);
         if (onConnected is not null)
         {
             await onConnected(cancellationToken).ConfigureAwait(false);
@@ -377,10 +444,17 @@ public sealed class EspHomePanelTransport : IEspHomePanelTransport
             .ConfigureAwait(false);
     }
 
-    private async Task PostSelectsAsync(
-        IReadOnlyList<SelectUpdate> updates,
+    private async Task PostEntityUpdatesAsync(
+        IReadOnlyList<EntityUpdate> updates,
         CancellationToken callerCancellation)
     {
+        if (updates.Count > 0
+            && updates[0].Domain == "text"
+            && Volatile.Read(ref _workspaceLabelSupport) == WorkspaceLabelSupportUnavailable)
+        {
+            return;
+        }
+
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             callerCancellation,
             _disposeCancellation.Token);
@@ -396,8 +470,8 @@ public sealed class EspHomePanelTransport : IEspHomePanelTransport
                 using var request = new HttpRequestMessage(
                     HttpMethod.Post,
                     BuildUri(
-                        $"select/{Uri.EscapeDataString(update.EntityName)}/set" +
-                        $"?option={Uri.EscapeDataString(update.Option)}"));
+                        $"{update.Domain}/{Uri.EscapeDataString(update.EntityName)}/set" +
+                        $"?{update.Parameter}={Uri.EscapeDataString(update.Value)}"));
                 HttpResponseMessage response;
                 try
                 {
@@ -409,13 +483,33 @@ public sealed class EspHomePanelTransport : IEspHomePanelTransport
                     when (!cancellationToken.IsCancellationRequested && requestTimeout.IsCancellationRequested)
                 {
                     throw new TimeoutException(
-                        $"Setting ESPHome select '{update.EntityName}' exceeded {_postTimeout.TotalSeconds:g} seconds.",
+                        $"Setting ESPHome {update.Domain} '{update.EntityName}' exceeded {_postTimeout.TotalSeconds:g} seconds.",
                         exception);
                 }
 
                 using (response)
                 {
+                    if (update.Domain == "text" && response.StatusCode == HttpStatusCode.NotFound)
+                    {
+                        if (Interlocked.Exchange(
+                                ref _workspaceLabelSupport,
+                                WorkspaceLabelSupportUnavailable)
+                            != WorkspaceLabelSupportUnavailable)
+                        {
+                            _log?.Invoke(
+                                "ESPHome panel firmware does not expose workspace labels; task states remain active.");
+                        }
+
+                        return;
+                    }
+
                     response.EnsureSuccessStatusCode();
+                    if (update.Domain == "text")
+                    {
+                        Volatile.Write(
+                            ref _workspaceLabelSupport,
+                            WorkspaceLabelSupportAvailable);
+                    }
                 }
             }
         }
@@ -481,8 +575,44 @@ public sealed class EspHomePanelTransport : IEspHomePanelTransport
         _ => throw new ArgumentOutOfRangeException(nameof(state), state, null),
     };
 
-    private sealed record SelectUpdate(string EntityName, string Option);
+    private static string ValidateWorkspaceLabel(string label)
+    {
+        ArgumentNullException.ThrowIfNull(label);
+        if (label.Length > EspHomePanelAdapter.MaximumWorkspaceLabelLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(label),
+                label.Length,
+                $"ESPHome workspace labels cannot exceed {EspHomePanelAdapter.MaximumWorkspaceLabelLength} characters.");
+        }
+
+        if (label.Any(character =>
+                character is < ' ' or > '~' or '\\' or '/' or ':'))
+        {
+            throw new ArgumentException(
+                "ESPHome workspace labels must contain display-safe ASCII without path separators.",
+                nameof(label));
+        }
+
+        return label;
+    }
+
+    private sealed record EntityUpdate(
+        string Domain,
+        string EntityName,
+        string Parameter,
+        string Value)
+    {
+        public static EntityUpdate Select(string entityName, string option) =>
+            new("select", entityName, "option", option);
+
+        public static EntityUpdate Text(string entityName, string value) =>
+            new("text", entityName, "value", value);
+    }
 }
 
 /// <summary>One changed ESPHome task-card projection.</summary>
 public readonly record struct EspHomeTaskStateUpdate(int Slot, EspHomeTaskState State);
+
+/// <summary>One changed ESPHome task-card workspace footer.</summary>
+public readonly record struct EspHomeTaskWorkspaceLabelUpdate(int Slot, string Label);

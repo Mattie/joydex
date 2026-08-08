@@ -251,6 +251,99 @@ public sealed class EspHomePanelTransportTests
     }
 
     [Fact]
+    public async Task WorkspaceLabelPostsUseExactTextEntitiesAndRemainSerialized()
+    {
+        var handler = new SerializedRecordingHandler();
+        using var httpClient = new HttpClient(handler);
+        await using var transport = new EspHomePanelTransport(
+            httpClient,
+            new Uri("http://panel.local"));
+
+        var labels = transport.SetTaskWorkspaceLabelsAsync(
+            "realtime-voice-chat",
+            string.Empty,
+            "two words",
+            "a&b");
+        await handler.FirstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var state = transport.SetTaskStateUpdatesAsync(
+            [new EspHomeTaskStateUpdate(1, EspHomeTaskState.Running)]);
+        handler.ReleaseFirstRequest();
+
+        await Task.WhenAll(labels, state);
+
+        Assert.Equal(1, handler.MaxActiveRequests);
+        Assert.Equal(
+            [
+                "POST /text/Task%201%20Workspace/set?value=realtime-voice-chat",
+                "POST /text/Task%202%20Workspace/set?value=",
+                "POST /text/Task%203%20Workspace/set?value=two%20words",
+                "POST /text/Task%204%20Workspace/set?value=a%26b",
+                "POST /select/Task%201%20State/set?option=RUNNING",
+            ],
+            handler.Requests);
+    }
+
+    [Fact]
+    public async Task WorkspaceLabelUpdatesPostOnlyChangedEntities()
+    {
+        var handler = new SerializedRecordingHandler();
+        using var httpClient = new HttpClient(handler);
+        await using var transport = new EspHomePanelTransport(
+            httpClient,
+            new Uri("http://panel.local"));
+
+        var updates = transport.SetTaskWorkspaceLabelUpdatesAsync(
+            [
+                new EspHomeTaskWorkspaceLabelUpdate(2, "lorebubble"),
+                new EspHomeTaskWorkspaceLabelUpdate(4, string.Empty),
+            ]);
+        await handler.FirstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        handler.ReleaseFirstRequest();
+        await updates;
+
+        Assert.Equal(
+            [
+                "POST /text/Task%202%20Workspace/set?value=lorebubble",
+                "POST /text/Task%204%20Workspace/set?value=",
+            ],
+            handler.Requests);
+    }
+
+    [Fact]
+    public async Task MissingWorkspaceEntitiesDoNotBlockTaskStatesAndAreCapabilityCached()
+    {
+        var handler = new WorkspaceLabelsUnsupportedHandler();
+        using var httpClient = new HttpClient(handler);
+        var logs = new List<string>();
+        await using var transport = new EspHomePanelTransport(
+            httpClient,
+            new Uri("http://panel.local"),
+            logs.Add);
+
+        await transport.SetTaskWorkspaceLabelsAsync("one", "two", "three", "four");
+        await transport.SetTaskStatesAsync(
+            EspHomeTaskState.Running,
+            EspHomeTaskState.Attention,
+            EspHomeTaskState.Complete,
+            EspHomeTaskState.Empty);
+        await transport.SetTaskWorkspaceLabelUpdatesAsync(
+            [new EspHomeTaskWorkspaceLabelUpdate(1, "changed")]);
+
+        Assert.Equal(
+            [
+                "/text/Task%201%20Workspace/set?value=one",
+                "/select/Task%201%20State/set?option=RUNNING",
+                "/select/Task%202%20State/set?option=ATTENTION",
+                "/select/Task%203%20State/set?option=COMPLETE",
+                "/select/Task%204%20State/set?option=EMPTY",
+            ],
+            handler.Paths);
+        Assert.Contains(
+            logs,
+            message => message.Contains("workspace labels", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task TaskStateUpdatesRejectSlotsOutsideThePanel()
     {
         using var httpClient = new HttpClient(new SerializedRecordingHandler());
@@ -261,6 +354,29 @@ public sealed class EspHomePanelTransportTests
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
             () => transport.SetTaskStateUpdatesAsync(
                 [new EspHomeTaskStateUpdate(5, EspHomeTaskState.Running)]));
+    }
+
+    [Fact]
+    public async Task WorkspaceLabelUpdatesRejectInvalidSlotsAndOversizedValues()
+    {
+        using var httpClient = new HttpClient(new SerializedRecordingHandler());
+        await using var transport = new EspHomePanelTransport(
+            httpClient,
+            new Uri("http://panel.local"));
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => transport.SetTaskWorkspaceLabelUpdatesAsync(
+                [new EspHomeTaskWorkspaceLabelUpdate(5, "workspace")]));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => transport.SetTaskWorkspaceLabelUpdatesAsync(
+                [
+                    new EspHomeTaskWorkspaceLabelUpdate(
+                        1,
+                        new string('x', EspHomePanelAdapter.MaximumWorkspaceLabelLength + 1)),
+                ]));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => transport.SetTaskWorkspaceLabelUpdatesAsync(
+                [new EspHomeTaskWorkspaceLabelUpdate(1, @"D:\Dev\private")]));
     }
 
     [Fact]
@@ -731,6 +847,24 @@ public sealed class EspHomePanelTransportTests
             return Task.FromResult(new HttpResponseMessage(
                 requestNumber == 3
                     ? HttpStatusCode.InternalServerError
+                    : HttpStatusCode.OK));
+        }
+    }
+
+    private sealed class WorkspaceLabelsUnsupportedHandler : HttpMessageHandler
+    {
+        public List<string> Paths { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = request.RequestUri!.PathAndQuery;
+            Paths.Add(path);
+            return Task.FromResult(new HttpResponseMessage(
+                path.StartsWith("/text/", StringComparison.Ordinal)
+                    ? HttpStatusCode.NotFound
                     : HttpStatusCode.OK));
         }
     }

@@ -8,7 +8,7 @@ esphome:
   min_version: 2026.7.2
   project:
     name: joydex.wireless_touchscreen
-    version: 0.4.0-bridge-v2
+    version: 0.4.1-bridge-v2
 
 esp32:
   variant: esp32s3
@@ -96,6 +96,63 @@ touchscreen:
       mirror_x: true
       mirror_y: true
 
+text:
+  - platform: template
+    id: task_1_workspace
+    name: Task 1 Workspace
+    optimistic: true
+    restore_value: false
+    max_length: 64
+    mode: text
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: task_1_workspace_label
+            text: !lambda |-
+              return id(task_1_state).current_option() == "EMPTY" ? "" : x;
+
+  - platform: template
+    id: task_2_workspace
+    name: Task 2 Workspace
+    optimistic: true
+    restore_value: false
+    max_length: 64
+    mode: text
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: task_2_workspace_label
+            text: !lambda |-
+              return id(task_2_state).current_option() == "EMPTY" ? "" : x;
+
+  - platform: template
+    id: task_3_workspace
+    name: Task 3 Workspace
+    optimistic: true
+    restore_value: false
+    max_length: 64
+    mode: text
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: task_3_workspace_label
+            text: !lambda |-
+              return id(task_3_state).current_option() == "EMPTY" ? "" : x;
+
+  - platform: template
+    id: task_4_workspace
+    name: Task 4 Workspace
+    optimistic: true
+    restore_value: false
+    max_length: 64
+    mode: text
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: task_4_workspace_label
+            text: !lambda |-
+              return id(task_4_state).current_option() == "EMPTY" ? "" : x;
+
 select:
   - platform: template
     id: task_1_state
@@ -151,6 +208,14 @@ select:
                 return "DONE";
               }
               return x;
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
+        - lvgl.label.update:
+            id: task_1_workspace_label
+            text: !lambda |-
+              return x == "EMPTY" ? "" : id(task_1_workspace).state;
             text_color: !lambda |-
               return x == "COMPLETE"
                 ? lv_color_make(255, 255, 255)
@@ -214,6 +279,14 @@ select:
               return x == "COMPLETE"
                 ? lv_color_make(255, 255, 255)
                 : lv_color_make(82, 82, 82);
+        - lvgl.label.update:
+            id: task_2_workspace_label
+            text: !lambda |-
+              return x == "EMPTY" ? "" : id(task_2_workspace).state;
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
 
   - platform: template
     id: task_3_state
@@ -273,6 +346,14 @@ select:
               return x == "COMPLETE"
                 ? lv_color_make(255, 255, 255)
                 : lv_color_make(82, 82, 82);
+        - lvgl.label.update:
+            id: task_3_workspace_label
+            text: !lambda |-
+              return x == "EMPTY" ? "" : id(task_3_workspace).state;
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
 
   - platform: template
     id: task_4_state
@@ -328,6 +409,14 @@ select:
                 return "DONE";
               }
               return x;
+            text_color: !lambda |-
+              return x == "COMPLETE"
+                ? lv_color_make(255, 255, 255)
+                : lv_color_make(82, 82, 82);
+        - lvgl.label.update:
+            id: task_4_workspace_label
+            text: !lambda |-
+              return x == "EMPTY" ? "" : id(task_4_workspace).state;
             text_color: !lambda |-
               return x == "COMPLETE"
                 ? lv_color_make(255, 255, 255)
@@ -517,7 +606,7 @@ lvgl:
                   x: 8
                   y: 8
                   text: ""
-                  text_font: montserrat_18
+                  text_font: montserrat_16
                   text_color: 0x525252
               - label:
                   id: task_1_state_label
@@ -525,6 +614,16 @@ lvgl:
                   text: ""
                   text_font: montserrat_26
                   text_color: 0x525252
+              - label:
+                  id: task_1_workspace_label
+                  align: BOTTOM_MID
+                  width: 174
+                  height: 18
+                  text: ""
+                  text_font: montserrat_14
+                  text_color: 0x525252
+                  text_align: CENTER
+                  long_mode: DOT
 
         - button:
             id: task_2_card
@@ -547,7 +646,7 @@ lvgl:
                   x: 8
                   y: 8
                   text: ""
-                  text_font: montserrat_18
+                  text_font: montserrat_16
                   text_color: 0x525252
               - label:
                   id: task_2_state_label
@@ -555,6 +654,16 @@ lvgl:
                   text: ""
                   text_font: montserrat_26
                   text_color: 0x525252
+              - label:
+                  id: task_2_workspace_label
+                  align: BOTTOM_MID
+                  width: 174
+                  height: 18
+                  text: ""
+                  text_font: montserrat_14
+                  text_color: 0x525252
+                  text_align: CENTER
+                  long_mode: DOT
 
         - button:
             id: task_3_card
@@ -577,7 +686,7 @@ lvgl:
                   x: 8
                   y: 8
                   text: ""
-                  text_font: montserrat_18
+                  text_font: montserrat_16
                   text_color: 0x525252
               - label:
                   id: task_3_state_label
@@ -585,6 +694,16 @@ lvgl:
                   text: ""
                   text_font: montserrat_26
                   text_color: 0x525252
+              - label:
+                  id: task_3_workspace_label
+                  align: BOTTOM_MID
+                  width: 174
+                  height: 18
+                  text: ""
+                  text_font: montserrat_14
+                  text_color: 0x525252
+                  text_align: CENTER
+                  long_mode: DOT
 
         - button:
             id: task_4_card
@@ -607,7 +726,7 @@ lvgl:
                   x: 8
                   y: 8
                   text: ""
-                  text_font: montserrat_18
+                  text_font: montserrat_16
                   text_color: 0x525252
               - label:
                   id: task_4_state_label
@@ -615,6 +734,16 @@ lvgl:
                   text: ""
                   text_font: montserrat_26
                   text_color: 0x525252
+              - label:
+                  id: task_4_workspace_label
+                  align: BOTTOM_MID
+                  width: 174
+                  height: 18
+                  text: ""
+                  text_font: montserrat_14
+                  text_color: 0x525252
+                  text_align: CENTER
+                  long_mode: DOT
 
         - button:
             id: sidebar_button

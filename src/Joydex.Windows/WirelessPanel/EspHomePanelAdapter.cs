@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using Joydex.Core.Config;
 using Joydex.Core.Mapping;
 using Joydex.Core.TaskAlerts;
@@ -12,6 +14,8 @@ namespace Joydex.Windows.WirelessPanel;
 /// </summary>
 public sealed class EspHomePanelAdapter : IAsyncDisposable
 {
+    internal const int MaximumWorkspaceLabelLength = 64;
+
     private static readonly TimeSpan DefaultStateRetryDelay = TimeSpan.FromSeconds(2);
     private static readonly IReadOnlyDictionary<
         EspHomePanelButton,
@@ -186,7 +190,11 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
             ProjectSlot(snapshot, 1),
             ProjectSlot(snapshot, 2),
             ProjectSlot(snapshot, 3),
-            ProjectSlot(snapshot, 4));
+            ProjectSlot(snapshot, 4),
+            ProjectWorkspaceLabel(snapshot, 1),
+            ProjectWorkspaceLabel(snapshot, 2),
+            ProjectWorkspaceLabel(snapshot, 3),
+            ProjectWorkspaceLabel(snapshot, 4));
     }
 
     private static EspHomeTaskState ProjectSlot(TaskAlertSnapshot snapshot, int slot)
@@ -201,6 +209,79 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
             TaskAlertState.Fault => EspHomeTaskState.Attention,
             _ => throw new ArgumentOutOfRangeException(nameof(snapshot), assignment.State, null),
         };
+    }
+
+    internal static string ProjectWorkspaceLabel(TaskAlertSnapshot snapshot, int slot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var workspace = snapshot.Assignments
+            .FirstOrDefault(candidate => candidate.Slot == slot)
+            ?.Workspace;
+        if (string.IsNullOrWhiteSpace(workspace))
+        {
+            return string.Empty;
+        }
+
+        var trimmedPath = workspace.TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        var leaf = Path.GetFileName(trimmedPath);
+        if (string.IsNullOrWhiteSpace(leaf))
+        {
+            leaf = trimmedPath;
+        }
+
+        string decomposed;
+        try
+        {
+            decomposed = leaf.Normalize(NormalizationForm.FormD);
+        }
+        catch (ArgumentException)
+        {
+            decomposed = leaf;
+        }
+
+        var display = new StringBuilder(Math.Min(decomposed.Length, MaximumWorkspaceLabelLength));
+        var previousWasSpace = false;
+        foreach (var character in decomposed)
+        {
+            var category = CharUnicodeInfo.GetUnicodeCategory(character);
+            if (category is UnicodeCategory.NonSpacingMark
+                or UnicodeCategory.SpacingCombiningMark
+                or UnicodeCategory.EnclosingMark)
+            {
+                continue;
+            }
+
+            var mapped = character switch
+            {
+                '\\' or '/' or ':' => '-',
+                >= ' ' and <= '~' => character,
+                _ when char.IsWhiteSpace(character) => ' ',
+                _ => '?',
+            };
+            if (mapped == ' ')
+            {
+                if (display.Length == 0 || previousWasSpace)
+                {
+                    continue;
+                }
+
+                previousWasSpace = true;
+            }
+            else
+            {
+                previousWasSpace = false;
+            }
+
+            display.Append(mapped);
+            if (display.Length == MaximumWorkspaceLabelLength)
+            {
+                break;
+            }
+        }
+
+        return display.ToString().TrimEnd();
     }
 
     private async Task PublishLoopAsync(CancellationToken cancellationToken)
@@ -260,8 +341,8 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
                     return;
                 }
 
-                // A multi-select REST update is serialized but cannot be atomic. Retry against the
-                // last confirmed snapshot so a partial write converges without new task data.
+                // A multi-entity REST update is serialized but cannot be atomic. Retry against
+                // the last confirmed snapshot so a partial write converges without new task data.
                 SignalPublisher();
             }
         }
@@ -317,6 +398,13 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
 
         if (force || _lastPublishedSnapshot is not { } previous)
         {
+            await _transport.SetTaskWorkspaceLabelsAsync(
+                    projected.Task1Workspace,
+                    projected.Task2Workspace,
+                    projected.Task3Workspace,
+                    projected.Task4Workspace,
+                    cancellationToken)
+                .ConfigureAwait(false);
             await _transport.SetTaskStatesAsync(
                     projected.Task1,
                     projected.Task2,
@@ -327,10 +415,21 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
         }
         else
         {
-            var updates = GetChangedTaskStates(previous, projected);
-            await _transport
-                .SetTaskStateUpdatesAsync(updates, cancellationToken)
-                .ConfigureAwait(false);
+            var workspaceUpdates = GetChangedWorkspaceLabels(previous, projected);
+            if (workspaceUpdates.Count > 0)
+            {
+                await _transport
+                    .SetTaskWorkspaceLabelUpdatesAsync(workspaceUpdates, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            var stateUpdates = GetChangedTaskStates(previous, projected);
+            if (stateUpdates.Count > 0)
+            {
+                await _transport
+                    .SetTaskStateUpdatesAsync(stateUpdates, cancellationToken)
+                    .ConfigureAwait(false);
+            }
         }
 
         _lastPublishedSnapshot = projected;
@@ -352,6 +451,26 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
             if (oldState != newState)
             {
                 updates.Add(new EspHomeTaskStateUpdate(slot, newState));
+            }
+        }
+    }
+
+    private static IReadOnlyList<EspHomeTaskWorkspaceLabelUpdate> GetChangedWorkspaceLabels(
+        EspHomePanelSnapshot previous,
+        EspHomePanelSnapshot current)
+    {
+        var updates = new List<EspHomeTaskWorkspaceLabelUpdate>(4);
+        AddIfChanged(1, previous.Task1Workspace, current.Task1Workspace);
+        AddIfChanged(2, previous.Task2Workspace, current.Task2Workspace);
+        AddIfChanged(3, previous.Task3Workspace, current.Task3Workspace);
+        AddIfChanged(4, previous.Task4Workspace, current.Task4Workspace);
+        return updates;
+
+        void AddIfChanged(int slot, string oldLabel, string newLabel)
+        {
+            if (!string.Equals(oldLabel, newLabel, StringComparison.Ordinal))
+            {
+                updates.Add(new EspHomeTaskWorkspaceLabelUpdate(slot, newLabel));
             }
         }
     }
@@ -487,7 +606,11 @@ internal readonly record struct EspHomePanelSnapshot(
     EspHomeTaskState Task1,
     EspHomeTaskState Task2,
     EspHomeTaskState Task3,
-    EspHomeTaskState Task4)
+    EspHomeTaskState Task4,
+    string Task1Workspace = "",
+    string Task2Workspace = "",
+    string Task3Workspace = "",
+    string Task4Workspace = "")
 {
     public static EspHomePanelSnapshot Empty { get; } = new(
         EspHomeTaskState.Empty,

@@ -4,6 +4,10 @@ This file records the major capabilities and fixes added since Joydex was first 
 
 ## 2026-08-08
 
+- Added centered workspace-name footers to the four bridge-v2 touchscreen task
+  cards. Joydex sends only the display-safe working-directory folder name,
+  updates changed labels without redrawing unrelated cards, and restores all
+  labels after a panel reconnect.
 - Added persistent TASK and WORKSPACE ignore rules for Codex task signaling.
   The tray status window can immediately remove one task, durably suppress all
   task IDs launched from one exact workspace, and re-enable either scope. The

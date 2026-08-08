@@ -25,7 +25,7 @@ flashing:
   MUTE, and `>`; the TASK CONTROLS page adds workflow commands and local page
   navigation.
 
-All three expose the same task contract:
+All three expose the same task state and touch contract:
 
 - `Task 1 State` through `Task 4 State` accept `EMPTY`, `RUNNING`,
   `ATTENTION`, and `COMPLETE`.
@@ -33,6 +33,12 @@ All three expose the same task contract:
 - The visible `PLAN MODE` control retains the ESPHome entity name `Sidebar`
   for compatibility with the first deployed firmware.
 - `/events` supplies authenticated Server-Sent Events to Joydex.
+
+Bridge-v2 additionally exposes `Task 1 Workspace` through `Task 4 Workspace`
+as writable text entities. Joydex sends a display-safe folder name of at most
+64 characters, while the full workspace path stays on the host. Each occupied
+task card shows that value as a centered 14 px footer and uses pixel-width
+ellipsis when the name does not fit.
 
 Bridge-v2 exposes momentary `Fast Mode`, `Side Chat`, `Voice Mute`, `Approve`,
 `Reject`, `New Task`, `Fork Task`, `Previous Task`, `Submit`, and `Next Task`
@@ -176,14 +182,19 @@ events without a separate marker, so Joydex suppresses the first state
 observed for each expected touch entity and then reacts to live `OFF` to `ON`
 edges.
 
-Normal task changes post only the slots whose projected state changed, which
-limits display redraws. Every SSE reconnect forces a complete four-slot
-replacement so the panel converges after a network or host interruption.
+Normal task changes post only the state or workspace entities whose projected
+values changed, which limits display redraws. Every SSE reconnect forces a
+complete four-slot state and workspace replacement so the panel converges
+after a network or host interruption. When the original firmware is installed,
+Joydex treats its missing workspace entities as an optional capability and
+continues publishing task states. A later connection probes the capability
+again, which keeps firmware upgrades and rollback configurations usable.
 
 Example state update:
 
 ```text
 POST /select/Task%201%20State/set?option=RUNNING
+POST /text/Task%201%20Workspace/set?value=realtime-voice-chat
 ```
 
 See the [research record](../../docs/WIRELESS_TOUCHSCREEN_RESEARCH_V1.1.md) for

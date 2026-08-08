@@ -167,9 +167,11 @@ PLAN, FAST, SIDE, MUTE, and `>`. The arrow opens a TASK CONTROLS page with large
 APPROVE, DECLINE, NEW TASK, and FORK controls plus a `<`, PREV, SUBMIT, NEXT,
 `>` footer. The left arrow returns to the task page, and the gray final arrow is
 reserved for a future third page. Arrow presses stay on the panel; named commands
-use Joydex's existing semantic actions. The panel uses authenticated REST and
-Server-Sent Events to communicate with Joydex; Home Assistant and MQTT are not
-required.
+use Joydex's existing semantic actions. Each bridge-v2 task card also shows the
+available working-directory folder name in a small centered footer; long names
+end in an ellipsis and full paths never reach the panel. The panel uses
+authenticated REST and Server-Sent Events to communicate with Joydex; Home
+Assistant and MQTT are not required.
 
 Screenshot of it working (Magic card for scale):
 

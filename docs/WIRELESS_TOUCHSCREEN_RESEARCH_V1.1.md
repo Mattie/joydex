@@ -87,6 +87,7 @@ The panel exposes these host-facing entities:
 | Entity | Direction | Purpose |
 | --- | --- | --- |
 | `Task 1 State` … `Task 4 State` | Joydex → panel | Writable optimistic selects |
+| `Task 1 Workspace` … `Task 4 Workspace` | Joydex → panel | Bridge-v2 writable text labels containing only display-safe workspace folder names |
 | `Task 1` … `Task 4` | Panel → Joydex | Momentary LVGL-backed binary sensors |
 | `Sidebar` | Panel → Joydex | Legacy wire name for the visible PLAN MODE control |
 | `Fast Mode` | Panel → Joydex | Bridge-v2 Fast Mode command |
