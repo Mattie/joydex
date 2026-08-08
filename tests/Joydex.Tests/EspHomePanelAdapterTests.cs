@@ -140,16 +140,24 @@ public sealed class EspHomePanelAdapterTests
     }
 
     [Fact]
-    public async Task PlanModeUsesTheExistingSemanticAction()
+    public async Task CommandButtonsUseTheExistingSemanticActions()
     {
         var snapshot = Snapshot(enabled: true);
+        var expected = new[]
+        {
+            (EspHomePanelButton.PlanMode, "Plan Mode", CodexAction.TogglePlanMode),
+            (EspHomePanelButton.FastMode, "Fast Mode", CodexAction.ToggleFastMode),
+            (EspHomePanelButton.SideChat, "Side Chat", CodexAction.SideConversation),
+            (EspHomePanelButton.VoiceMute, "Voice Mute", CodexAction.ToggleVoiceChatMicrophone),
+            (EspHomePanelButton.Approve, "Approve", CodexAction.Approve),
+            (EspHomePanelButton.Reject, "Reject", CodexAction.Reject),
+            (EspHomePanelButton.NewTask, "New Task", CodexAction.NewTask),
+            (EspHomePanelButton.ForkTask, "Fork Task", CodexAction.ForkTask),
+            (EspHomePanelButton.PreviousTask, "Previous Task", CodexAction.PreviousTask),
+            (EspHomePanelButton.Submit, "Submit", CodexAction.Submit),
+            (EspHomePanelButton.NextTask, "Next Task", CodexAction.NextTask),
+        };
         var requests = new List<ActionRequest>();
-        var results = new Queue<ActionExecutionResult>(
-        [
-            ActionExecutionResult.Success("sent"),
-            ActionExecutionResult.Simulated("dry run"),
-            ActionExecutionResult.Blocked("blocked"),
-        ]);
         await using var transport = new RecordingTransport();
         await using var adapter = CreateAdapter(
             transport,
@@ -158,22 +166,48 @@ public sealed class EspHomePanelAdapterTests
             executeAction: (request, _) =>
             {
                 requests.Add(request);
-                return Task.FromResult(results.Dequeue());
+                return Task.FromResult(ActionExecutionResult.Success("sent"));
             });
         adapter.Start();
 
-        await transport.PressAsync(EspHomePanelButton.PlanMode);
-        await transport.PressAsync(EspHomePanelButton.PlanMode);
-        await transport.PressAsync(EspHomePanelButton.PlanMode);
-
-        Assert.All(requests, request =>
+        foreach (var (button, _, _) in expected)
         {
-            Assert.Equal("ESPHome panel Plan Mode", request.BindingName);
-            Assert.Equal(CodexAction.TogglePlanMode, request.Action);
+            await transport.PressAsync(button);
+        }
+
+        Assert.Equal(expected.Length, requests.Count);
+        for (var index = 0; index < expected.Length; index++)
+        {
+            var (button, displayName, action) = expected[index];
+            var request = requests[index];
+            Assert.Equal($"ESPHome panel {displayName}", request.BindingName);
+            Assert.Equal(action, request.Action);
+            Assert.Equal((int)button, request.Button);
             Assert.Equal("press", request.Trigger);
             Assert.Equal("always", request.Bank);
             Assert.Equal("esphome-panel", request.DeviceId);
-        });
+        }
+    }
+
+    [Theory]
+    [InlineData(EspHomePanelButton.Task1, 1)]
+    [InlineData(EspHomePanelButton.Task2, 2)]
+    [InlineData(EspHomePanelButton.Task3, 3)]
+    [InlineData(EspHomePanelButton.Task4, 4)]
+    [InlineData(EspHomePanelButton.PlanMode, 5)]
+    [InlineData(EspHomePanelButton.FastMode, 6)]
+    [InlineData(EspHomePanelButton.SideChat, 7)]
+    [InlineData(EspHomePanelButton.VoiceMute, 8)]
+    [InlineData(EspHomePanelButton.Approve, 9)]
+    [InlineData(EspHomePanelButton.Reject, 10)]
+    [InlineData(EspHomePanelButton.NewTask, 11)]
+    [InlineData(EspHomePanelButton.ForkTask, 12)]
+    [InlineData(EspHomePanelButton.PreviousTask, 13)]
+    [InlineData(EspHomePanelButton.Submit, 14)]
+    [InlineData(EspHomePanelButton.NextTask, 15)]
+    public void PanelButtonNumericValuesRemainStable(EspHomePanelButton button, int expected)
+    {
+        Assert.Equal(expected, (int)button);
     }
 
     [Fact]

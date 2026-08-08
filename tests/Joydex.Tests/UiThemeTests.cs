@@ -167,6 +167,44 @@ public sealed class UiThemeTests
     }
 
     [Fact]
+    public void PageTabPreferredWidthFitsItsFullLabelAndExposesTabSemantics()
+    {
+        using var host = new FlowLayoutPanel();
+        using var tab = new PageTabButton
+        {
+            AutoSize = true,
+            Selected = true,
+            Text = "Current state",
+        };
+        using var nextTab = new PageTabButton { Text = "Event stream" };
+        host.Controls.Add(tab);
+        host.Controls.Add(nextTab);
+        var tabActivationCount = 0;
+        var nextTabActivationCount = 0;
+        tab.Click += (_, _) => tabActivationCount++;
+        nextTab.Click += (_, _) => nextTabActivationCount++;
+        var preferred = tab.GetPreferredSize(Size.Empty);
+        var text = TextRenderer.MeasureText(
+            tab.Text,
+            JoydexTheme.FontFor(tab, JoydexTheme.UiSemiboldFont),
+            Size.Empty,
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+
+        Assert.True(preferred.Width - 24 >= text.Width);
+        Assert.Equal(AccessibleRole.PageTab, tab.AccessibilityObject.Role);
+        Assert.True(tab.AccessibilityObject.State.HasFlag(AccessibleStates.Selected));
+        Assert.Equal("Select", tab.AccessibilityObject.DefaultAction);
+
+        tab.AccessibilityObject.DoDefaultAction();
+        typeof(PageTabButton)
+            .GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(tab, [new KeyEventArgs(Keys.Right)]);
+
+        Assert.Equal(1, tabActivationCount);
+        Assert.Equal(1, nextTabActivationCount);
+    }
+
+    [Fact]
     public void PrimaryButtonPreferredWidthUsesItsPaintedSemiboldFont()
     {
         using var button = new RoundedButton

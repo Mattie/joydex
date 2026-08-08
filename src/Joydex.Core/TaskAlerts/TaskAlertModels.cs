@@ -23,7 +23,8 @@ public sealed record TaskAlertEvent(
     string SessionId,
     string? TurnId,
     DateTimeOffset ReceivedAt,
-    string? AttentionKey = null);
+    string? AttentionKey = null,
+    string? Workspace = null);
 
 public sealed record TaskAlertAssignment(
     int Slot,
@@ -31,7 +32,9 @@ public sealed record TaskAlertAssignment(
     string? TurnId,
     TaskAlertState State,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompleteAfter = null);
+    DateTimeOffset? CompleteAfter = null,
+    string? WorkspaceKey = null,
+    string? Workspace = null);
 
 /// <summary>
 /// Captures the task assignments and pending approval correlations that must
@@ -51,7 +54,8 @@ public sealed record TaskAlertStoredAssignment(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompleteAfter,
     TaskAlertCorrelationCount[] CorrelatedAttention,
-    int UncorrelatedAttentionCount);
+    int UncorrelatedAttentionCount,
+    string? WorkspaceKey = null);
 
 /// <summary>Stores one privacy-preserving correlation hash and its pending count.</summary>
 public sealed record TaskAlertCorrelationCount(string Key, int Count);

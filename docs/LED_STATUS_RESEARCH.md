@@ -64,7 +64,7 @@ Any Codex task claims the lowest free slot. Slots do not move when another slot 
 
 On M2-M4, B3 and B6 remain ordinary controls with baseline colors. On the dedicated M1 overflow page, they become overflow slots 7 and 10. An unoccupied slot always falls through to its ordinary binding.
 
-The master enabled flag and fallback bank live in `task-alerts.json` beside the normal Joydex configuration. Earlier per-channel settings are accepted during migration and ignored because the bank layout is now fixed. Live assignments, completion deadlines, and pending-attention counts are saved separately in `task-alert-state.json`. Correlated attention is stored as SHA-256 keys; prompt text, commands, patches, and tool responses are never written to this file. Both stores use a flushed temporary file followed by atomic replacement.
+The master enabled flag, fallback bank, and user-selected TASK or WORKSPACE suppression rules live in `task-alerts.json` beside the normal Joydex configuration. Earlier per-channel settings are accepted during migration and ignored because the bank layout is now fixed. Live assignments, completion deadlines, pending-attention counts, and workspace hashes are saved separately in `task-alert-state.json`. Correlated attention and workspace identity are stored as SHA-256 keys; prompt text, commands, patches, tool responses, and raw workspace paths are never written to this file. Both stores use a flushed temporary file followed by atomic replacement.
 
 When Joydex restarts with task alerts enabled, it restores the saved slot numbers and attention state, immediately expires stale leases, and resumes publishing the resulting LinkTool state. Invalid state is moved to a timestamped quarantine file so startup can continue empty. Disabling task alerts clears the saved assignments.
 
@@ -98,17 +98,23 @@ After updating to `OpenAI.Codex 26.715.3651.0`, the same metadata-only probe cap
 
 ### Relay protocol
 
-`Joydex.HookRelay.exe` is a NativeAOT `win-x64` executable. Its source-generated parser reads `hook_event_name`, `session_id`, `turn_id`, `tool_name`, and `tool_input`. Tool input is canonicalized in memory only long enough to calculate the attention key. Raw commands, patches, prompts, tool responses, transcript paths, and assistant messages are never sent to Joydex or retained by the relay.
+`Joydex.HookRelay.exe` is a NativeAOT `win-x64` executable. Its source-generated parser reads `hook_event_name`, `session_id`, `turn_id`, `cwd`, `tool_name`, and `tool_input`. Tool input is canonicalized in memory only long enough to calculate the attention key. The normalized working directory is forwarded so Joydex can apply a user-selected WORKSPACE rule. Raw commands, patches, prompts, tool responses, transcript paths, and assistant messages are never sent to Joydex or retained by the relay.
 
 For supported events it writes one compact JSON object to `Joydex.TaskAlerts.v1`:
 
 ```json
-{"event":"PermissionRequest","sessionId":"...","turnId":"...","attentionKey":"A SHA-256 hex digest","receivedAtUnixMs":1784300000000}
+{"event":"PermissionRequest","sessionId":"...","turnId":"...","attentionKey":"A SHA-256 hex digest","workspace":"C:\\selected\\workspace","receivedAtUnixMs":1784300000000}
 ```
 
 The relay makes one immediate named-pipe open inside a 20 ms connection budget and never retries. It uses `CreateFileW` directly because `NamedPipeClientStream.Connect(0)` still waits for a Windows pipe-default timeout when every instance is busy. A missing or busy Joydex instance is a successful no-op. `Stop` writes the protocol-required `{}` response to stdout. The other hooks write nothing. Every path exits with code zero.
 
 The long-running receiver uses `PipeOptions.CurrentUserOnly`, accepts simultaneous pipe clients, and rejects messages over 16 KiB. It places validated events onto one reducer queue. It does not wait for routing or VIRPIL output.
+
+### Human-readable task metadata finding (August 8, 2026)
+
+The documented hook contract exposes `session_id`, `transcript_path`, `cwd`, `hook_event_name`, and model/permission details, but no task title or Codex project name. The local `session_index.jsonl` was observed carrying append-only `thread_name` records, and the desktop app's private state also contains richer catalog metadata. Joydex does not parse either source: neither persistence schema is a supported hook interface, and transcript format is explicitly unstable.
+
+The supported Codex App Server `thread/read` and `thread/list` methods can hydrate `thread.name`. A standalone probe could not use the current Windows Store app's bundled `codex.exe` because package ACLs reject direct execution, while the separately installed `%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe` was older and could not initialize against the current configuration. Starting or scraping one of those mismatched internals solely for labels would make status signaling depend on installation details outside the hook contract. Joydex therefore displays the task ID plus the leaf folder from `cwd`, stores full paths only for user-created WORKSPACE rules, and defers title enrichment until a supported local endpoint or hook field is available.
 
 The original lifecycle-payload benchmarks produced:
 

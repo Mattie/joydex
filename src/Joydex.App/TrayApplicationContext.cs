@@ -127,7 +127,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             CheckOnClick = false,
             Checked = _taskAlerts.GetSnapshot().Enabled,
         };
-        _taskAlertsStatusItem = new ToolStripMenuItem("Task alerts status...", image: null, OnTaskAlertsStatus);
+        _taskAlertsStatusItem = new ToolStripMenuItem("Task alerts / ignored tasks...", image: null, OnTaskAlertsStatus);
         var reloadItem = new ToolStripMenuItem("Reload configuration", image: null, OnReloadConfig);
         var openConfigItem = new ToolStripMenuItem("Open config JSON...", image: null, (_, _) => OpenPath(_configPath));
         var openLogItem = new ToolStripMenuItem("Open log", image: null, (_, _) => OpenPath(_log.Path));

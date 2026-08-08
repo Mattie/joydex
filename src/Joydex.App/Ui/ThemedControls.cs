@@ -430,6 +430,203 @@ internal sealed class StatusLabel : Label
 }
 
 /// <summary>
+/// Horizontal page tab with tab-style keyboard navigation and a selected underline.
+/// </summary>
+internal sealed class PageTabButton : Control
+{
+    private bool _hovered;
+    private bool _selected;
+
+    public PageTabButton()
+    {
+        AccessibleRole = AccessibleRole.PageTab;
+        Cursor = Cursors.Hand;
+        Font = JoydexTheme.UiFont;
+        Height = 38;
+        Margin = new Padding(0, 0, 8, 0);
+        TabStop = true;
+        SetStyle(
+            ControlStyles.UserPaint
+            | ControlStyles.AllPaintingInWmPaint
+            | ControlStyles.OptimizedDoubleBuffer
+            | ControlStyles.Selectable
+            | ControlStyles.ResizeRedraw,
+            true);
+    }
+
+    public bool Selected
+    {
+        get => _selected;
+        set
+        {
+            if (_selected == value)
+            {
+                return;
+            }
+
+            _selected = value;
+            AccessibilityNotifyClients(AccessibleEvents.StateChange, -1);
+            Invalidate();
+        }
+    }
+
+    public override Size GetPreferredSize(Size proposedSize)
+    {
+        var preferredFont = Selected
+            ? JoydexTheme.FontFor(this, JoydexTheme.UiSemiboldFont)
+            : Font;
+        var flags = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding;
+        var textSize = IsHandleCreated
+            ? MeasureWithControlGraphics(preferredFont, flags)
+            : TextRenderer.MeasureText(Text, preferredFont, Size.Empty, flags);
+        return new Size(
+            textSize.Width + JoydexTheme.ScaleLogical(44, DeviceDpi),
+            Math.Max(JoydexTheme.ScaleLogical(38, DeviceDpi), textSize.Height + JoydexTheme.ScaleLogical(14, DeviceDpi)));
+    }
+
+    protected override AccessibleObject CreateAccessibilityInstance() => new PageTabAccessibleObject(this);
+
+    protected override void OnMouseEnter(EventArgs eventArgs)
+    {
+        _hovered = true;
+        Invalidate();
+        base.OnMouseEnter(eventArgs);
+    }
+
+    protected override void OnMouseLeave(EventArgs eventArgs)
+    {
+        _hovered = false;
+        Invalidate();
+        base.OnMouseLeave(eventArgs);
+    }
+
+    protected override bool IsInputKey(Keys keyData)
+    {
+        var key = keyData & Keys.KeyCode;
+        return key is Keys.Left or Keys.Right or Keys.Home or Keys.End
+            || base.IsInputKey(keyData);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs eventArgs)
+    {
+        if (eventArgs.KeyCode is Keys.Space or Keys.Enter)
+        {
+            OnClick(EventArgs.Empty);
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.KeyCode == Keys.Left)
+        {
+            MoveFocus(-1);
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.KeyCode == Keys.Right)
+        {
+            MoveFocus(1);
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.KeyCode == Keys.Home)
+        {
+            MoveFocus(int.MinValue);
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.KeyCode == Keys.End)
+        {
+            MoveFocus(int.MaxValue);
+            eventArgs.Handled = true;
+        }
+
+        base.OnKeyDown(eventArgs);
+    }
+
+    protected override void OnPaint(PaintEventArgs eventArgs)
+    {
+        eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var scale = DeviceDpi / 96F;
+        int Scale(int value) => (int)Math.Round(value * scale);
+        var bounds = new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
+        if (_hovered && !Selected)
+        {
+            using var hoverPath = ThemeDrawing.RoundedRectangle(
+                new Rectangle(0, Scale(3), bounds.Width, Math.Max(0, bounds.Height - Scale(6))),
+                Scale(5));
+            using var hoverBrush = new SolidBrush(JoydexTheme.HoverBg);
+            eventArgs.Graphics.FillPath(hoverBrush, hoverPath);
+        }
+
+        TextRenderer.DrawText(
+            eventArgs.Graphics,
+            Text,
+            Selected ? JoydexTheme.FontFor(this, JoydexTheme.UiSemiboldFont) : Font,
+            new Rectangle(Scale(12), 0, Math.Max(0, Width - Scale(24)), Math.Max(0, Height - Scale(3))),
+            Selected ? JoydexTheme.AccentText : JoydexTheme.TextSub,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+
+        if (Selected)
+        {
+            using var underline = new SolidBrush(JoydexTheme.Accent);
+            eventArgs.Graphics.FillRectangle(
+                underline,
+                Scale(8),
+                Math.Max(0, Height - Scale(3)),
+                Math.Max(1, Width - Scale(16)),
+                Scale(3));
+        }
+
+        if (Focused && ShowFocusCues)
+        {
+            ControlPaint.DrawFocusRectangle(eventArgs.Graphics, Rectangle.Inflate(bounds, -Scale(4), -Scale(4)));
+        }
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs eventArgs)
+    {
+        base.OnDpiChangedAfterParent(eventArgs);
+        Parent?.PerformLayout(this, nameof(DeviceDpi));
+        Invalidate();
+    }
+
+    private Size MeasureWithControlGraphics(Font font, TextFormatFlags flags)
+    {
+        using var graphics = CreateGraphics();
+        return TextRenderer.MeasureText(graphics, Text, font, Size.Empty, flags);
+    }
+
+    private void InvokeTab() => OnClick(EventArgs.Empty);
+
+    private void MoveFocus(int delta)
+    {
+        var siblings = Parent?.Controls
+            .OfType<PageTabButton>()
+            .Where(tab => tab.Enabled && tab.Visible)
+            .ToList();
+        if (siblings is not { Count: > 0 })
+        {
+            return;
+        }
+
+        var current = siblings.IndexOf(this);
+        var target = delta switch
+        {
+            int.MinValue => 0,
+            int.MaxValue => siblings.Count - 1,
+            _ => (current + delta + siblings.Count) % siblings.Count,
+        };
+        siblings[target].Focus();
+        siblings[target].OnClick(EventArgs.Empty);
+    }
+
+    private sealed class PageTabAccessibleObject(PageTabButton owner) : ControlAccessibleObject(owner)
+    {
+        public override string? DefaultAction => "Select";
+
+        public override AccessibleStates State => base.State
+            | (owner.Selected ? AccessibleStates.Selected | AccessibleStates.Checked : AccessibleStates.None);
+
+        public override void DoDefaultAction() => owner.InvokeTab();
+    }
+}
+
+/// <summary>
 /// Sidebar page selector with radio-style keyboard navigation.
 /// </summary>
 internal enum NavGlyph

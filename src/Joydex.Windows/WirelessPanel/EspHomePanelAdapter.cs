@@ -7,12 +7,29 @@ using Joydex.Windows.TaskAlerts;
 namespace Joydex.Windows.WirelessPanel;
 
 /// <summary>
-/// Projects Joydex task alerts onto the fixed ESPHome screen and routes its five touch targets
-/// through the existing task navigator and semantic action executor.
+/// Projects Joydex task alerts onto the fixed ESPHome screen and routes its host-facing touch
+/// targets through the existing task navigator and semantic action executor.
 /// </summary>
 public sealed class EspHomePanelAdapter : IAsyncDisposable
 {
     private static readonly TimeSpan DefaultStateRetryDelay = TimeSpan.FromSeconds(2);
+    private static readonly IReadOnlyDictionary<
+        EspHomePanelButton,
+        (string DisplayName, CodexAction Action)> PanelActions =
+        new Dictionary<EspHomePanelButton, (string DisplayName, CodexAction Action)>
+        {
+            [EspHomePanelButton.PlanMode] = ("Plan Mode", CodexAction.TogglePlanMode),
+            [EspHomePanelButton.FastMode] = ("Fast Mode", CodexAction.ToggleFastMode),
+            [EspHomePanelButton.SideChat] = ("Side Chat", CodexAction.SideConversation),
+            [EspHomePanelButton.VoiceMute] = ("Voice Mute", CodexAction.ToggleVoiceChatMicrophone),
+            [EspHomePanelButton.Approve] = ("Approve", CodexAction.Approve),
+            [EspHomePanelButton.Reject] = ("Reject", CodexAction.Reject),
+            [EspHomePanelButton.NewTask] = ("New Task", CodexAction.NewTask),
+            [EspHomePanelButton.ForkTask] = ("Fork Task", CodexAction.ForkTask),
+            [EspHomePanelButton.PreviousTask] = ("Previous Task", CodexAction.PreviousTask),
+            [EspHomePanelButton.Submit] = ("Submit", CodexAction.Submit),
+            [EspHomePanelButton.NextTask] = ("Next Task", CodexAction.NextTask),
+        };
 
     private readonly IEspHomePanelTransport _transport;
     private readonly Func<TaskAlertSnapshot> _getSnapshot;
@@ -359,8 +376,17 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
                 case EspHomePanelButton.Task4:
                     await OpenCurrentSlotAsync(4, cancellationToken).ConfigureAwait(false);
                     break;
-                case EspHomePanelButton.PlanMode:
-                    await TogglePlanModeAsync(cancellationToken).ConfigureAwait(false);
+                default:
+                    if (PanelActions.TryGetValue(button, out var panelAction))
+                    {
+                        await ExecutePanelActionAsync(
+                                button,
+                                panelAction.DisplayName,
+                                panelAction.Action,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
                     break;
             }
         }
@@ -410,14 +436,18 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
 
     }
 
-    private async Task TogglePlanModeAsync(CancellationToken cancellationToken)
+    private async Task ExecutePanelActionAsync(
+        EspHomePanelButton button,
+        string displayName,
+        CodexAction action,
+        CancellationToken cancellationToken)
     {
         var request = new ActionRequest(
-            "ESPHome panel Plan Mode",
+            $"ESPHome panel {displayName}",
             CompanionConfig.AlwaysBank,
-            (int)EspHomePanelButton.PlanMode,
+            (int)button,
             "press",
-            CodexAction.TogglePlanMode,
+            action,
             DateTimeOffset.UtcNow,
             DeviceId: "esphome-panel");
         await _executeAction(request, cancellationToken).ConfigureAwait(false);

@@ -10,7 +10,8 @@ public sealed record TaskAlertSnapshot(
     long DroppedEventCount,
     int Bank = 2,
     bool BankAutomaticallyDetected = false,
-    IReadOnlyList<TaskAlertEventTrace>? RecentEvents = null);
+    IReadOnlyList<TaskAlertEventTrace>? RecentEvents = null,
+    IReadOnlyList<TaskAlertSuppressionRule>? Suppressions = null);
 
 public enum TaskAlertEventResult
 {
@@ -19,6 +20,7 @@ public enum TaskAlertEventResult
     StopGrace,
     Dropped,
     Ignored,
+    Suppressed,
 }
 
 public sealed record TaskAlertEventTrace(
@@ -28,7 +30,8 @@ public sealed record TaskAlertEventTrace(
     string? TurnId,
     int? Slot,
     TaskAlertState? State,
-    TaskAlertEventResult Result);
+    TaskAlertEventResult Result,
+    string? Workspace = null);
 
 public sealed class TaskAlertCoordinator : IAsyncDisposable
 {
@@ -154,6 +157,70 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         RaiseChanged(snapshot);
     }
 
+    public bool AddSuppression(TaskAlertSuppressionScope scope, string value)
+    {
+        var rule = TaskAlertSuppression.Normalize(new TaskAlertSuppressionRule(scope, value))
+            ?? throw new ArgumentException("The task-alert suppression value is invalid.", nameof(value));
+        TaskAlertSnapshot? snapshot = null;
+        lock (_sync)
+        {
+            var current = _preferences.Suppressions ?? [];
+            if (current.Contains(rule, TaskAlertSuppression.RuleComparer))
+            {
+                return false;
+            }
+
+            if (current.Length >= TaskAlertSuppression.MaximumRules)
+            {
+                throw new InvalidOperationException(
+                    $"Joydex supports up to {TaskAlertSuppression.MaximumRules} ignored tasks and workspaces.");
+            }
+
+            var updated = _preferences with { Suppressions = [.. current, rule] };
+            TaskAlertPreferencesStore.Save(_preferencesPath, updated);
+            _preferences = updated.Normalize();
+            _pool.RemoveAssignments(assignment => IsSuppressedUnsafe(
+                assignment.SessionId,
+                assignment.WorkspaceKey), DateTimeOffset.UtcNow);
+            TrySaveStateUnsafe();
+            snapshot = SnapshotUnsafe();
+        }
+
+        RaiseChanged(snapshot);
+        return true;
+    }
+
+    public bool RemoveSuppression(TaskAlertSuppressionRule rule)
+    {
+        ArgumentNullException.ThrowIfNull(rule);
+        var normalized = TaskAlertSuppression.Normalize(rule);
+        if (normalized is null)
+        {
+            return false;
+        }
+
+        TaskAlertSnapshot? snapshot = null;
+        lock (_sync)
+        {
+            var current = _preferences.Suppressions ?? [];
+            var updatedRules = current
+                .Where(candidate => !TaskAlertSuppression.RuleComparer.Equals(candidate, normalized))
+                .ToArray();
+            if (updatedRules.Length == current.Length)
+            {
+                return false;
+            }
+
+            var updated = _preferences with { Suppressions = updatedRules };
+            TaskAlertPreferencesStore.Save(_preferencesPath, updated);
+            _preferences = updated.Normalize();
+            snapshot = SnapshotUnsafe();
+        }
+
+        RaiseChanged(snapshot);
+        return true;
+    }
+
     public bool AcknowledgeTerminal(int slot, string sessionId)
     {
         TaskAlertSnapshot? snapshot = null;
@@ -205,6 +272,31 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             {
                 lock (_sync)
                 {
+                    var workspace = TaskAlertSuppression.NormalizeWorkspace(taskEvent.Workspace);
+                    var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace);
+                    if (IsSuppressedUnsafe(taskEvent.SessionId, workspaceKey))
+                    {
+                        var removed = _pool.RemoveAssignments(assignment => string.Equals(
+                            assignment.SessionId,
+                            taskEvent.SessionId,
+                            StringComparison.Ordinal), taskEvent.ReceivedAt);
+                        AddRecentEventUnsafe(new TaskAlertEventTrace(
+                            taskEvent.ReceivedAt,
+                            taskEvent.Event,
+                            taskEvent.SessionId,
+                            taskEvent.TurnId,
+                            null,
+                            null,
+                            TaskAlertEventResult.Suppressed,
+                            workspace));
+                        if (removed > 0)
+                        {
+                            TrySaveStateUnsafe();
+                        }
+                        changed = true;
+                        continue;
+                    }
+
                     var stateChanged = _pool.Advance(taskEvent.ReceivedAt);
                     var existing = _pool.Assignments.FirstOrDefault(assignment =>
                         string.Equals(assignment.SessionId, taskEvent.SessionId, StringComparison.Ordinal));
@@ -229,7 +321,8 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
                                     ? TaskAlertEventResult.StopGrace
                                     : existing is null
                                         ? TaskAlertEventResult.Assigned
-                                        : TaskAlertEventResult.Updated));
+                                        : TaskAlertEventResult.Updated,
+                        workspace));
                     if (stateChanged)
                     {
                         TrySaveStateUnsafe();
@@ -262,13 +355,17 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         _pool.DroppedEventCount,
         _detectedBank ?? _preferences.Bank,
         _detectedBank is not null,
-        [.. _recentEvents]);
+        [.. _recentEvents],
+        [.. (_preferences.Suppressions ?? [])]);
 
     private void RestoreStateUnsafe()
     {
         try
         {
             _pool.Restore(TaskAlertStateStore.Load(_statePath));
+            _pool.RemoveAssignments(assignment => IsSuppressedUnsafe(
+                assignment.SessionId,
+                assignment.WorkspaceKey), DateTimeOffset.UtcNow);
             _pool.Advance(DateTimeOffset.UtcNow);
             if (_pool.Assignments.Count > 0)
             {
@@ -315,6 +412,12 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         or UnauthorizedAccessException
         or JsonException
         or NotSupportedException;
+
+    private bool IsSuppressedUnsafe(string sessionId, string? workspaceKey) =>
+        (_preferences.Suppressions ?? []).Any(rule => TaskAlertSuppression.Matches(
+            rule,
+            sessionId,
+            workspaceKey));
 
     private void AddRecentEventUnsafe(TaskAlertEventTrace trace)
     {

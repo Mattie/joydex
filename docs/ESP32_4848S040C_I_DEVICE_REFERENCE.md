@@ -190,12 +190,17 @@ identity. Keep the panel on a trusted LAN and never port-forward it.
 
 ## Current screen contract
 
-The public firmware contains two compatible skins:
+The public firmware contains three compatible configurations:
 
 - `joydex-panel.yaml`: neutral white baseline.
-- `joydex-panel-bridge.yaml`: dark bridge-console skin.
+- `joydex-panel-bridge.yaml`: original dark bridge-console skin and rollback.
+- `joydex-panel-bridge-v2.yaml`: bridge skin with the command-row experiment.
 
-Both expose four task controls and one visible PLAN MODE control:
+All three expose four task controls. The original configurations add one
+visible PLAN MODE control. Bridge-v2 adds a second local LVGL page: its task
+page presents PLAN, FAST, SIDE, MUTE, and `>`, while TASK CONTROLS presents
+APPROVE, DECLINE, NEW TASK, FORK, `<`, PREV, SUBMIT, NEXT, and a disabled `>`.
+The active arrows change pages locally and have no host action:
 
 | Joydex meaning | ESPHome state | Card styling |
 | --- | --- | --- |
@@ -208,6 +213,13 @@ Both expose four task controls and one visible PLAN MODE control:
 The visible PLAN MODE control retains the ESPHome entity name `Sidebar` and
 internal ID `sidebar_pressed` for compatibility. Joydex's host model and action
 remain Plan Mode.
+
+Bridge-v2 adds momentary `Fast Mode`, `Side Chat`, `Voice Mute`, `Approve`,
+`Reject`, `New Task`, `Fork Task`, `Previous Task`, `Submit`, and `Next Task`
+entities. It starts on the task page after every reboot. The disabled final
+arrow is a plain LVGL object rather than a binary sensor or host command.
+These dispatch Joydex's existing semantic actions and do not report persistent
+Codex state.
 
 Pressed feedback is local to LVGL: the touched control contracts slightly and
 gains a cyan border until release. The screen has no persistent action-result

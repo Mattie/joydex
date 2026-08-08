@@ -2,6 +2,24 @@
 
 This file records the major capabilities and fixes added since Joydex was first uploaded to GitHub. Entries are grouped by date because the project has not used versioned releases yet. New entries go at the top.
 
+## 2026-08-08
+
+- Added persistent TASK and WORKSPACE ignore rules for Codex task signaling.
+  The tray status window can immediately remove one task, durably suppress all
+  task IDs launched from one exact workspace, and re-enable either scope. The
+  shared filter applies to both VIRPIL LEDs and the wireless Joydex pad.
+- Separated the Task Alerts page tabs from suppression actions. Ignoring now
+  uses a scoped **Ignore selected ▾** menu, while saved rules live in a
+  dedicated **Ignored sources** manager with explicit re-enable controls.
+
+## 2026-08-06
+
+- Added a local TASK CONTROLS touchscreen page with APPROVE, DECLINE, NEW TASK,
+  FORK, PREV, SUBMIT, and NEXT actions. Page arrows are handled entirely by
+  ESPHome, the last forward arrow remains disabled until a third page exists,
+  and the panel returns to the task page after reboot.
+- Added an opt-in bridge-v2 touchscreen firmware with five wider bottom controls for Plan Mode, Fast Mode, Side Chat, Voice Chat microphone mute, and the forward-navigation foundation. The original neutral and bridge firmware remain available as rollback configurations.
+
 ## 2026-08-05
 
 - Added a Voice Chat microphone mute toggle action backed by Codex's current `realtimeVoice.toggleMicrophoneMute` command, verified to mute and unmute an active call on physical VIRPIL hardware.

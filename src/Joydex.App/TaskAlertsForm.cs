@@ -21,9 +21,12 @@ internal sealed class TaskAlertsForm : ThemedForm
     private readonly ToolTip _toolTips = new();
     private readonly ModernDataGridView _assignments;
     private readonly ModernDataGridView _events;
+    private readonly Label _selectedSource;
+    private readonly RoundedButton _ignoreSelected;
+    private readonly RoundedButton _ignoredSources;
     private readonly Label _hookStatus;
-    private readonly NavButton _currentStateNav;
-    private readonly NavButton _eventStreamNav;
+    private readonly PageTabButton _currentStateNav;
+    private readonly PageTabButton _eventStreamNav;
     private readonly Panel _currentStatePage;
     private readonly Panel _eventStreamPage;
     private readonly object _snapshotSync = new();
@@ -31,6 +34,8 @@ internal sealed class TaskAlertsForm : ThemedForm
     private bool _snapshotUpdateScheduled;
     private bool _eventStreamSelected;
     private bool _updating;
+    private bool _keepInitialSelectionForDocumentation;
+    private ContextMenuStrip? _ignoreMenu;
 
     public TaskAlertsForm(
         TaskAlertCoordinator coordinator,
@@ -236,7 +241,8 @@ internal sealed class TaskAlertsForm : ThemedForm
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Control", HeaderText = "Control", FillWeight = 70, MinimumWidth = 110 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "State", HeaderText = "State", FillWeight = 60, MinimumWidth = 100 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Color", HeaderText = "Color", FillWeight = 55, MinimumWidth = 95 });
-        _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Session", HeaderText = "Session", FillWeight = 125, MinimumWidth = 230 });
+        _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Session", HeaderText = "Task ID", FillWeight = 125, MinimumWidth = 230 });
+        _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Workspace", HeaderText = "Workspace", FillWeight = 90, MinimumWidth = 150 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "RoutingTarget", HeaderText = "Routing target", FillWeight = 210, MinimumWidth = 320 });
 
         _events = new ModernDataGridView
@@ -257,8 +263,11 @@ internal sealed class TaskAlertsForm : ThemedForm
         _events.Columns.Add(new DataGridViewTextBoxColumn { Name = "Result", HeaderText = "Result", FillWeight = 70, MinimumWidth = 100 });
         _events.Columns.Add(new DataGridViewTextBoxColumn { Name = "Slot", HeaderText = "Slot", FillWeight = 42, MinimumWidth = 60 });
         _events.Columns.Add(new DataGridViewTextBoxColumn { Name = "State", HeaderText = "State", FillWeight = 60, MinimumWidth = 90 });
-        _events.Columns.Add(new DataGridViewTextBoxColumn { Name = "Session", HeaderText = "Session", FillWeight = 150, MinimumWidth = 230 });
+        _events.Columns.Add(new DataGridViewTextBoxColumn { Name = "Session", HeaderText = "Task ID", FillWeight = 150, MinimumWidth = 230 });
+        _events.Columns.Add(new DataGridViewTextBoxColumn { Name = "Workspace", HeaderText = "Workspace", FillWeight = 100, MinimumWidth = 160 });
         _events.Columns.Add(new DataGridViewTextBoxColumn { Name = "Turn", HeaderText = "Turn", FillWeight = 130, MinimumWidth = 190 });
+        _assignments.SelectionChanged += (_, _) => UpdateSuppressionActions();
+        _events.SelectionChanged += (_, _) => UpdateSuppressionActions();
 
         var viewerCard = new CardPanel
         {
@@ -269,27 +278,30 @@ internal sealed class TaskAlertsForm : ThemedForm
         {
             ColumnCount = 1,
             Dock = DockStyle.Fill,
-            RowCount = 2,
+            RowCount = 3,
         };
         viewerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        viewerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         viewerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         viewerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         var pageSelector = new FlowLayoutPanel
         {
+            AccessibleName = "Task alert pages",
+            AccessibleRole = AccessibleRole.PageTabList,
             AutoSize = true,
             Dock = DockStyle.Fill,
-            Margin = new Padding(0, 0, 0, 10),
+            Margin = new Padding(0, 0, 0, 6),
             WrapContents = false,
         };
-        _currentStateNav = new NavButton
+        _currentStateNav = new PageTabButton
         {
             AccessibleName = "Current state page",
             AutoSize = true,
             Selected = true,
             Text = "Current state",
         };
-        _eventStreamNav = new NavButton
+        _eventStreamNav = new PageTabButton
         {
             AccessibleName = "Event stream page",
             AutoSize = true,
@@ -301,6 +313,50 @@ internal sealed class TaskAlertsForm : ThemedForm
         pageSelector.Controls.Add(_currentStateNav);
         pageSelector.Controls.Add(_eventStreamNav);
         viewerLayout.Controls.Add(pageSelector, 0, 0);
+
+        var actionBar = new TableLayoutPanel
+        {
+            AccessibleName = "Selected task alert actions",
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 3,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 0, 10),
+            RowCount = 1,
+        };
+        actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _selectedSource = new Label
+        {
+            AccessibleName = "Selected task alert source",
+            AutoEllipsis = true,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 0, 12, 0),
+            MinimumSize = new Size(0, JoydexTheme.StandardControlHeight),
+            Tag = ThemeTone.Subtle,
+            Text = "Select a row to manage its signaling.",
+            TextAlign = ContentAlignment.MiddleLeft,
+        };
+        _ignoreSelected = new RoundedButton
+        {
+            AccessibleDescription = "Opens a menu for choosing task or workspace scope.",
+            AccessibleName = "Choose ignore scope for selected Codex task source",
+            Enabled = false,
+            Margin = new Padding(0, 0, 8, 0),
+            Text = "Ignore selected ▾",
+        };
+        _ignoreSelected.Click += (_, _) => ShowIgnoreMenu();
+        _ignoredSources = new RoundedButton
+        {
+            AccessibleName = "Manage ignored Codex task status sources",
+            Text = "Ignored sources (0)",
+        };
+        _ignoredSources.Click += (_, _) => ShowIgnoredSources();
+        actionBar.Controls.Add(_selectedSource, 0, 0);
+        actionBar.Controls.Add(_ignoreSelected, 1, 0);
+        actionBar.Controls.Add(_ignoredSources, 2, 0);
+        viewerLayout.Controls.Add(actionBar, 0, 1);
 
         var pageHost = new Panel
         {
@@ -325,7 +381,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         _eventStreamPage.Controls.Add(_events);
         pageHost.Controls.Add(_eventStreamPage);
         pageHost.Controls.Add(_currentStatePage);
-        viewerLayout.Controls.Add(pageHost, 0, 1);
+        viewerLayout.Controls.Add(pageHost, 0, 2);
         viewerCard.Controls.Add(viewerLayout);
         root.Controls.Add(viewerCard, 0, 1);
 
@@ -439,6 +495,23 @@ internal sealed class TaskAlertsForm : ThemedForm
         UpdateSnapshot(snapshot);
     }
 
+    internal void SelectAssignmentForDocumentation(string sessionId)
+    {
+        var row = _assignments.Rows
+            .Cast<DataGridViewRow>()
+            .FirstOrDefault(candidate => candidate.Tag is SuppressionTarget target
+                && string.Equals(target.SessionId, sessionId, StringComparison.Ordinal));
+        if (row is null)
+        {
+            throw new ArgumentException("The requested documentation task is not present.", nameof(sessionId));
+        }
+
+        _assignments.ClearSelection();
+        row.Selected = true;
+        _assignments.CurrentCell = row.Cells[0];
+        _keepInitialSelectionForDocumentation = true;
+    }
+
     protected override bool ProcessCmdKey(ref Message message, Keys keyData)
     {
         if (keyData is (Keys.Control | Keys.Tab) or (Keys.Control | Keys.Shift | Keys.Tab))
@@ -461,6 +534,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         _currentStatePage.Visible = !eventStream;
         _eventStreamPage.Visible = eventStream;
         (eventStream ? _eventStreamPage : _currentStatePage).BringToFront();
+        UpdateSuppressionActions();
     }
 
     protected override void Dispose(bool disposing)
@@ -469,6 +543,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         {
             _coordinator.Changed -= OnCoordinatorChanged;
             _toolTips.Dispose();
+            _ignoreMenu?.Dispose();
         }
 
         base.Dispose(disposing);
@@ -539,6 +614,29 @@ internal sealed class TaskAlertsForm : ThemedForm
         }
     }
 
+    protected override void OnShown(EventArgs eventArgs)
+    {
+        base.OnShown(eventArgs);
+        if (_keepInitialSelectionForDocumentation)
+        {
+            return;
+        }
+
+        _assignments.ClearSelection();
+        _assignments.CurrentCell = null;
+        _events.ClearSelection();
+        _events.CurrentCell = null;
+        UpdateSuppressionActions();
+        BeginInvoke(() =>
+        {
+            _assignments.ClearSelection();
+            _assignments.CurrentCell = null;
+            _events.ClearSelection();
+            _events.CurrentCell = null;
+            UpdateSuppressionActions();
+        });
+    }
+
     private void UpdateSnapshot(TaskAlertSnapshot snapshot)
     {
         _updating = true;
@@ -558,6 +656,8 @@ internal sealed class TaskAlertsForm : ThemedForm
                 $"Alpha={telemetry.JoydexAlphaState}";
             _toolTips.SetToolTip(_telemetry, _telemetry.Text);
 
+            var assignmentSelection = GetSelectedTarget(_assignments);
+            var eventSelection = GetSelectedTarget(_events);
             _assignments.Rows.Clear();
             foreach (var assignment in snapshot.Assignments)
             {
@@ -573,8 +673,14 @@ internal sealed class TaskAlertsForm : ThemedForm
                     assignment.State.ToString().ToLowerInvariant(),
                     $"{color.Red:X2} {color.Green:X2} {color.Blue:X2}",
                     assignment.SessionId,
+                    DisplayWorkspace(assignment.Workspace),
                     TaskDeepLinkNavigator.BuildUri(assignment.SessionId));
+                _assignments.Rows[rowIndex].Tag = new SuppressionTarget(
+                    assignment.SessionId,
+                    assignment.Workspace);
                 _assignments.Rows[rowIndex].Cells["Session"].ToolTipText = assignment.SessionId;
+                _assignments.Rows[rowIndex].Cells["Workspace"].ToolTipText =
+                    assignment.Workspace ?? "Workspace metadata will appear after the next event.";
                 _assignments.Rows[rowIndex].Cells["RoutingTarget"].ToolTipText =
                     TaskDeepLinkNavigator.BuildUri(assignment.SessionId);
             }
@@ -589,15 +695,205 @@ internal sealed class TaskAlertsForm : ThemedForm
                     trace.Slot is { } slot ? DisplaySlot(slot) : "—",
                     trace.State?.ToString().ToLowerInvariant() ?? "—",
                     trace.SessionId,
+                    DisplayWorkspace(trace.Workspace),
                     trace.TurnId ?? "—");
+                _events.Rows[rowIndex].Tag = new SuppressionTarget(trace.SessionId, trace.Workspace);
                 _events.Rows[rowIndex].Cells["Session"].ToolTipText = trace.SessionId;
+                _events.Rows[rowIndex].Cells["Workspace"].ToolTipText =
+                    trace.Workspace ?? "Workspace metadata was not provided by this event.";
                 _events.Rows[rowIndex].Cells["Turn"].ToolTipText = trace.TurnId ?? "—";
             }
+
+            RestoreSelection(_assignments, assignmentSelection);
+            RestoreSelection(_events, eventSelection);
+
+            var suppressionCount = snapshot.Suppressions?.Count ?? 0;
+            _ignoredSources.Text = $"Ignored sources ({suppressionCount})";
+            _ignoredSources.AccessibleName = suppressionCount == 1
+                ? "Manage 1 ignored Codex task status source"
+                : $"Manage {suppressionCount} ignored Codex task status sources";
+            UpdateSuppressionActions();
         }
         finally
         {
             _updating = false;
         }
+    }
+
+    private void UpdateSuppressionActions()
+    {
+        var target = GetSelectedTarget();
+        _ignoreSelected.Enabled = target is not null;
+        if (target is null)
+        {
+            _selectedSource.Text = "Select a row to manage its signaling.";
+            _toolTips.SetToolTip(_selectedSource, null);
+            return;
+        }
+
+        var workspace = DisplayWorkspace(target.Workspace);
+        _selectedSource.Text = $"Selected: {workspace} / {CompactTaskId(target.SessionId)}";
+        _toolTips.SetToolTip(
+            _selectedSource,
+            string.IsNullOrWhiteSpace(target.Workspace)
+                ? target.SessionId
+                : $"{target.Workspace}\n{target.SessionId}");
+    }
+
+    private SuppressionTarget? GetSelectedTarget()
+    {
+        var grid = _eventStreamSelected ? _events : _assignments;
+        return GetSelectedTarget(grid);
+    }
+
+    private static SuppressionTarget? GetSelectedTarget(DataGridView grid)
+    {
+        return grid.SelectedRows.Count == 1
+            ? grid.SelectedRows[0].Tag as SuppressionTarget
+            : null;
+    }
+
+    private static void RestoreSelection(DataGridView grid, SuppressionTarget? target)
+    {
+        grid.ClearSelection();
+        grid.CurrentCell = null;
+        if (target is null)
+        {
+            return;
+        }
+
+        var row = grid.Rows
+            .Cast<DataGridViewRow>()
+            .FirstOrDefault(candidate => candidate.Tag is SuppressionTarget candidateTarget
+                && string.Equals(
+                    candidateTarget.SessionId,
+                    target.SessionId,
+                    StringComparison.Ordinal));
+        if (row is null)
+        {
+            return;
+        }
+
+        row.Selected = true;
+        grid.CurrentCell = row.Cells[0];
+    }
+
+    private void ShowIgnoreMenu()
+    {
+        var target = GetSelectedTarget();
+        if (target is null)
+        {
+            return;
+        }
+
+        _ignoreMenu?.Dispose();
+        _ignoreMenu = new ContextMenuStrip
+        {
+            AccessibleName = "Ignore selected task status source",
+        };
+        var taskItem = new ToolStripMenuItem($"This task · {CompactTaskId(target.SessionId)}")
+        {
+            ToolTipText = target.SessionId,
+        };
+        taskItem.Click += (_, _) => IgnoreSelectedTask(target);
+        var workspaceAvailable = !string.IsNullOrWhiteSpace(target.Workspace);
+        var workspaceItem = new ToolStripMenuItem(workspaceAvailable
+            ? $"This workspace · {DisplayWorkspace(target.Workspace)}"
+            : "This workspace (unavailable)")
+        {
+            Enabled = workspaceAvailable,
+            ToolTipText = workspaceAvailable
+                ? target.Workspace
+                : "This lifecycle event did not include workspace metadata.",
+        };
+        workspaceItem.Click += (_, _) => IgnoreSelectedWorkspace(target);
+        _ignoreMenu.Items.Add(taskItem);
+        _ignoreMenu.Items.Add(workspaceItem);
+        _ignoreMenu.Show(_ignoreSelected, new Point(0, _ignoreSelected.Height));
+    }
+
+    private void IgnoreSelectedTask(SuppressionTarget target)
+    {
+        if (MessageBox.Show(
+                $"Ignore this exact Codex task?\n\n{target.SessionId}\n\n" +
+                "The rule stays active after Joydex restarts until you re-enable it.",
+                "Ignore Codex task",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        TryChangeSuppression(() => _coordinator.AddSuppression(
+            TaskAlertSuppressionScope.Task,
+            target.SessionId));
+    }
+
+    private void IgnoreSelectedWorkspace(SuppressionTarget target)
+    {
+        if (string.IsNullOrWhiteSpace(target.Workspace))
+        {
+            return;
+        }
+
+        if (MessageBox.Show(
+                $"Ignore every Codex task launched from this exact workspace?\n\n{target.Workspace}\n\n" +
+                "This also covers future task IDs and stays active after Joydex restarts.",
+                "Ignore Codex workspace",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        TryChangeSuppression(() => _coordinator.AddSuppression(
+            TaskAlertSuppressionScope.Workspace,
+            target.Workspace));
+    }
+
+    private void ShowIgnoredSources()
+    {
+        using var form = new IgnoredTaskSourcesForm(_coordinator);
+        _ = form.ShowDialog(this);
+        UpdateSnapshot(_coordinator.GetSnapshot());
+    }
+
+    private static void TryChangeSuppression(Func<bool> change)
+    {
+        try
+        {
+            _ = change();
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or InvalidOperationException)
+        {
+            MessageBox.Show(
+                exception.Message,
+                "Joydex task alerts",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
+
+    private static string CompactTaskId(string sessionId) => sessionId.Length <= 20
+        ? sessionId
+        : $"{sessionId[..12]}...";
+
+    private static string DisplayWorkspace(string? workspace)
+    {
+        if (string.IsNullOrWhiteSpace(workspace))
+        {
+            return "—";
+        }
+
+        var name = Path.GetFileName(workspace.TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar));
+        return string.IsNullOrWhiteSpace(name) ? workspace : name;
     }
 
     private static string DisplaySlot(int slot) => TaskAlertSlots.Page(slot) == TaskAlertPage.Primary
@@ -686,4 +982,6 @@ internal sealed class TaskAlertsForm : ThemedForm
             UseShellExecute = true,
         });
     }
+
+    private sealed record SuppressionTarget(string SessionId, string? Workspace);
 }

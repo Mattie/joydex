@@ -8,6 +8,16 @@ public enum EspHomePanelButton
     Task3 = 3,
     Task4 = 4,
     PlanMode = 5,
+    FastMode = 6,
+    SideChat = 7,
+    VoiceMute = 8,
+    Approve = 9,
+    Reject = 10,
+    NewTask = 11,
+    ForkTask = 12,
+    PreviousTask = 13,
+    Submit = 14,
+    NextTask = 15,
 }
 
 /// <summary>Represents the coarse task state rendered by one panel card.</summary>

@@ -18,9 +18,14 @@ flashing:
 ## Choose a skin
 
 - `joydex-panel.yaml` is the neutral white baseline.
-- `joydex-panel-bridge.yaml` is the dark retro-futuristic bridge-console skin.
+- `joydex-panel-bridge.yaml` is the original dark retro-futuristic
+  bridge-console skin and its rollback configuration.
+- `joydex-panel-bridge-v2.yaml` keeps the bridge skin and replaces the large
+  PLAN MODE control with a two-page layout. The task page uses PLAN, FAST, SIDE,
+  MUTE, and `>`; the TASK CONTROLS page adds workflow commands and local page
+  navigation.
 
-Both expose the same host contract:
+All three expose the same task contract:
 
 - `Task 1 State` through `Task 4 State` accept `EMPTY`, `RUNNING`,
   `ATTENTION`, and `COMPLETE`.
@@ -28,6 +33,13 @@ Both expose the same host contract:
 - The visible `PLAN MODE` control retains the ESPHome entity name `Sidebar`
   for compatibility with the first deployed firmware.
 - `/events` supplies authenticated Server-Sent Events to Joydex.
+
+Bridge-v2 exposes momentary `Fast Mode`, `Side Chat`, `Voice Mute`, `Approve`,
+`Reject`, `New Task`, `Fork Task`, `Previous Task`, `Submit`, and `Next Task`
+binary sensors. The task-page `>` and TASK CONTROLS `<` switch pages locally
+without publishing host events. The gray final `>` is a non-interactive
+placeholder for a future third page. The panel starts on the task page after a
+reboot.
 
 Empty task positions are blank gray. Running tasks are white with gray borders
 and text. Attention tasks are yellow with gray borders and text. Completed
@@ -72,9 +84,11 @@ py.exe -3.12 -m venv .venv
 ```powershell
 .\.venv\Scripts\esphome.exe config .\joydex-panel.yaml
 .\.venv\Scripts\esphome.exe config .\joydex-panel-bridge.yaml
+.\.venv\Scripts\esphome.exe config .\joydex-panel-bridge-v2.yaml
 
 .\.venv\Scripts\esphome.exe compile .\joydex-panel.yaml
 .\.venv\Scripts\esphome.exe compile .\joydex-panel-bridge.yaml
+.\.venv\Scripts\esphome.exe compile .\joydex-panel-bridge-v2.yaml
 ```
 
 Warnings about GPIO19 and GPIO20 being unavailable to native
@@ -134,12 +148,12 @@ After the initial USB flash, use password-protected ESPHome OTA with the
 panel's hostname or reserved LAN address:
 
 ```powershell
-.\.venv\Scripts\esphome.exe upload .\joydex-panel-bridge.yaml `
+.\.venv\Scripts\esphome.exe upload .\joydex-panel-bridge-v2.yaml `
   --device <PANEL_HOST_OR_ADDRESS>
 ```
 
-Keep the neutral skin and the unit-specific factory backup available as
-rollback paths.
+Keep `joydex-panel-bridge.yaml`, the neutral skin, and the unit-specific factory
+backup available as rollback paths.
 
 ## Security boundary
 

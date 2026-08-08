@@ -1,15 +1,34 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Joydex.Core.TaskAlerts;
 
-public sealed record TaskAlertPreferences(bool Enabled = true, int Bank = 2)
+public enum TaskAlertSuppressionScope
 {
-    public static TaskAlertPreferences Default { get; } = new();
+    Task,
+    Workspace,
+}
+
+public sealed record TaskAlertSuppressionRule(TaskAlertSuppressionScope Scope, string Value);
+
+public sealed record TaskAlertPreferences(
+    bool Enabled = true,
+    int Bank = 2,
+    TaskAlertSuppressionRule[]? Suppressions = null)
+{
+    public static TaskAlertPreferences Default { get; } = new(Suppressions: []);
 
     public TaskAlertPreferences Normalize()
     {
         var bank = Math.Clamp(Bank, 1, 5);
-        return this with { Bank = bank };
+        var suppressions = (Suppressions ?? [])
+            .Select(TaskAlertSuppression.Normalize)
+            .Where(rule => rule is not null)
+            .Cast<TaskAlertSuppressionRule>()
+            .Distinct(TaskAlertSuppression.RuleComparer)
+            .Take(TaskAlertSuppression.MaximumRules)
+            .ToArray();
+        return this with { Bank = bank, Suppressions = suppressions };
     }
 }
 
@@ -20,6 +39,10 @@ public static class TaskAlertPreferencesStore
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true,
+        Converters =
+        {
+            new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false),
+        },
     };
 
     public static TaskAlertPreferences LoadOrCreate(string path)
