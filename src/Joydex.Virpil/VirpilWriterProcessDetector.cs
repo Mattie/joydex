@@ -34,10 +34,13 @@ public static class VirpilWriterProcessDetector
             {
                 try
                 {
-                    if (ProcessFragments.Any(fragment =>
-                            process.ProcessName.Contains(fragment, StringComparison.OrdinalIgnoreCase)))
+                    var processName = process.ProcessName;
+                    foreach (var fragment in ProcessFragments)
                     {
-                        return process.ProcessName;
+                        if (processName.Contains(fragment, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return processName;
+                        }
                     }
                 }
                 catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)

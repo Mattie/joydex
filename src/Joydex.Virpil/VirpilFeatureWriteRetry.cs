@@ -2,6 +2,12 @@ namespace Joydex.Virpil;
 
 public static class VirpilFeatureWriteRetry
 {
+    private static readonly int[] PayloadLengths =
+    [
+        VirpilLedProtocol.ReportLength,
+        VirpilLedProtocol.ReportLength + 1,
+    ];
+
     public static void Send(
         byte[] logicalReport,
         Action<byte[]> write,
@@ -20,7 +26,7 @@ public static class VirpilFeatureWriteRetry
         Exception? firstFailure = null;
         for (var openAttempt = 0; openAttempt < 2; openAttempt++)
         {
-            foreach (var length in new[] { 38, 39 })
+            foreach (var length in PayloadLengths)
             {
                 var payload = new byte[length];
                 logicalReport.CopyTo(payload, 0);
@@ -42,7 +48,8 @@ public static class VirpilFeatureWriteRetry
         }
 
         throw new IOException(
-            "VIRPIL SetFeature failed for 38/39 bytes before and after reopening the device.",
+            $"VIRPIL SetFeature failed for {string.Join("/", PayloadLengths)} bytes " +
+            "before and after reopening the device.",
             firstFailure);
     }
 }
