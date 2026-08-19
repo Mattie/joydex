@@ -1,13 +1,15 @@
 # Joydex task-status LED guide
 
-Joydex uses the CM3 throttle buttons and the Constellation Alpha grip LED as a physical task monitor for Codex. Codex lifecycle hooks supply the task state, Joydex assigns that state to an available task button, and VIRPIL Controls LinkTool v3 keeps the matching LEDs lit.
+Joydex uses the CM3 throttle buttons and the Constellation Alpha grip LED as a physical task monitor for Codex. Codex lifecycle hooks supply the task state, Joydex assigns that state to an available task button, and either Joydex's experimental Direct USB backend or VIRPIL Controls LinkTool v3 keeps the matching LEDs lit.
 
 ## Set it up
 
-1. Connect the CM3 throttle and Alpha grip, then start Joydex. Joydex writes `%LOCALAPPDATA%\Joydex\joydex-linktool.led.json` while both devices are available.
-2. Open **Testing / Advanced > Task alerts / ignored tasks...** from the Joydex tray. Use **Show LED profile** to locate the generated file, then load it in LinkTool.
-3. Start LinkTool's telemetry listener on its default UDP endpoint, `127.0.0.1:4123`.
-4. In the same Joydex window, choose **Install / Repair hooks** and confirm the status reads `Hooks: installed`. If Codex marks the new handlers for review, open its Hooks screen and trust the Joydex handlers.
+1. Connect the CM3 throttle and Alpha grip, then start Joydex.
+2. Open **Testing / Advanced > Task alerts / ignored tasks...**, choose **Configure LEDs...**, and select an output:
+   - **Direct USB (experimental)**: close LinkTool and every VPC utility, then confirm the warning. Joydex drives the temporary LED state itself and disables its LinkTool login-startup entry.
+   - **VIRPIL LinkTool**: use **Show LED profile** to locate `joydex-linktool.led.json`, load it in LinkTool, and start LinkTool's UDP listener on `127.0.0.1:4123`.
+3. Use the same LED settings window to change the four task colors, all six baseline colors for M1-M5, or the Alpha idle policy. These settings are saved in `task-alerts.json` beside the normal Joydex configuration.
+4. In the task-alert window, choose **Install / Repair hooks** and confirm the status reads `Hooks: installed`. If Codex marks the new handlers for review, open its Hooks screen and trust the Joydex handlers.
 5. Make sure **Task alerts** is checked in the top level of the Joydex tray menu.
 6. Submit a test prompt in Codex. Confirm that **Event stream** records it, **Current state** gains a running assignment, and the corresponding LED lights.
 
@@ -56,27 +58,32 @@ Pressing an assigned button opens its Codex task. Running and attention states s
 
 Joydex saves active assignments, completion deadlines, pending-attention counts, and normalized workspace hashes in `%LOCALAPPDATA%\Joydex\task-alert-state.json`. Correlated attention and workspaces are stored as SHA-256 keys. Prompt text, commands, patches, tool responses, assistant messages, and raw workspace paths are never written to this file.
 
-The enabled flag, fallback bank, and user-created TASK or WORKSPACE ignore rules live in `task-alerts.json` beside the normal Joydex configuration. A TASK rule stores the selected session ID. A WORKSPACE rule stores the exact normalized path because Joydex needs it for future matching and for the **Ignored sources** display. Ignore rules survive restarts and remain in place when the master **Task alerts** toggle is turned off.
+The enabled flag, fallback bank, LED backend and colors, and user-created TASK or WORKSPACE ignore rules live in `task-alerts.json` beside the normal Joydex configuration. A TASK rule stores the selected session ID. A WORKSPACE rule stores the exact normalized path because Joydex needs it for future matching and for the **Ignored sources** display. Ignore rules survive restarts and remain in place when the master **Task alerts** toggle is turned off.
 
 Assignment state and queue order survive a Joydex restart. During restore, Joydex fills any primary gaps from overflow and compacts the remaining M1 queue. Running assignments expire after 12 hours; attention and terminal assignments expire after 24 hours. Invalid saved state is moved aside and Joydex starts with an empty pool. Turning **Task alerts** off clears the saved assignments.
 
-## How LinkTool carries the state
+## How LED output carries the state
 
-Joydex sends one complete telemetry snapshot whenever a task state or physical mode changes. LinkTool evaluates the generated rules and holds the matching colors, so Joydex does not need to refresh the LEDs continuously. The generated baseline keeps primary task positions dark when empty, preserves the ordinary M2-M4 bank colors on B3 and B6, and paints all six M5 controls medium pink (`80 20 60` RGB).
+Both backends keep the visible task and bank state synchronized when either one changes. The default baseline keeps primary task positions dark when empty, preserves the ordinary M2-M4 bank colors on B3 and B6, and paints all six M5 controls medium pink (`80 20 60` RGB).
 
-The physical M1-M5 selector is read through VIRPIL's read-only Software Link feature report. Turning the dial updates the LinkTool page while preserving active task states. Joydex does not flash firmware, write EEPROM, calibrate either device, or edit a VPC profile.
+Direct USB restores the configured bank baseline when an alert clears. This keeps the expected bank colors visible without requiring a mode-dial movement. CM3 testing suggests that explicit baselines are more predictable than asking the device to reconstruct the selected profile after host control ends.
 
-If Joydex exits cleanly, it clears the live overlays before closing. If it crashes while an overlay is active, `Joydex.Guardian.exe` sends a final clear snapshot. The saved assignments remain available for the next Joydex start.
+Direct USB remains experimental. Production host writes have been exercised with the attached CM3 and Alpha, while complete visual Alpha/reset checks and the wider disconnect, sleep, sign-out, and crash-recovery matrix remain pending. LinkTool stays the default during that validation.
+
+Joydex follows the physical M1-M5 selector through a read-only device status interface. Turning the dial updates the active LED page while preserving task states. Joydex does not flash firmware, write EEPROM, calibrate either device, or edit a VPC profile.
+
+If Joydex exits cleanly, it applies the no-alert baseline before closing. If it crashes while an overlay is active, `Joydex.Guardian.exe` is designed to send either a final LinkTool clear snapshot or the precomposed Direct USB baseline. The saved assignments remain available for the next Joydex start.
 
 ## Troubleshooting
 
-Open **Testing / Advanced > Task alerts / ignored tasks...** before reinstalling or changing anything. It shows the detected bank, current assignments, dropped-event count, exact LinkTool telemetry, hook state, the last 100 lifecycle events, and saved ignore rules.
+Open **Testing / Advanced > Task alerts / ignored tasks...** before reinstalling or changing anything. It shows the selected LED backend, detected bank, current assignments, dropped-event count, telemetry state, hook state, the last 100 lifecycle events, and saved ignore rules.
 
 | Status or symptom | Check |
 | --- | --- |
 | `Hooks: repair needed` | Use **Install / Repair hooks** and verify the packaged relay path |
 | `LinkTool inactive` | Start LinkTool and confirm its UDP listener is using port `4123` |
 | `LinkTool update pending (VPC tool active)` | Close or release the VPC utility that currently owns the device |
+| `Direct VIRPIL LED update pending` | Connect both devices and close LinkTool and every VPC utility; Joydex retries the newest desired state |
 | A light appeared late | Compare the event's receive time with the telemetry update; a missing event points to hook delivery, while a received event isolates the delay inside Joydex or LinkTool |
 | The wrong LED page is visible | Check that **Current bank** reports the physical selector position as automatic |
 | A task never claims a slot | Check for `Suppressed` in **Event stream**, then open **Ignored sources** and re-enable its TASK or WORKSPACE rule if it is no longer wanted |
@@ -92,4 +99,3 @@ Here, agents 1, 3, and 4 are done (green), while agent 2 is running (white). A t
 - [Codex lifecycle hooks](https://learn.chatgpt.com/docs/hooks)
 - [Codex desktop deep links](https://learn.chatgpt.com/docs/reference/commands#deep-links)
 - [VIRPIL VPC Software Suite and LED controls](https://support.virpil.com/en/support/solutions/articles/47001249267-vpc-software-suite)
-- [Joydex LED implementation research archive](LED_STATUS_RESEARCH.md)

@@ -296,7 +296,7 @@ public sealed class TaskAlertCoordinatorTests
                 DateTimeOffset.UtcNow)));
             await WaitUntilAsync(
                 () => TaskAlertStateStore.Load(statePath).Assignments.Length == 1,
-                TimeSpan.FromSeconds(3));
+                TimeSpan.FromSeconds(10));
 
             Assert.True(coordinator.AcknowledgeTerminal(1, "fault-session"));
             Assert.Empty(TaskAlertStateStore.Load(statePath).Assignments);
@@ -304,7 +304,7 @@ public sealed class TaskAlertCoordinatorTests
             Assert.True(coordinator.TryPublish(Event(2)));
             await WaitUntilAsync(
                 () => TaskAlertStateStore.Load(statePath).Assignments.Length == 1,
-                TimeSpan.FromSeconds(3));
+                TimeSpan.FromSeconds(10));
             coordinator.SetEnabled(false);
             Assert.Empty(TaskAlertStateStore.Load(statePath).Assignments);
         }

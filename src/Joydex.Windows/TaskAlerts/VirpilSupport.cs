@@ -1,14 +1,15 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using Joydex.Core.TaskAlerts;
+using Joydex.Virpil;
 
 namespace Joydex.Windows.TaskAlerts;
 
 public sealed record VirpilLedColor(byte Red, byte Green, byte Blue)
 {
-    public static VirpilLedColor For(TaskAlertState state)
+    public static VirpilLedColor For(TaskAlertState state, TaskAlertLedOptions? options = null)
     {
-        var color = TaskAlertColors.Get(state);
+        var color = TaskAlertColors.Get(state, options ?? TaskAlertLedOptions.CreateDefault());
         return new VirpilLedColor(color.Red, color.Green, color.Blue);
     }
 }
@@ -65,4 +66,9 @@ public sealed class VpcConflictDetector : IVpcConflictDetector
 
         return false;
     }
+}
+
+public sealed class DirectVirpilConflictDetector : IVpcConflictDetector
+{
+    public bool HasConflict() => VirpilWriterProcessDetector.FindConflict() is not null;
 }

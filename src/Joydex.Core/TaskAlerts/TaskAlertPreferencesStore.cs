@@ -14,9 +14,12 @@ public sealed record TaskAlertSuppressionRule(TaskAlertSuppressionScope Scope, s
 public sealed record TaskAlertPreferences(
     bool Enabled = true,
     int Bank = 2,
-    TaskAlertSuppressionRule[]? Suppressions = null)
+    TaskAlertSuppressionRule[]? Suppressions = null,
+    TaskAlertLedOptions? LedOutput = null)
 {
-    public static TaskAlertPreferences Default { get; } = new(Suppressions: []);
+    public static TaskAlertPreferences Default { get; } = new(
+        Suppressions: [],
+        LedOutput: TaskAlertLedOptions.CreateDefault());
 
     public TaskAlertPreferences Normalize()
     {
@@ -28,7 +31,8 @@ public sealed record TaskAlertPreferences(
             .Distinct(TaskAlertSuppression.RuleComparer)
             .Take(TaskAlertSuppression.MaximumRules)
             .ToArray();
-        return this with { Bank = bank, Suppressions = suppressions };
+        var ledOutput = (LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize();
+        return this with { Bank = bank, Suppressions = suppressions, LedOutput = ledOutput };
     }
 }
 

@@ -31,6 +31,9 @@ public sealed class CompanionEngine
     private readonly TaskAlertInputInterceptor? _taskAlerts;
     private readonly CompanionConfig _config;
     private readonly string _deviceId;
+    private bool[]? _previousButtons;
+    private bool[]? _bufferedButtonsInitialized;
+    private HashSet<int>? _buttonsAwaitingRelease;
 
     public CompanionEngine(
         CompanionConfig config,
@@ -52,10 +55,35 @@ public sealed class CompanionEngine
         IReadOnlyList<JoystickEvent>? bufferedButtonEvents = null)
     {
         var detectedEvents = _detector.Detect(snapshot);
-        var bufferedEvents = bufferedButtonEvents ?? [];
-        var events = bufferedEvents
+        IReadOnlyList<JoystickEvent> bufferedEvents;
+        if (_previousButtons is null
+            || _bufferedButtonsInitialized is null
+            || _previousButtons.Length != snapshot.Buttons.Length
+            || _bufferedButtonsInitialized.Length != snapshot.Buttons.Length)
+        {
+            bufferedEvents = [];
+            _bufferedButtonsInitialized = new bool[snapshot.Buttons.Length];
+            _buttonsAwaitingRelease = snapshot.Buttons
+                .Select((pressed, index) => (pressed, index))
+                .Where(button => button.pressed)
+                .Select(button => button.index)
+                .ToHashSet();
+        }
+        else
+        {
+            foreach (var detected in detectedEvents.Where(input =>
+                         input.Kind is JoystickEventKind.ButtonPressed or JoystickEventKind.ButtonReleased))
+            {
+                _bufferedButtonsInitialized[detected.ControlIndex] = true;
+            }
+
+            bufferedEvents = FilterBufferedButtonEvents(bufferedButtonEvents ?? []);
+        }
+
+        _previousButtons = [.. snapshot.Buttons];
+        var events = FilterStartupHeldButtonPresses(bufferedEvents
             .Concat(detectedEvents.Where(detected => !bufferedEvents.Any(buffered => buffered == detected)))
-            .ToArray();
+            .ToArray());
         var interception = _taskAlerts?.Intercept(snapshot, events)
             ?? new TaskAlertInterception(events, []);
         var requests = _bindings.Resolve(snapshot, interception.RemainingEvents, snapshot.Timestamp);
@@ -67,8 +95,75 @@ public sealed class CompanionEngine
     public void Reset()
     {
         _detector.Reset();
+        _previousButtons = null;
+        _bufferedButtonsInitialized = null;
+        _buttonsAwaitingRelease = null;
         _bindings.Reset();
         _taskAlerts?.Reset();
+    }
+
+    private IReadOnlyList<JoystickEvent> FilterStartupHeldButtonPresses(
+        IReadOnlyList<JoystickEvent> events)
+    {
+        if (_buttonsAwaitingRelease is null || _buttonsAwaitingRelease.Count == 0)
+        {
+            return events;
+        }
+
+        var filtered = new List<JoystickEvent>(events.Count);
+        foreach (var inputEvent in events)
+        {
+            if (inputEvent.Kind == JoystickEventKind.ButtonReleased)
+            {
+                _buttonsAwaitingRelease.Remove(inputEvent.ControlIndex);
+            }
+            else if (inputEvent.Kind == JoystickEventKind.ButtonPressed
+                && _buttonsAwaitingRelease.Contains(inputEvent.ControlIndex))
+            {
+                continue;
+            }
+
+            filtered.Add(inputEvent);
+        }
+
+        return filtered;
+    }
+
+    private IReadOnlyList<JoystickEvent> FilterBufferedButtonEvents(
+        IReadOnlyList<JoystickEvent> bufferedEvents)
+    {
+        var previousButtons = _previousButtons!;
+        var initialized = _bufferedButtonsInitialized!;
+        var filtered = new List<JoystickEvent>(bufferedEvents.Count);
+        foreach (var inputEvent in bufferedEvents)
+        {
+            if (inputEvent.Kind is not (JoystickEventKind.ButtonPressed or JoystickEventKind.ButtonReleased)
+                || inputEvent.ControlIndex < 0
+                || inputEvent.ControlIndex >= previousButtons.Length)
+            {
+                filtered.Add(inputEvent);
+                continue;
+            }
+
+            var index = inputEvent.ControlIndex;
+            var reportsPreviousState = inputEvent.Kind == (previousButtons[index]
+                ? JoystickEventKind.ButtonPressed
+                : JoystickEventKind.ButtonReleased);
+            // DirectInput can re-report a maintained switch immediately after acquisition.
+            // Only the first buffered update is ambiguous; later updates are real edges or pulses.
+            if (!initialized[index])
+            {
+                initialized[index] = true;
+                if (reportsPreviousState)
+                {
+                    continue;
+                }
+            }
+
+            filtered.Add(inputEvent);
+        }
+
+        return filtered;
     }
 
     private IReadOnlyList<PromptPickerRequest> ResolvePromptPickerRequests(

@@ -176,12 +176,16 @@ public static class TaskAlertSlots
 
 public static class TaskAlertColors
 {
-    public static (byte Red, byte Green, byte Blue) Get(TaskAlertState state) => state switch
+    public static (byte Red, byte Green, byte Blue) Get(TaskAlertState state) => Get(
+        state,
+        TaskAlertLedOptions.CreateDefault());
+
+    public static (byte Red, byte Green, byte Blue) Get(
+        TaskAlertState state,
+        TaskAlertLedOptions options)
     {
-        TaskAlertState.Running => (0x55, 0x55, 0x55),
-        TaskAlertState.Approval => (0xFF, 0xFF, 0x00),
-        TaskAlertState.Completed => (0x00, 0x40, 0x00),
-        TaskAlertState.Fault => (0xFF, 0x00, 0x00),
-        _ => throw new ArgumentOutOfRangeException(nameof(state)),
-    };
+        ArgumentNullException.ThrowIfNull(options);
+        var color = options.ColorFor(state);
+        return (color.Red, color.Green, color.Blue);
+    }
 }

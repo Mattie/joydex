@@ -7,6 +7,49 @@ namespace Joydex.Tests;
 public sealed class TaskAlertsFormTests
 {
     [Fact]
+    public void LedSettingsEditorShowsFiveCompleteThrottleBanks()
+    {
+        using var form = new TaskAlertLedSettingsForm(TaskAlertLedOptions.CreateDefault());
+
+        var grid = FindControl<DataGridView>(form, "Throttle bank LED colors");
+        var mode = FindControl<ComboBox>(form, "Task alert LED output selection");
+
+        Assert.Equal(5, grid.Rows.Count);
+        Assert.Equal(7, grid.Columns.Count);
+        Assert.Equal("VIRPIL LinkTool", mode.Text);
+        Assert.Equal("#0000FF", grid.Rows[1].Cells[3].Value);
+        Assert.Equal("#802060", grid.Rows[4].Cells[6].Value);
+    }
+
+    [Fact]
+    public async Task ShowsConfiguredDirectUsbOutputMode()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"joydex-task-alert-form-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
+            using var form = new TaskAlertsForm(
+                coordinator,
+                new CodexHookManager(Path.Combine(directory, "hooks.json")),
+                Path.Combine(directory, "Joydex.HookRelay.exe"),
+                Path.Combine(directory, "joydex-link-tool-profile.json"),
+                _ => Task.CompletedTask);
+            form.SetSnapshotForDocumentation(coordinator.GetSnapshot() with
+            {
+                LedOutput = TaskAlertLedOptions.CreateDefault() with { Mode = TaskAlertLedOutputMode.DirectHid },
+            });
+
+            var output = FindControl<Label>(form, "Task alert LED output mode");
+            Assert.Equal("LED output: Direct USB", output.Text);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task TaskActionsAreSeparatedFromTabsAndRequireAnExplicitSelection()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"joydex-task-alert-form-{Guid.NewGuid():N}");

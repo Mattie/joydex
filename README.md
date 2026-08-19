@@ -27,7 +27,7 @@ Joydex is a source project, so the easiest path is to clone the repository, open
 3. Open **Testing / Advanced > Test controls...** and exercise each button, encoder, mode, and maintained switch. Check both press and release events where the action depends on a held control.
 4. Save the configuration. Turn off **Testing / Advanced > Dry run** only after the event log matches the physical controls.
 
-The task-status LEDs need a few additional steps because they use Codex hooks and VIRPIL LinkTool.
+The task-status LEDs use Codex hooks, so they take a few extra steps to set up. Joydex can drive them directly over USB or through VIRPIL LinkTool.
 
 ## What the experiment produced
 
@@ -112,18 +112,18 @@ Dim gray means running, yellow means the task needs attention, and low green mea
 
 ### Set up task-status LEDs
 
-This part matches the CM3 throttle, Alpha/WarBRD stick, and VIRPIL Controls LinkTool v3 used for this project. If your hardware differs, adapt the LED mappings before continuing.
+These steps target a CM3 throttle and an Alpha/WarBRD stick. VIRPIL Controls LinkTool v3 remains the proven default. Direct USB is an experimental option for the same devices while the remaining hardware recovery checks are completed. Other hardware may need different LED mappings.
 
-1. Connect both VIRPIL devices, then start Joydex. Joydex generates the LinkTool profile while both devices are available.
-2. Open **Testing / Advanced > Task alerts / ignored tasks...** from the Joydex tray. Choose **Show LED profile**, then load the selected `joydex-linktool.led.json` file in LinkTool.
-3. Start LinkTool's telemetry listener on its default UDP endpoint, `127.0.0.1:4123`.
+1. Connect both VIRPIL devices, then start Joydex.
+2. Open **Testing / Advanced > Task alerts / ignored tasks...**, choose **Configure LEDs...**, and select **Direct USB**. Close LinkTool and any VPC utilities before you confirm the change. Direct USB does not need a LinkTool profile or listener.
+3. If you prefer LinkTool, select **VIRPIL LinkTool**, choose **Show LED profile**, load `joydex-linktool.led.json`, and start its listener on `127.0.0.1:4123`.
 4. In the same Joydex window, choose **Install / Repair hooks** and confirm the status reads `Hooks: installed`. If Codex marks the new handlers for review, open its Hooks screen and trust the Joydex handlers; untrusted command hooks do not run.
 5. Make sure **Task alerts** is checked in the top level of the Joydex tray menu.
 6. Submit a test prompt in Codex. The Task Alerts **Event stream** should record it, **Current state** should gain a running assignment, and the corresponding LED should light.
 
 <img src="docs/images/joydex-task-alerts.png" alt="Joydex task-alert status window showing current task assignments and integration controls" width="640">
 
-Joydex sends a complete snapshot whenever a task or physical mode changes, and LinkTool holds the matching colors. A read-only VIRPIL Software Link report tells Joydex which M1-M5 position is selected, so turning the dial switches LED pages without writing to controller firmware or profiles.
+Joydex updates the LEDs whenever a task changes or you turn the M1-M5 dial. In Direct USB mode, Joydex writes temporary LED colors directly to the devices. In LinkTool mode, it sends the task state to LinkTool's local listener. Neither mode changes controller firmware or VPC profiles.
 
 If you have a noisy chat (e.g. GPT-live voice chat) that you wish to ignore for the throttle LEDs and wireless pad, you can do this in the UI by selecting it under **Current state** or **Event stream**, then click **Ignore selected ▾** to set that up.
 
@@ -224,7 +224,8 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 | Path | Purpose |
 | --- | --- |
 | `src/Joydex.Core` | Configuration, multi-device input models, bindings, prompt pickers, and task-alert state |
-| `src/Joydex.Windows` | DirectInput, shortcut resolution and injection, safety guards, task links, hooks, and LinkTool output |
+| `src/Joydex.Virpil` | Shared VIRPIL device access, LED control, and checks for competing LED writers |
+| `src/Joydex.Windows` | DirectInput, shortcut resolution and injection, safety guards, task links, hooks, and task-alert LED services |
 | `src/Joydex.App` | Tray lifecycle, configuration UI, dry-run inspector, prompt overlays, diagnostics, and button maps |
 | `src/Joydex.HookRelay` | Native hook command that forwards Codex lifecycle events to Joydex |
 | `src/Joydex.Guardian` | Crash cleanup for active task-status LEDs |
