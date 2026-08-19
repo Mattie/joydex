@@ -9,6 +9,7 @@ using Joydex.Windows.Input;
 using Joydex.Windows.Interop;
 using Joydex.Windows.Runtime;
 using Joydex.Windows.TaskAlerts;
+using Joydex.Virpil;
 using Joydex.Windows.WirelessPanel;
 using Microsoft.Win32;
 
@@ -30,18 +31,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _testingAdvancedMenu;
     private readonly ToolStripMenuItem _promptPickersItem;
     private readonly ToolStripMenuItem _configureItem;
+    private readonly ToolStripMenuItem _startAtLoginItem;
+    private readonly ToolStripMenuItem _startLinkToolAtLoginItem;
     private readonly ToolStripMenuItem _taskAlertsItem;
     private readonly ToolStripMenuItem _taskAlertsStatusItem;
     private readonly SynchronizationContext _uiContext;
     private readonly TaskAlertCoordinator _taskAlerts;
     private readonly TaskAlertPipeServer _taskAlertPipe;
     private readonly VirpilShiftModeMonitor _shiftModeMonitor;
-    private readonly LinkToolLedService _ledService;
+    private ITaskAlertLedOutput _ledService;
+    private readonly IVirpilHidTransportFactory _virpilTransportFactory = new VirpilHidTransportFactory();
+    private readonly SemaphoreSlim _ledSwitch = new(1, 1);
+    private readonly object _ledOutputSync = new();
     private readonly CodexHookManager _hookManager;
     private readonly string _hookRelayPath;
     private readonly string _linkToolProfilePath;
     private readonly GuardianController _guardian;
     private readonly DeviceChangeMonitor _deviceChangeMonitor;
+    private readonly LoginStartupRegistration _joydexLoginStartup;
+    private readonly LoginStartupRegistration? _linkToolLoginStartup;
     private readonly Queue<string> _recentActivity = new();
     private readonly Dictionary<string, CompanionWorker> _workers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _deviceStatuses = new(StringComparer.OrdinalIgnoreCase);
@@ -56,6 +64,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private TaskAlertsForm? _taskAlertsForm;
     private bool _taskAlertsShowPending;
     private bool _configuring;
+    private bool _guardianRecoveryReady;
 
     public TrayApplicationContext(string configPath)
     {
@@ -68,6 +77,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _windowStatePath = Path.Combine(dataDirectory, "configuration-window.json");
         _buttonMapStatePath = Path.Combine(dataDirectory, "button-map-window.json");
         _log = new FileLog(Path.Combine(dataDirectory, "joydex.log"));
+        _joydexLoginStartup = new LoginStartupRegistration(
+            Environment.ProcessPath ?? Application.ExecutablePath,
+            "Joydex",
+            ["--config", Path.GetFullPath(_configPath)]);
+        var linkToolExecutablePath = VirpilLinkToolLocator.FindInstalledPath();
+        _linkToolLoginStartup = linkToolExecutablePath is null
+            ? null
+            : new LoginStartupRegistration(
+                linkToolExecutablePath,
+                "Joydex.VirpilLinkTool");
         _keybindingService = CodexKeybindingService.CreateDefault(_log.Write, existingCompanionInstall);
         _keybindingService.InitializeAsync().GetAwaiter().GetResult();
         _cooperativeWindow = new CooperativeWindow("Joydex");
@@ -87,21 +106,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _log.Write);
         var initialTaskAlerts = _taskAlerts.GetSnapshot();
         _linkToolProfilePath = Path.Combine(dataDirectory, "joydex-linktool.led.json");
-        try
+        if (initialTaskAlerts.EffectiveLedOutput.Mode == TaskAlertLedOutputMode.LinkTool)
         {
-            LinkToolProfileWriter.Write(_linkToolProfilePath);
-            _log.Write($"Joydex LinkTool profile written to {_linkToolProfilePath}.");
-        }
-        catch (Exception exception)
-        {
-            _log.Write($"Could not write the Joydex LinkTool profile: {exception.Message}");
+            try
+            {
+                LinkToolProfileWriter.Write(_linkToolProfilePath, initialTaskAlerts.EffectiveLedOutput);
+                _log.Write($"Joydex LinkTool profile written to {_linkToolProfilePath}.");
+            }
+            catch (Exception exception)
+            {
+                _log.Write($"Could not write the Joydex LinkTool profile: {exception.Message}");
+            }
         }
 
-        _ledService = new LinkToolLedService(
-            new UdpLinkToolTelemetrySender(),
-            new VpcConflictDetector(),
-            _log.Write,
-            initialTaskAlerts);
+        _ledService = CreateLedOutput(initialTaskAlerts, initialTaskAlerts.EffectiveLedOutput);
         _hookManager = new CodexHookManager(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".codex",
@@ -109,7 +127,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _hookRelayPath = Path.Combine(AppContext.BaseDirectory, "Joydex.HookRelay.exe");
         _guardian = new GuardianController(
             Path.Combine(AppContext.BaseDirectory, "Joydex.Guardian.exe"),
-            _log.Write);
+            _log.Write,
+            Path.Combine(dataDirectory, "led-guardian-recovery.json"));
+        _guardianRecoveryReady = TryUpdateGuardianRecovery(initialTaskAlerts);
         _deviceChangeMonitor = new DeviceChangeMonitor();
         _deviceChangeMonitor.DevicesChanged += OnDevicesChanged;
 
@@ -122,6 +142,35 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _testControlsItem = new ToolStripMenuItem("Test controls…", image: null, OnTestControls);
         _configureItem = new ToolStripMenuItem("Configure…", image: null, OnConfigure);
         _promptPickersItem = new ToolStripMenuItem("Prompt pickers...", image: null, OnPromptPickers);
+        _startAtLoginItem = new ToolStripMenuItem(
+            "Start Joydex when I sign in",
+            image: null,
+            OnToggleStartAtLogin)
+        {
+            CheckOnClick = false,
+        };
+        InitializeLoginStartupItem(_startAtLoginItem, _joydexLoginStartup, "Joydex");
+        _startLinkToolAtLoginItem = new ToolStripMenuItem(
+            "Start VIRPIL LinkTool when I sign in",
+            image: null,
+            OnToggleStartLinkToolAtLogin)
+        {
+            CheckOnClick = false,
+        };
+        if (_linkToolLoginStartup is null)
+        {
+            _startLinkToolAtLoginItem.Text += " (not installed)";
+            _startLinkToolAtLoginItem.Enabled = false;
+            _log.Write("VIRPIL LinkTool was not found in a standard install location.");
+        }
+        else
+        {
+            InitializeLoginStartupItem(
+                _startLinkToolAtLoginItem,
+                _linkToolLoginStartup,
+                "VIRPIL LinkTool");
+        }
+        UpdateLedModeUi(initialTaskAlerts.EffectiveLedOutput.Mode);
         _taskAlertsItem = new ToolStripMenuItem("Task alerts", image: null, OnToggleTaskAlerts)
         {
             CheckOnClick = false,
@@ -154,6 +203,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     new ToolStripSeparator(),
                     _configureItem,
                     _promptPickersItem,
+                    _startAtLoginItem,
+                    _startLinkToolAtLoginItem,
                     new ToolStripSeparator(),
                     _testingAdvancedMenu,
                     new ToolStripSeparator(),
@@ -172,7 +223,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (initialTaskAlerts.Enabled && initialTaskAlerts.Assignments.Count > 0)
         {
             _guardian.Start();
-            _guardian.SetRestoreRequired(true);
+            _guardian.SetRestoreRequired(_guardianRecoveryReady);
             _ledService.RestoreAndReplay(replay: true);
         }
         else
@@ -235,6 +286,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         _guardian.Dispose();
+        _ledSwitch.Dispose();
         _taskAlerts.DisposeAsync().AsTask().GetAwaiter().GetResult();
 
         _keybindingService.DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -321,6 +373,88 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private void InitializeLoginStartupItem(
+        ToolStripMenuItem item,
+        LoginStartupRegistration registration,
+        string displayName)
+    {
+        try
+        {
+            item.Checked = registration.IsEnabled;
+        }
+        catch (Exception exception)
+        {
+            item.Enabled = false;
+            _log.Write($"Could not read the {displayName} login startup setting: {exception.Message}");
+        }
+    }
+
+    private void OnToggleStartAtLogin(object? sender, EventArgs eventArgs) =>
+        ToggleLoginStartup(
+            _startAtLoginItem,
+            _joydexLoginStartup,
+            "Joydex",
+            "Joydex will start after you sign in to Windows.",
+            "Joydex will no longer start automatically after sign-in.");
+
+    private void OnToggleStartLinkToolAtLogin(object? sender, EventArgs eventArgs)
+    {
+        if (_linkToolLoginStartup is null)
+        {
+            return;
+        }
+
+        ToggleLoginStartup(
+            _startLinkToolAtLoginItem,
+            _linkToolLoginStartup,
+            "VIRPIL LinkTool",
+            "VIRPIL LinkTool will start after you sign in to Windows.",
+            "VIRPIL LinkTool will no longer start automatically after sign-in.");
+    }
+
+    private void ToggleLoginStartup(
+        ToolStripMenuItem item,
+        LoginStartupRegistration registration,
+        string displayName,
+        string enabledMessage,
+        string disabledMessage)
+    {
+        item.Enabled = false;
+        try
+        {
+            var enable = !registration.IsEnabled;
+            registration.SetEnabled(enable);
+            item.Checked = enable;
+            _notifyIcon.ShowBalloonTip(
+                3500,
+                $"{displayName} login startup",
+                enable ? enabledMessage : disabledMessage,
+                ToolTipIcon.Info);
+        }
+        catch (Exception exception)
+        {
+            _log.Write($"Could not change the {displayName} login startup setting: {exception.Message}");
+            _notifyIcon.ShowBalloonTip(
+                5000,
+                $"{displayName} login startup",
+                exception.Message,
+                ToolTipIcon.Error);
+        }
+        finally
+        {
+            try
+            {
+                item.Checked = registration.IsEnabled;
+                item.Enabled = true;
+            }
+            catch (Exception exception)
+            {
+                item.Enabled = false;
+                _log.Write($"Could not refresh the {displayName} login startup setting: {exception.Message}");
+            }
+        }
+    }
+
     private async void OnConfigure(object? sender, EventArgs eventArgs)
     {
         if (_configuring)
@@ -392,7 +526,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             foreach (var form in _buttonMapForms.Values)
             {
                 form.UpdateConfig(config);
-                form.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
+                var initialTaskAlertSnapshot = _taskAlerts.GetSnapshot();
+                form.UpdateTaskAlerts(initialTaskAlertSnapshot.Assignments, initialTaskAlertSnapshot.EffectiveLedOutput);
             }
 
             var promptSubmitExecutor = new CodexActionExecutor(
@@ -561,7 +696,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 var statePath = GetButtonMapStatePath(deviceId);
                 form = new ButtonMapForm(_activeConfig, deviceId, statePath, _log.Write);
-                form.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
+                var initialTaskAlertSnapshot = _taskAlerts.GetSnapshot();
+                form.UpdateTaskAlerts(initialTaskAlertSnapshot.Assignments, initialTaskAlertSnapshot.EffectiveLedOutput);
                 var capturedId = deviceId;
                 form.VisibleChanged += (_, _) =>
                 {
@@ -574,7 +710,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             form.UpdateConfig(_activeConfig);
-            form.UpdateTaskAlerts(_taskAlerts.GetSnapshot().Assignments);
+            var taskAlertSnapshot = _taskAlerts.GetSnapshot();
+            form.UpdateTaskAlerts(taskAlertSnapshot.Assignments, taskAlertSnapshot.EffectiveLedOutput);
             form.ShowReference();
             if (_buttonMapItems.TryGetValue(deviceId, out var menuItem))
             {
@@ -953,7 +1090,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     _hookManager,
                     _hookRelayPath,
                     _linkToolProfilePath,
-                    SetTaskAlertsEnabledAsync);
+                    SetTaskAlertsEnabledAsync,
+                    SetLedOutputAsync);
                 var createdForm = form;
                 form.FormClosed += (_, _) =>
                 {
@@ -1092,26 +1230,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
             $"Task-alert snapshot enabled={snapshot.Enabled}; bank=M{snapshot.Bank}; assignments={assignmentSummary}; " +
             $"dropped={snapshot.DroppedEventCount}.");
 
+        _guardianRecoveryReady = TryUpdateGuardianRecovery(snapshot);
         if (snapshot.Enabled && snapshot.Assignments.Count > 0)
         {
             _guardian.Start();
-            _guardian.SetRestoreRequired(true);
+            _guardian.SetRestoreRequired(_guardianRecoveryReady);
         }
 
-        _ledService.Apply(snapshot);
+        UseLedOutput(output => output.Apply(snapshot));
         Volatile.Read(ref _wirelessPanelAdapter)?.Apply(snapshot);
         _uiContext.Post(_ =>
         {
             _taskAlertsItem.Checked = snapshot.Enabled;
             foreach (var form in _buttonMapForms.Values)
             {
-                form.UpdateTaskAlerts(snapshot.Assignments);
+                form.UpdateTaskAlerts(snapshot.Assignments, snapshot.EffectiveLedOutput);
             }
         }, null);
     }
 
     private void OnProfileDirtyChanged(object? sender, bool dirty) =>
-        _guardian.SetRestoreRequired(dirty);
+        _guardian.SetRestoreRequired(dirty && _guardianRecoveryReady);
 
     private void OnLedStatusChanged(object? sender, string status)
     {
@@ -1134,22 +1273,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (eventArgs.Mode == PowerModes.Suspend)
         {
-            _ledService.SetPaused(true);
+            UseLedOutput(output => output.SetPaused(true));
         }
         else if (eventArgs.Mode == PowerModes.Resume)
         {
-            _ledService.SetPaused(false);
-            _ledService.Apply(_taskAlerts.GetSnapshot());
+            UseLedOutput(output =>
+            {
+                output.SetPaused(false);
+                output.Apply(_taskAlerts.GetSnapshot());
+            });
         }
     }
 
     private void OnSessionEnding(object sender, SessionEndingEventArgs eventArgs) =>
-        _ledService.SetPaused(true);
+        UseLedOutput(output => output.SetPaused(true));
 
     private void OnDevicesChanged(object? sender, EventArgs eventArgs)
     {
         _log.Write("Device-change notification; task-alert profile restore/replay requested.");
-        _ledService.RestoreAndReplay(_taskAlerts.GetSnapshot().Enabled);
+        UseLedOutput(output => output.RestoreAndReplay(_taskAlerts.GetSnapshot().Enabled));
     }
 
     private Task SetTaskAlertsEnabledAsync(bool enabled)
@@ -1167,6 +1309,180 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _taskAlerts.SetEnabled(true);
         return Task.CompletedTask;
+    }
+
+    private ITaskAlertLedOutput CreateLedOutput(
+        TaskAlertSnapshot snapshot,
+        TaskAlertLedOptions options) => options.Mode switch
+    {
+        TaskAlertLedOutputMode.DirectHid => new DirectVirpilLedService(
+            _virpilTransportFactory,
+            new DirectVirpilConflictDetector(),
+            _log.Write,
+            snapshot,
+            options),
+        _ => new LinkToolLedService(
+            new UdpLinkToolTelemetrySender(),
+            new VpcConflictDetector(),
+            _log.Write,
+            snapshot),
+    };
+
+    private async Task SetLedOutputAsync(TaskAlertLedOptions options)
+    {
+        options = options.Normalize();
+        await _ledSwitch.WaitAsync().ConfigureAwait(true);
+        try
+        {
+            var linkToolStartupDisabled = false;
+            if (options.Mode == TaskAlertLedOutputMode.DirectHid)
+            {
+                var conflicts = new DirectVirpilConflictDetector();
+                if (conflicts.HasConflict())
+                {
+                    throw new InvalidOperationException(
+                        "Close VIRPIL LinkTool and all VPC utilities before enabling Direct USB LED output.");
+                }
+
+                if (!_virpilTransportFactory.IsAvailable(VirpilDevices.Throttle)
+                    || !_virpilTransportFactory.IsAvailable(VirpilDevices.Alpha))
+                {
+                    throw new InvalidOperationException(
+                        "Both the CM3 throttle and Constellation Alpha HID feature collections must be connected before enabling Direct USB LED output.");
+                }
+
+                if (_linkToolLoginStartup?.IsEnabled == true)
+                {
+                    _linkToolLoginStartup.SetEnabled(false);
+                    _startLinkToolAtLoginItem.Checked = false;
+                    linkToolStartupDisabled = true;
+                }
+
+            }
+            else
+            {
+                LinkToolProfileWriter.Write(_linkToolProfilePath, options);
+            }
+
+            var previousSnapshot = _taskAlerts.GetSnapshot();
+            var snapshot = previousSnapshot with { LedOutput = options };
+            var next = CreateLedOutput(snapshot, options);
+            var previous = BeginLedOutputHandoff(next);
+            await DisposeReplacedLedOutputAsync(previous).ConfigureAwait(true);
+            CompleteLedOutputHandoff(next);
+            try
+            {
+                _taskAlerts.SetLedOutput(options);
+            }
+            catch
+            {
+                var rollback = CreateLedOutput(previousSnapshot, previousSnapshot.EffectiveLedOutput);
+                var failed = BeginLedOutputHandoff(rollback);
+                await DisposeReplacedLedOutputAsync(failed).ConfigureAwait(true);
+                CompleteLedOutputHandoff(rollback);
+                _guardianRecoveryReady = TryUpdateGuardianRecovery(previousSnapshot);
+                UseLedOutput(output => output.Apply(previousSnapshot));
+                UpdateLedModeUi(previousSnapshot.EffectiveLedOutput.Mode);
+                if (linkToolStartupDisabled && _linkToolLoginStartup is not null)
+                {
+                    try
+                    {
+                        _linkToolLoginStartup.SetEnabled(true);
+                        _startLinkToolAtLoginItem.Checked = true;
+                    }
+                    catch (Exception exception)
+                    {
+                        _log.Write($"Could not restore LinkTool login startup after LED mode rollback: {exception.Message}");
+                    }
+                }
+
+                throw;
+            }
+
+            _guardianRecoveryReady = TryUpdateGuardianRecovery(_taskAlerts.GetSnapshot());
+            UseLedOutput(output => output.Apply(_taskAlerts.GetSnapshot()));
+            UpdateLedModeUi(options.Mode);
+        }
+        finally
+        {
+            _ledSwitch.Release();
+        }
+    }
+
+    private void UpdateLedModeUi(TaskAlertLedOutputMode mode)
+    {
+        var linkToolMode = mode == TaskAlertLedOutputMode.LinkTool;
+        _startLinkToolAtLoginItem.Visible = linkToolMode;
+        _startLinkToolAtLoginItem.Enabled = linkToolMode && _linkToolLoginStartup is not null;
+    }
+
+    private ITaskAlertLedOutput BeginLedOutputHandoff(ITaskAlertLedOutput next)
+    {
+        ArgumentNullException.ThrowIfNull(next);
+        next.SetPaused(true);
+        lock (_ledOutputSync)
+        {
+            var previous = _ledService;
+            previous.StatusChanged -= OnLedStatusChanged;
+            previous.ProfileDirtyChanged -= OnProfileDirtyChanged;
+            previous.SetPaused(true);
+            _ledService = next;
+            next.StatusChanged += OnLedStatusChanged;
+            next.ProfileDirtyChanged += OnProfileDirtyChanged;
+            return previous;
+        }
+    }
+
+    private void CompleteLedOutputHandoff(ITaskAlertLedOutput output)
+    {
+        lock (_ledOutputSync)
+        {
+            if (!ReferenceEquals(_ledService, output))
+            {
+                return;
+            }
+
+            output.SetPaused(false);
+            output.RestoreAndReplay(replay: true);
+        }
+    }
+
+    private async Task DisposeReplacedLedOutputAsync(ITaskAlertLedOutput output)
+    {
+        try
+        {
+            await output.DisposeAsync().ConfigureAwait(true);
+        }
+        catch (Exception exception)
+        {
+            _log.Write($"Could not finish disposing the previous task-alert LED output: {exception.Message}");
+        }
+    }
+
+    private void UseLedOutput(Action<ITaskAlertLedOutput> operation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        lock (_ledOutputSync)
+        {
+            operation(_ledService);
+        }
+    }
+
+    private bool TryUpdateGuardianRecovery(TaskAlertSnapshot snapshot)
+    {
+        try
+        {
+            _guardian.UpdateRecovery(snapshot);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or System.Text.Json.JsonException
+            or NotSupportedException)
+        {
+            _log.Write($"Could not update LED guardian recovery state: {exception.Message}");
+            return false;
+        }
     }
 
     private static void OpenPath(string path)

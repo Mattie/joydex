@@ -99,7 +99,7 @@ public sealed class DeviceSelector
 
 public sealed class PollingOptions
 {
-    public int ConnectWarmupMs { get; init; } = 250;
+    public int ConnectWarmupMs { get; init; } = 1500;
 
     public int PollIntervalMs { get; init; } = 16;
 

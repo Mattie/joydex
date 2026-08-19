@@ -13,6 +13,7 @@ internal sealed class TaskAlertsForm : ThemedForm
     private readonly string _relayPath;
     private readonly string _linkToolProfilePath;
     private readonly Func<bool, Task> _setEnabled;
+    private readonly Func<TaskAlertLedOptions, Task> _setLedOutput;
     private readonly CheckBox _enabled;
     private readonly Label _bank;
     private readonly Label _dropped;
@@ -25,6 +26,9 @@ internal sealed class TaskAlertsForm : ThemedForm
     private readonly RoundedButton _ignoreSelected;
     private readonly RoundedButton _ignoredSources;
     private readonly Label _hookStatus;
+    private readonly Label _ledOutput;
+    private readonly Label _ledProfile;
+    private readonly RoundedButton _showLedProfile;
     private readonly PageTabButton _currentStateNav;
     private readonly PageTabButton _eventStreamNav;
     private readonly Panel _currentStatePage;
@@ -42,13 +46,19 @@ internal sealed class TaskAlertsForm : ThemedForm
         CodexHookManager hooks,
         string relayPath,
         string linkToolProfilePath,
-        Func<bool, Task> setEnabled)
+        Func<bool, Task> setEnabled,
+        Func<TaskAlertLedOptions, Task>? setLedOutput = null)
     {
         _coordinator = coordinator;
         _hooks = hooks;
         _relayPath = relayPath;
         _linkToolProfilePath = linkToolProfilePath;
         _setEnabled = setEnabled;
+        _setLedOutput = setLedOutput ?? (options =>
+        {
+            _coordinator.SetLedOutput(options);
+            return Task.CompletedTask;
+        });
 
         Text = "Joydex Task Alerts";
         StartPosition = FormStartPosition.CenterScreen;
@@ -398,7 +408,7 @@ internal sealed class TaskAlertsForm : ThemedForm
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
             Dock = DockStyle.Top,
-            RowCount = 2,
+            RowCount = 3,
         };
         hooksLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         hooksLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -424,6 +434,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         hooksPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         hooksPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         hooksPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        hooksPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _hookStatus = new Label { AutoSize = true, Margin = new Padding(0, 6, 12, 0) };
         var installHooks = new RoundedButton
         {
@@ -433,7 +444,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         installHooks.Click += OnInstallHooks;
         var removeHooks = new RoundedButton { Text = "Remove hooks" };
         removeHooks.Click += OnRemoveHooks;
-        var ledProfile = new Label
+        _ledProfile = new Label
         {
             Text = $"LED profile: {Path.GetFileName(_linkToolProfilePath)}",
             AutoEllipsis = true,
@@ -441,15 +452,30 @@ internal sealed class TaskAlertsForm : ThemedForm
             Margin = new Padding(0, 12, 8, 0),
             TextAlign = ContentAlignment.TopLeft,
         };
-        var showLedProfile = new RoundedButton { Text = "Show LED profile" };
-        showLedProfile.Click += (_, _) => ShowLinkToolProfile();
-        _toolTips.SetToolTip(ledProfile, ledProfile.Text);
+        _showLedProfile = new RoundedButton { Text = "Show LED profile" };
+        _showLedProfile.Click += (_, _) => ShowLinkToolProfile();
+        _toolTips.SetToolTip(_ledProfile, _ledProfile.Text);
+        _ledOutput = new Label
+        {
+            AccessibleName = "Task alert LED output mode",
+            AutoSize = true,
+            Margin = new Padding(0, 18, 8, 0),
+        };
+        var configureLeds = new RoundedButton
+        {
+            AccessibleName = "Configure task alert LED output and colors",
+            Text = "Configure LEDs...",
+        };
+        configureLeds.Click += OnConfigureLeds;
         hooksPanel.Controls.Add(_hookStatus, 0, 0);
         hooksPanel.Controls.Add(installHooks, 1, 0);
         hooksPanel.Controls.Add(removeHooks, 2, 0);
-        hooksPanel.Controls.Add(ledProfile, 0, 1);
-        hooksPanel.SetColumnSpan(ledProfile, 2);
-        hooksPanel.Controls.Add(showLedProfile, 2, 1);
+        hooksPanel.Controls.Add(_ledProfile, 0, 1);
+        hooksPanel.SetColumnSpan(_ledProfile, 2);
+        hooksPanel.Controls.Add(_showLedProfile, 2, 1);
+        hooksPanel.Controls.Add(_ledOutput, 0, 2);
+        hooksPanel.SetColumnSpan(_ledOutput, 2);
+        hooksPanel.Controls.Add(configureLeds, 2, 2);
         hooksLayout.Controls.Add(hooksPanel, 0, 1);
         hooksCard.Controls.Add(hooksLayout);
         root.Controls.Add(hooksCard, 0, 2);
@@ -647,6 +673,13 @@ internal sealed class TaskAlertsForm : ThemedForm
                 ? $"M{snapshot.Bank} (automatic)"
                 : $"M{snapshot.Bank} (fallback)";
             _dropped.Text = snapshot.DroppedEventCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var ledOptions = snapshot.EffectiveLedOutput;
+            _ledOutput.Text = ledOptions.Mode == TaskAlertLedOutputMode.DirectHid
+                ? "LED output: Direct USB"
+                : "LED output: VIRPIL LinkTool";
+            var linkToolMode = ledOptions.Mode == TaskAlertLedOutputMode.LinkTool;
+            _ledProfile.Enabled = linkToolMode;
+            _showLedProfile.Enabled = linkToolMode;
             var telemetry = LinkToolTelemetryState.From(snapshot);
             _telemetry.Text = $"P=[{telemetry.JoydexPrimaryB1State},{telemetry.JoydexPrimaryB2State}," +
                 $"{telemetry.JoydexPrimaryB4State},{telemetry.JoydexPrimaryB5State}] " +
@@ -661,7 +694,7 @@ internal sealed class TaskAlertsForm : ThemedForm
             _assignments.Rows.Clear();
             foreach (var assignment in snapshot.Assignments)
             {
-                var color = TaskAlertColors.Get(assignment.State);
+                var color = TaskAlertColors.Get(assignment.State, ledOptions);
                 var page = TaskAlertSlots.Page(assignment.Slot);
                 var rowIndex = _assignments.Rows.Add(
                     page == TaskAlertPage.Primary
@@ -981,6 +1014,58 @@ internal sealed class TaskAlertsForm : ThemedForm
         {
             UseShellExecute = true,
         });
+    }
+
+    private async void OnConfigureLeds(object? sender, EventArgs eventArgs)
+    {
+        using var form = new TaskAlertLedSettingsForm(_coordinator.GetLedOutput());
+        if (form.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        if (form.Options.Mode == TaskAlertLedOutputMode.DirectHid
+            && _coordinator.GetLedOutput().Mode != TaskAlertLedOutputMode.DirectHid
+            && MessageBox.Show(
+                this,
+                "Direct USB will take temporary host control of the CM3 and Alpha LEDs. " +
+                "Close LinkTool and VPC utilities first. Enable it now?",
+                "Enable Direct USB LEDs",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            Enabled = false;
+            await _setLedOutput(form.Options);
+            UpdateSnapshot(_coordinator.GetSnapshot());
+            if (form.Options.Mode == TaskAlertLedOutputMode.LinkTool)
+            {
+                MessageBox.Show(
+                    this,
+                    "The Joydex LinkTool profile was regenerated. Reload it in LinkTool to apply color changes.",
+                    "LinkTool profile updated",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Could not change LED output",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        finally
+        {
+            Enabled = true;
+        }
     }
 
     private sealed record SuppressionTarget(string SessionId, string? Workspace);

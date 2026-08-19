@@ -47,8 +47,10 @@ internal sealed class ButtonMapForm : ThemedForm
 
     public void UpdateConfig(CompanionConfig config) => _canvas.UpdateConfig(config);
 
-    public void UpdateTaskAlerts(IReadOnlyList<TaskAlertAssignment> assignments) =>
-        _canvas.UpdateTaskAlerts(assignments);
+    public void UpdateTaskAlerts(
+        IReadOnlyList<TaskAlertAssignment> assignments,
+        TaskAlertLedOptions? ledOptions = null) =>
+        _canvas.UpdateTaskAlerts(assignments, ledOptions);
 
     public void ShowReference()
     {
@@ -181,6 +183,7 @@ internal sealed class ButtonMapCanvas : Control
     private readonly bool _isCm3;
     private IReadOnlyDictionary<int, string> _labels;
     private IReadOnlyList<TaskAlertAssignment> _taskAlerts = [];
+    private TaskAlertLedOptions _taskAlertLedOptions = TaskAlertLedOptions.CreateDefault();
 
     public ButtonMapCanvas(CompanionConfig config, Action<string>? log = null)
         : this(config, CompanionConfigNormalizer.Normalize(config).Devices[0].Id, log)
@@ -237,9 +240,12 @@ internal sealed class ButtonMapCanvas : Control
         Invalidate();
     }
 
-    public void UpdateTaskAlerts(IReadOnlyList<TaskAlertAssignment> assignments)
+    public void UpdateTaskAlerts(
+        IReadOnlyList<TaskAlertAssignment> assignments,
+        TaskAlertLedOptions? ledOptions = null)
     {
         _taskAlerts = assignments ?? throw new ArgumentNullException(nameof(assignments));
+        _taskAlertLedOptions = (ledOptions ?? _taskAlertLedOptions).Normalize();
         Invalidate();
     }
 
@@ -667,7 +673,7 @@ internal sealed class ButtonMapCanvas : Control
 
         foreach (var assignment in _taskAlerts)
         {
-            var rgb = TaskAlertColors.Get(assignment.State);
+            var rgb = TaskAlertColors.Get(assignment.State, _taskAlertLedOptions);
             var color = Color.FromArgb(rgb.Red, rgb.Green, rgb.Blue);
             var textColor = assignment.State is TaskAlertState.Completed or TaskAlertState.Fault
                 ? Color.White

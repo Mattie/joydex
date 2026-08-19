@@ -93,7 +93,7 @@ public sealed class LinkToolLedServiceTests
     }
 
     [Fact]
-    public async Task RestoredStartupForcesTheInitialAlertStateToHardware()
+    public async Task BackendHandoffReplayForcesTheCurrentAlertStateToHardware()
     {
         var sender = new RecordingSender();
         var restored = Snapshot(new TaskAlertAssignment(
@@ -108,10 +108,31 @@ public sealed class LinkToolLedServiceTests
             _ => { },
             restored);
 
+        service.Apply(restored);
+        await Task.Delay(100);
+        Assert.Empty(sender.States);
+
         service.RestoreAndReplay(replay: true);
 
         await WaitUntilAsync(() => sender.States.Count == 1, TimeSpan.FromSeconds(2));
         Assert.Equal(2, sender.States[0].JoydexPrimaryB2State);
+    }
+
+    [Fact]
+    public async Task BackendHandoffReplayForcesANoAlertBankSnapshot()
+    {
+        var sender = new RecordingSender();
+        await using var service = new LinkToolLedService(
+            sender,
+            new FixedConflictDetector(false),
+            _ => { },
+            EmptySnapshot());
+
+        service.RestoreAndReplay(replay: true);
+
+        await WaitUntilAsync(() => sender.States.Count == 1, TimeSpan.FromSeconds(2));
+        Assert.Equal(2, sender.States[0].JoydexBank);
+        Assert.False(sender.States[0].HasAlert);
     }
 
     [Fact]
@@ -316,6 +337,35 @@ public sealed class LinkToolLedServiceTests
                     rule.GetProperty("comment").GetString() == $"Joydex overflow M1 B{button} running"
                     && HasCondition(rule, "JoydexBank", "1"));
             }
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void WritesConfiguredAlphaIdleBaselineForLinkToolParity()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-tests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "joydex-linktool.led.json");
+        try
+        {
+            var options = TaskAlertLedOptions.CreateDefault() with { AlphaIdle = "#123456" };
+
+            LinkToolProfileWriter.Write(path, "throttle-path", "alpha-path", options);
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            var rules = document.RootElement.GetProperty("rules").EnumerateArray().ToArray();
+
+            Assert.Equal(107, rules.Length);
+            Assert.Contains(rules, rule =>
+                rule.GetProperty("comment").GetString() == "Joydex Alpha idle baseline"
+                && rule.GetProperty("primaryValue").GetString() == "0"
+                && rule.GetProperty("colorOne").GetString() == "5649426"
+                && rule.GetProperty("priority").GetInt32() == 0);
         }
         finally
         {

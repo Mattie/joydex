@@ -16,7 +16,26 @@ public sealed class TaskAlertPreferencesStoreTests : IDisposable
         Assert.True(preferences.Enabled);
         Assert.Equal(2, preferences.Bank);
         Assert.Empty(preferences.Suppressions!);
+        Assert.Equal(TaskAlertLedOutputMode.LinkTool, preferences.LedOutput!.Mode);
         Assert.True(File.Exists(path));
+    }
+
+    [Fact]
+    public void PersistsDirectModeAndCustomLedColorsAsJson()
+    {
+        var path = Path.Combine(_directory, "led-options.json");
+        var options = TaskAlertLedOptions.CreateDefault() with
+        {
+            Mode = TaskAlertLedOutputMode.DirectHid,
+            TaskColors = new TaskAlertLedPalette(Approval: "#123456"),
+        };
+
+        TaskAlertPreferencesStore.Save(path, TaskAlertPreferences.Default with { LedOutput = options });
+        var loaded = TaskAlertPreferencesStore.LoadOrCreate(path);
+
+        Assert.Equal(TaskAlertLedOutputMode.DirectHid, loaded.LedOutput!.Mode);
+        Assert.Equal("#123456", loaded.LedOutput.TaskColors!.Approval);
+        Assert.Contains("\"mode\": \"directHid\"", File.ReadAllText(path), StringComparison.Ordinal);
     }
 
     [Fact]

@@ -2,6 +2,9 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Joydex.Virpil;
 
 return await Guardian.RunAsync(args).ConfigureAwait(false);
 
@@ -21,6 +24,8 @@ internal static class Guardian
 
         using var cleanEvent = EventWaitHandle.OpenExisting(cleanEventName);
         using var restoreEvent = EventWaitHandle.OpenExisting(restoreEventName);
+        TryArgument(args, "--recovery", out var recoveryPath);
+        TryArgument(args, "--token", out var sessionToken);
         Process? parent = null;
         try
         {
@@ -31,7 +36,7 @@ internal static class Guardian
                 {
                     if (restoreEvent.WaitOne(0))
                     {
-                        await ClearAlertsAsync(port).ConfigureAwait(false);
+                        await RecoverAsync(port, recoveryPath, sessionToken).ConfigureAwait(false);
                     }
 
                     return 0;
@@ -45,7 +50,7 @@ internal static class Guardian
         {
             if (restoreEvent.WaitOne(0))
             {
-                await ClearAlertsAsync(port).ConfigureAwait(false);
+                await RecoverAsync(port, recoveryPath, sessionToken).ConfigureAwait(false);
             }
         }
         finally
@@ -55,6 +60,75 @@ internal static class Guardian
 
         return 0;
     }
+
+    private static async Task RecoverAsync(int port, string recoveryPath, string sessionToken)
+    {
+        JoydexLedRecoveryDocument? document = null;
+        if (!string.IsNullOrWhiteSpace(recoveryPath) && File.Exists(recoveryPath))
+        {
+            try
+            {
+                await using var stream = File.OpenRead(recoveryPath);
+                document = await JsonSerializer.DeserializeAsync(
+                    stream,
+                    GuardianJsonContext.Default.JoydexLedRecoveryDocument).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or JsonException or NotSupportedException)
+            {
+            }
+        }
+
+        if (document is not null
+            && document.Version == JoydexLedRecoveryDocument.CurrentVersion
+            && !string.IsNullOrWhiteSpace(sessionToken)
+            && string.Equals(document.SessionToken, sessionToken, StringComparison.Ordinal)
+            && string.Equals(document.Backend, JoydexLedRecoveryDocument.DirectHidBackend, StringComparison.Ordinal)
+            && IsFrame(document.ThrottleFrame)
+            && IsFrame(document.AlphaFrame))
+        {
+            if (VirpilWriterProcessDetector.FindConflict() is null)
+            {
+                RecoverDirect(document);
+            }
+            return;
+        }
+
+        await ClearAlertsAsync(port).ConfigureAwait(false);
+    }
+
+    private static void RecoverDirect(JoydexLedRecoveryDocument document)
+    {
+        try
+        {
+            using var throttle = new VirpilHidTransport(VirpilDevices.Throttle);
+            throttle.Send(VirpilLedProtocol.BuildReport(
+                VirpilDevices.Throttle.LedCommand,
+                document.ThrottleFrame!));
+        }
+        catch (Exception)
+        {
+        }
+
+        try
+        {
+            using var alpha = new VirpilHidTransport(VirpilDevices.Alpha);
+            var reports = new List<byte[]>();
+            if (document.ResetAlpha)
+            {
+                reports.Add(VirpilLedProtocol.BuildResetReport());
+            }
+
+            reports.Add(VirpilLedProtocol.BuildReport(
+                VirpilDevices.Alpha.LedCommand,
+                document.AlphaFrame!));
+            alpha.SendBatch(reports);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private static bool IsFrame(byte[]? frame) => frame is { Length: VirpilLedProtocol.FrameLength };
 
     private static async Task ClearAlertsAsync(int port)
     {
@@ -89,3 +163,6 @@ internal static class Guardian
         return false;
     }
 }
+
+[JsonSerializable(typeof(JoydexLedRecoveryDocument))]
+internal sealed partial class GuardianJsonContext : JsonSerializerContext;

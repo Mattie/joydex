@@ -150,30 +150,24 @@ public static class LinkToolProfileWriter
     public const string AlphaName = "Constellation ALPHA-R Grip";
     public const ushort AlphaVendorId = 0x3344;
     public const ushort AlphaProductId = 0x40CC;
-    private static readonly VirpilLedColor Off = new(0x00, 0x00, 0x00);
-    private static readonly VirpilLedColor MidPink = new(0x80, 0x20, 0x60);
-
-    private static readonly IReadOnlyDictionary<int, VirpilLedColor> DefaultBankColors =
-        new Dictionary<int, VirpilLedColor>
-        {
-            [2] = new(0x00, 0x00, 0xFF),
-            [3] = new(0x00, 0xFF, 0x00),
-            [4] = new(0xFF, 0x00, 0x00),
-        };
-
-    public static string Write(string path)
+    public static string Write(string path, TaskAlertLedOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var throttleKey = FindDevicePath(ThrottleVendorId, ThrottleProductId);
         var alphaKey = FindDevicePath(AlphaVendorId, AlphaProductId);
-        return Write(path, throttleKey, alphaKey);
+        return Write(path, throttleKey, alphaKey, options);
     }
 
-    internal static string Write(string path, string throttleKey, string alphaKey)
+    internal static string Write(
+        string path,
+        string throttleKey,
+        string alphaKey,
+        TaskAlertLedOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentException.ThrowIfNullOrWhiteSpace(throttleKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(alphaKey);
+        options = (options ?? TaskAlertLedOptions.CreateDefault()).Normalize();
         var rules = new List<object>();
 
         foreach (var slot in TaskAlertSlots.Primary)
@@ -188,7 +182,7 @@ public static class LinkToolProfileWriter
                         TelemetryArgument(slot),
                         Encode(state),
                         TaskAlertSlots.Button(slot),
-                        VirpilLedColor.For(state),
+                        VirpilLedColor.For(state, options),
                         $"Joydex primary M{bank} B{TaskAlertSlots.Button(slot)} {state.ToString().ToLowerInvariant()}",
                         priority: 100,
                         bank: bank));
@@ -206,7 +200,7 @@ public static class LinkToolProfileWriter
                     TelemetryArgument(slot),
                     Encode(state),
                     TaskAlertSlots.Button(slot),
-                    VirpilLedColor.For(state),
+                    VirpilLedColor.For(state, options),
                     $"Joydex overflow M1 B{TaskAlertSlots.Button(slot)} {state.ToString().ToLowerInvariant()}",
                     priority: 100,
                     bank: 1));
@@ -227,7 +221,7 @@ public static class LinkToolProfileWriter
                     "JoydexBank",
                     bank,
                     channel,
-                    BaselineColor(bank, channel),
+                    BaselineColor(options, bank, channel),
                     $"Joydex M{bank} B{channel} baseline",
                     priority: 0));
             }
@@ -241,9 +235,22 @@ public static class LinkToolProfileWriter
                 "JoydexAlphaState",
                 Encode(state),
                 1,
-                VirpilLedColor.For(state),
+                VirpilLedColor.For(state, options),
                 $"Joydex Alpha {state.ToString().ToLowerInvariant()}",
                 priority: 100));
+        }
+
+        if (options.AlphaIdleColor() is { } alphaIdle)
+        {
+            rules.Add(Rule(
+                AlphaName,
+                alphaKey,
+                "JoydexAlphaState",
+                0,
+                1,
+                new VirpilLedColor(alphaIdle.Red, alphaIdle.Green, alphaIdle.Blue),
+                "Joydex Alpha idle baseline",
+                priority: 0));
         }
 
         var fullPath = Path.GetFullPath(path);
@@ -345,14 +352,11 @@ public static class LinkToolProfileWriter
 
     private static int Bgr(VirpilLedColor color) => color.Red | (color.Green << 8) | (color.Blue << 16);
 
-    private static VirpilLedColor BaselineColor(int bank, int channel) => bank switch
+    private static VirpilLedColor BaselineColor(TaskAlertLedOptions options, int bank, int channel)
     {
-        1 => Off,
-        2 or 3 or 4 when channel is 1 or 2 or 4 or 5 => Off,
-        2 or 3 or 4 => DefaultBankColors[bank],
-        5 => MidPink,
-        _ => throw new ArgumentOutOfRangeException(nameof(bank)),
-    };
+        var color = options.BankColors(bank)[channel - 1];
+        return new VirpilLedColor(color.Red, color.Green, color.Blue);
+    }
 
     internal static string TelemetryArgument(int slot) => TaskAlertSlots.Page(slot) switch
     {

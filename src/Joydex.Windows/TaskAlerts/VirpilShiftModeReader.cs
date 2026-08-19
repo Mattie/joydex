@@ -1,4 +1,4 @@
-using HidSharp;
+using Joydex.Virpil;
 
 namespace Joydex.Windows.TaskAlerts;
 
@@ -15,41 +15,14 @@ public sealed class VirpilShiftModeReader(
     ushort vendorId = LinkToolProfileWriter.ThrottleVendorId,
     ushort productId = LinkToolProfileWriter.ThrottleProductId) : IVirpilShiftModeSource
 {
-    private const byte SoftwareLinkReportId = 4;
-    private readonly ushort _vendorId = vendorId;
-    private readonly ushort _productId = productId;
-    private HidStream? _stream;
+    private readonly IVirpilHidTransport _transport = new VirpilHidTransport(
+        VirpilDevices.Throttle with { VendorId = vendorId, ProductId = productId });
 
     /// <summary>
     /// Reads the eight-bit shift-channel mask currently reported by the device.
     /// </summary>
     public byte ReadShiftMask()
-    {
-        EnsureOpen();
-        Exception? firstFailure = null;
-        foreach (var length in new[] { 19, 20 })
-        {
-            var payload = new byte[length];
-            payload[0] = SoftwareLinkReportId;
-            try
-            {
-                _stream!.GetFeature(payload);
-                if (payload[0] == SoftwareLinkReportId)
-                {
-                    return payload[2];
-                }
-            }
-            catch (Exception exception)
-            {
-                firstFailure ??= exception;
-            }
-        }
-
-        Reset();
-        throw new IOException(
-            "The VIRPIL software-link feature report could not be read.",
-            firstFailure);
-    }
+        => _transport.ReadShiftMask();
 
     /// <summary>
     /// Maps a single active shift channel to the CM3 mode bank M1 through M5.
@@ -75,34 +48,8 @@ public sealed class VirpilShiftModeReader(
 
     public void Dispose()
     {
-        Reset();
+        _transport.Dispose();
         GC.SuppressFinalize(this);
-    }
-
-    private void EnsureOpen()
-    {
-        if (_stream is not null)
-        {
-            return;
-        }
-
-        var device = DeviceList.Local
-            .GetHidDevices(_vendorId, _productId)
-            .FirstOrDefault(candidate => candidate.GetMaxFeatureReportLength() >= 38)
-            ?? throw new IOException($"VIRPIL HID device {_vendorId:X4}:{_productId:X4} is unavailable.");
-        if (!device.TryOpen(out var stream) || stream is null)
-        {
-            throw new IOException("The VIRPIL throttle HID interface could not be opened.");
-        }
-
-        stream.ReadTimeout = 1000;
-        _stream = stream;
-    }
-
-    private void Reset()
-    {
-        _stream?.Dispose();
-        _stream = null;
     }
 }
 

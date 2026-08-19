@@ -2,6 +2,15 @@
 
 This file records the major capabilities and fixes added since Joydex was first uploaded to GitHub. Entries are grouped by date because the project has not used versioned releases yet. New entries go at the top.
 
+## 2026-08-18
+
+- Added an experimental Direct USB option for task-status LEDs on the CM3 throttle and Constellation Alpha. LED colors are configurable in the app, with recovery handling for alerts, device changes, Windows resume, and unexpected exits.
+- Changed maintained switches so one already on when Joydex starts must be turned off and on again before it triggers an action.
+
+## 2026-08-17
+
+- Added tray options to start Joydex and VIRPIL LinkTool at Windows sign-in.
+
 ## 2026-08-08
 
 - Added centered workspace-name footers to the four bridge-v2 touchscreen task

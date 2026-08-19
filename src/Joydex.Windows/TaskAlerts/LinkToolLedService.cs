@@ -6,7 +6,7 @@ namespace Joydex.Windows.TaskAlerts;
 /// Publishes complete Joydex LED state snapshots to VIRPIL LinkTool.
 /// LinkTool keeps the matching rules active, so Joydex does not need to refresh HID colors.
 /// </summary>
-public sealed class LinkToolLedService : IAsyncDisposable
+public sealed class LinkToolLedService : ITaskAlertLedOutput
 {
     private static readonly TimeSpan MinimumSpacing = TimeSpan.FromMilliseconds(250);
     private readonly object _sync = new();

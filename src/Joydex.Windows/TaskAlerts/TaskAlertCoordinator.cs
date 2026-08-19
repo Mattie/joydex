@@ -11,7 +11,12 @@ public sealed record TaskAlertSnapshot(
     int Bank = 2,
     bool BankAutomaticallyDetected = false,
     IReadOnlyList<TaskAlertEventTrace>? RecentEvents = null,
-    IReadOnlyList<TaskAlertSuppressionRule>? Suppressions = null);
+    IReadOnlyList<TaskAlertSuppressionRule>? Suppressions = null,
+    TaskAlertLedOptions? LedOutput = null)
+{
+    public TaskAlertLedOptions EffectiveLedOutput =>
+        (LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize();
+}
 
 public enum TaskAlertEventResult
 {
@@ -152,6 +157,30 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
                 _detectedBank = bank;
                 snapshot = SnapshotUnsafe();
             }
+        }
+
+        RaiseChanged(snapshot);
+    }
+
+    public TaskAlertLedOptions GetLedOutput()
+    {
+        lock (_sync)
+        {
+            return (_preferences.LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize();
+        }
+    }
+
+    public void SetLedOutput(TaskAlertLedOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var normalized = options.Normalize();
+        TaskAlertSnapshot snapshot;
+        lock (_sync)
+        {
+            var updatedPreferences = _preferences with { LedOutput = normalized };
+            TaskAlertPreferencesStore.Save(_preferencesPath, updatedPreferences);
+            _preferences = updatedPreferences;
+            snapshot = SnapshotUnsafe();
         }
 
         RaiseChanged(snapshot);
@@ -373,7 +402,8 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         _detectedBank ?? _preferences.Bank,
         _detectedBank is not null,
         [.. _recentEvents],
-        [.. (_preferences.Suppressions ?? [])]);
+        [.. (_preferences.Suppressions ?? [])],
+        (_preferences.LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize());
 
     private void RestoreStateUnsafe()
     {

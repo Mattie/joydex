@@ -14,11 +14,9 @@ This attribution applies to the button-map asset in `src/Joydex.App/Assets/cm3-b
 
 The Alpha/WarBRD button-map artwork in `docs/images/joydex-button-map_vpc-constellation-alpha-warbrd.png` was created for Joydex by Mattie Casper and is distributed under the project's MIT License. The rendered documentation image in `docs/images/joydex-alpha-button-map.png` is derived from that original artwork.
 
-## VIRPIL HID LED communication
+## HID device access
 
-Joydex's volatile LED feature-report implementation is informed by the Apache-2.0-licensed [VLEDCONTROL](https://github.com/Nereid42/VLEDCONTROL) project by Nereid42. Joydex contains a separately adapted implementation for its limited task-alert use case.
-
-Joydex uses [HidSharp](https://github.com/SeekHisKingdom/HIDSharp), copyright 2010-2025 James F. Bellinger, under the Apache License 2.0, to open VIRPIL HID feature-report streams.
+Joydex uses [HidSharp](https://github.com/SeekHisKingdom/HIDSharp), copyright 2010-2025 James F. Bellinger, under the Apache License 2.0, to communicate with supported HID devices.
 
 ## Wireless-panel scale photograph
 

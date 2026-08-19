@@ -1,28 +1,13 @@
 using System.ComponentModel;
 using System.Diagnostics;
-using Joydex.Core.TaskAlerts;
-using Joydex.Virpil;
 
-namespace Joydex.Windows.TaskAlerts;
+namespace Joydex.Virpil;
 
-public sealed record VirpilLedColor(byte Red, byte Green, byte Blue)
-{
-    public static VirpilLedColor For(TaskAlertState state, TaskAlertLedOptions? options = null)
-    {
-        var color = TaskAlertColors.Get(state, options ?? TaskAlertLedOptions.CreateDefault());
-        return new VirpilLedColor(color.Red, color.Green, color.Blue);
-    }
-}
-
-public interface IVpcConflictDetector
-{
-    bool HasConflict();
-}
-
-public sealed class VpcConflictDetector : IVpcConflictDetector
+public static class VirpilWriterProcessDetector
 {
     private static readonly string[] ProcessFragments =
     [
+        "LinkTool",
         "VPC Configurator",
         "VPC_Configurator",
         "VPC Shift",
@@ -41,7 +26,7 @@ public sealed class VpcConflictDetector : IVpcConflictDetector
         "VPC_JOY_ANALYSIS",
     ];
 
-    public bool HasConflict()
+    public static string? FindConflict()
     {
         foreach (var process in Process.GetProcesses())
         {
@@ -52,23 +37,15 @@ public sealed class VpcConflictDetector : IVpcConflictDetector
                     if (ProcessFragments.Any(fragment =>
                             process.ProcessName.Contains(fragment, StringComparison.OrdinalIgnoreCase)))
                     {
-                        return true;
+                        return process.ProcessName;
                     }
                 }
-                catch (InvalidOperationException)
-                {
-                }
-                catch (Win32Exception)
+                catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
                 {
                 }
             }
         }
 
-        return false;
+        return null;
     }
-}
-
-public sealed class DirectVirpilConflictDetector : IVpcConflictDetector
-{
-    public bool HasConflict() => VirpilWriterProcessDetector.FindConflict() is not null;
 }

@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Joydex.Core\Joydex.Core.csproj" />
+    <ProjectReference Include="..\Joydex.Virpil\Joydex.Virpil.csproj" />
   </ItemGroup>
 
   <ItemGroup>

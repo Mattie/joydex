@@ -325,7 +325,7 @@ The result now includes:
 - Per-prompt optional submission and multiline insertion that leaves ordinary prompts as unsent drafts.
 - Separate floating CM3 and Alpha/WarBRD maps whose labels follow the active configuration.
 - Dry-run inspection, graphical configuration, hot-plug recovery, and foreground and simulator safety checks.
-- Ten optional task-alert slots driven by Codex lifecycle hooks. Assigned controls open their tasks, while VIRPIL LinkTool displays running, approval, completed, and fault states through the controller LEDs.
+- Ten optional task-alert slots driven by Codex lifecycle hooks. Assigned controls open their tasks, while either Joydex's experimental Direct USB backend or VIRPIL LinkTool displays running, approval, completed, and fault states through the controller LEDs.
 - A Task Alerts status window for inspecting assignments, hook events, bank detection, and outgoing LED telemetry.
 
 The source, documentation, map assets, and machine-neutral example configuration are published under the MIT License. Users build Joydex locally with .NET 8; machine-specific controller identifiers and the live configuration remain outside the repository.
