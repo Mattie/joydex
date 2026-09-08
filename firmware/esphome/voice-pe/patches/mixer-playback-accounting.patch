@@ -1,0 +1,105 @@
+diff --git a/mixer/speaker/mixer_speaker.cpp b/mixer/speaker/mixer_speaker.cpp
+index 71b509227..a920e3dfc 100644
+--- a/mixer/speaker/mixer_speaker.cpp
++++ b/mixer/speaker/mixer_speaker.cpp
+@@ -51,6 +51,19 @@ enum MixerEventGroupBits : uint32_t {
+   ALL_BITS = 0x00FFFFFF,  // All valid FreeRTOS event group bits
+ };
+ 
++static inline uint32_t atomic_subtract_clamped(std::atomic<uint32_t> &value, uint32_t amount) {
++  uint32_t current = value.load(std::memory_order_acquire);
++  uint32_t subtracted = 0;
++  if (current > 0) {
++    uint32_t next;
++    do {
++      subtracted = std::min(amount, current);
++      next = current - subtracted;
++    } while (!value.compare_exchange_weak(current, next, std::memory_order_release, std::memory_order_acquire));
++  }
++  return subtracted;
++}
++
+ void SourceSpeaker::dump_config() {
+   ESP_LOGCONFIG(TAG,
+                 "Mixer Source Speaker\n"
+@@ -73,8 +86,7 @@ void SourceSpeaker::setup() {
+ 
+   this->parent_->get_output_speaker()->add_audio_output_callback([this](uint32_t new_frames, int64_t write_timestamp) {
+     // The SourceSpeaker may not have included any audio in the mixed output, so verify there were pending frames
+-    uint32_t speakers_playback_frames = std::min(new_frames, this->pending_playback_frames_);
+-    this->pending_playback_frames_ -= speakers_playback_frames;
++    uint32_t speakers_playback_frames = atomic_subtract_clamped(this->pending_playback_frames_, new_frames);
+ 
+     if (speakers_playback_frames > 0) {
+       this->audio_output_callback_(speakers_playback_frames, write_timestamp);
+@@ -136,7 +148,7 @@ void SourceSpeaker::loop() {
+     case speaker::STATE_STARTING: {
+       esp_err_t err = this->start_();
+       if (err == ESP_OK) {
+-        this->pending_playback_frames_ = 0;  // reset pending playback frames
++        this->pending_playback_frames_.store(0, std::memory_order_release);  // reset pending playback frames
+         this->state_ = speaker::STATE_RUNNING;
+         this->stop_gracefully_ = false;
+         this->last_seen_data_ms_ = millis();
+@@ -168,7 +180,8 @@ void SourceSpeaker::loop() {
+       break;
+     }
+     case speaker::STATE_RUNNING:
+-      if (!this->transfer_buffer_->has_buffered_data() && (this->pending_playback_frames_ == 0)) {
++      if (!this->transfer_buffer_->has_buffered_data() &&
++          (this->pending_playback_frames_.load(std::memory_order_acquire) == 0)) {
+         // No audio data in buffer waiting to get mixed and no frames are pending playback
+         if ((this->timeout_ms_.has_value() && ((millis() - this->last_seen_data_ms_) > this->timeout_ms_.value())) ||
+             this->stop_gracefully_) {
+@@ -186,9 +199,10 @@ void SourceSpeaker::loop() {
+         this->parent_->get_output_speaker()->stop();
+       }
+ 
+-      if (this->parent_->get_output_speaker()->is_stopped() || (this->pending_playback_frames_ == 0)) {
++      if (this->parent_->get_output_speaker()->is_stopped() ||
++          (this->pending_playback_frames_.load(std::memory_order_acquire) == 0)) {
+         // Output speaker is stopped OR all pending playback frames have played
+-        this->pending_playback_frames_ = 0;
++        this->pending_playback_frames_.store(0, std::memory_order_release);
+         this->stop_gracefully_ = false;
+ 
+         this->state_ = speaker::STATE_STOPPED;
+@@ -667,7 +681,7 @@ void MixerSpeaker::audio_mixer_task(void *params) {
+                     this_mixer->audio_stream_info_.value(), frames_to_mix);
+ 
+         // Update source speaker buffer length
+-        speakers_with_data[0]->pending_playback_frames_ += frames_to_mix;
++        speakers_with_data[0]->pending_playback_frames_.fetch_add(frames_to_mix, std::memory_order_release);
+         transfer_buffers_with_data[0]->decrease_buffer_length(active_stream_info.frames_to_bytes(frames_to_mix));
+ 
+         // Update output transfer buffer length
+@@ -717,7 +731,7 @@ void MixerSpeaker::audio_mixer_task(void *params) {
+ 
+       // Update source transfer buffer lengths and add new audio durations to the source speaker pending playbacks
+       for (size_t i = 0; i < transfer_buffers_with_data.size(); ++i) {
+-        speakers_with_data[i]->pending_playback_frames_ += frames_to_mix;
++        speakers_with_data[i]->pending_playback_frames_.fetch_add(frames_to_mix, std::memory_order_release);
+         transfer_buffers_with_data[i]->decrease_buffer_length(
+             speakers_with_data[i]->get_audio_stream_info().frames_to_bytes(frames_to_mix));
+       }
+diff --git a/mixer/speaker/mixer_speaker.h b/mixer/speaker/mixer_speaker.h
+index 440921788..93a08a074 100644
+--- a/mixer/speaker/mixer_speaker.h
++++ b/mixer/speaker/mixer_speaker.h
+@@ -8,6 +8,7 @@
+ 
+ #include "esphome/core/component.h"
+ 
++#include <atomic>
+ #include <freertos/event_groups.h>
+ #include <freertos/FreeRTOS.h>
+ #include <freertos/queue.h>
+@@ -117,7 +118,7 @@ class SourceSpeaker : public speaker::Speaker, public Component {
+   uint32_t ducking_transition_samples_remaining_{0};
+   uint32_t samples_per_ducking_step_{0};
+ 
+-  uint32_t pending_playback_frames_{0};
++  std::atomic<uint32_t> pending_playback_frames_{0};
+ 
+   QueueHandle_t controls_queue_{nullptr};
+   uint32_t stopping_start_ms_{0};

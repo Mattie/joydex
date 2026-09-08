@@ -1,0 +1,93 @@
+diff --git a/esphome/components/micro_wake_word/micro_wake_word.h b/esphome/components/micro_wake_word/micro_wake_word.h
+--- a/esphome/components/micro_wake_word/micro_wake_word.h
++++ b/esphome/components/micro_wake_word/micro_wake_word.h
+@@ -16,6 +16,8 @@
+ #include <frontend.h>
+ #include <frontend_util.h>
+ 
++#include <atomic>
++
+ namespace esphome {
+ namespace micro_wake_word {
+ 
+@@ -57,5 +59,21 @@ class MicroWakeWord : public Component {
+   // Intended for the voice assistant component to fetch VAD status
+   bool get_vad_state() { return this->vad_state_; }
++
++  // High-water classifier scores retained until an explicit diagnostic reset.
++  uint8_t get_wake_peak_average_probability() const {
++    return this->wake_peak_average_probability_.load(std::memory_order_relaxed);
++  }
++  uint8_t get_wake_peak_max_probability() const {
++    return this->wake_peak_max_probability_.load(std::memory_order_relaxed);
++  }
++  uint8_t get_vad_peak_average_probability() const {
++    return this->vad_peak_average_probability_.load(std::memory_order_relaxed);
++  }
++  uint8_t get_vad_peak_max_probability() const {
++    return this->vad_peak_max_probability_.load(std::memory_order_relaxed);
++  }
++  uint32_t get_score_generation() const { return this->score_generation_.load(std::memory_order_relaxed); }
++  void reset_score_peaks();
+ #endif
+ 
+   // Intended for the voice assistant component to access which wake words are available
+@@ -74,5 +92,11 @@ class MicroWakeWord : public Component {
+   std::unique_ptr<VADModel> vad_model_;
+   bool vad_state_{false};
++  std::atomic<uint8_t> wake_peak_average_probability_{0};
++  std::atomic<uint8_t> wake_peak_max_probability_{0};
++  std::atomic<uint8_t> vad_peak_average_probability_{0};
++  std::atomic<uint8_t> vad_peak_max_probability_{0};
++  std::atomic<uint32_t> score_generation_{0};
++  static void update_score_peak_(std::atomic<uint8_t> &peak, uint8_t candidate);
+ #endif
+ 
+   bool pending_start_{false};
+diff --git a/esphome/components/micro_wake_word/micro_wake_word.cpp b/esphome/components/micro_wake_word/micro_wake_word.cpp
+--- a/esphome/components/micro_wake_word/micro_wake_word.cpp
++++ b/esphome/components/micro_wake_word/micro_wake_word.cpp
+@@ -410,4 +410,21 @@ size_t MicroWakeWord::generate_features_(int16_t *audio_buffer, size_t samples_a
+   return processed_samples;
+ }
+ 
++#ifdef USE_MICRO_WAKE_WORD_VAD
++void MicroWakeWord::reset_score_peaks() {
++  this->wake_peak_average_probability_.store(0, std::memory_order_relaxed);
++  this->wake_peak_max_probability_.store(0, std::memory_order_relaxed);
++  this->vad_peak_average_probability_.store(0, std::memory_order_relaxed);
++  this->vad_peak_max_probability_.store(0, std::memory_order_relaxed);
++  this->score_generation_.fetch_add(1, std::memory_order_relaxed);
++}
++
++void MicroWakeWord::update_score_peak_(std::atomic<uint8_t> &peak, uint8_t candidate) {
++  uint8_t current = peak.load(std::memory_order_relaxed);
++  while (current < candidate &&
++         !peak.compare_exchange_weak(current, candidate, std::memory_order_relaxed)) {
++  }
++}
++#endif
++
+ void MicroWakeWord::process_probabilities_() {
+@@ -414,7 +431,9 @@ void MicroWakeWord::process_probabilities_() {
+ #ifdef USE_MICRO_WAKE_WORD_VAD
+   DetectionEvent vad_state = this->vad_model_->determine_detected();
++  this->update_score_peak_(this->vad_peak_average_probability_, vad_state.average_probability);
++  this->update_score_peak_(this->vad_peak_max_probability_, vad_state.max_probability);
+ 
+   this->vad_state_ = vad_state.detected;  // atomic write, so thread safe
+ #endif
+ 
+   for (auto &model : this->wake_word_models_) {
+@@ -422,5 +441,11 @@ void MicroWakeWord::process_probabilities_() {
+       // Only detect wake words if there is a new probability since the last check
+       DetectionEvent wake_word_state = model->determine_detected();
++#ifdef USE_MICRO_WAKE_WORD_VAD
++      if (model->is_enabled()) {
++        this->update_score_peak_(this->wake_peak_average_probability_, wake_word_state.average_probability);
++        this->update_score_peak_(this->wake_peak_max_probability_, wake_word_state.max_probability);
++      }
++#endif
+       if (wake_word_state.detected) {
+ #ifdef USE_MICRO_WAKE_WORD_VAD
+         if (vad_state.detected) {

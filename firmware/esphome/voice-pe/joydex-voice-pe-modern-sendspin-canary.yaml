@@ -1,0 +1,44 @@
+packages:
+  audio_canary: !include joydex-voice-pe-audio-canary.yaml
+
+esphome:
+  project:
+    name: Joydex.Voice PE Audio Bridge
+    version: "0.1.33"
+
+# Keep attended rebuilds byte-identical across dates and temporary paths so
+# the final payload can be compared to the reviewed content-addressed image.
+esp32:
+  framework:
+    sdkconfig_options:
+      CONFIG_APP_REPRODUCIBLE_BUILD: y
+
+# Retain the deployed Wi-Fi setting while the modern player owns its own
+# request/release lifecycle.
+wifi:
+  power_save_mode: none
+
+# This endpoint is owned by Joydex rather than Home Assistant. ESPHome's API
+# default would otherwise reboot a healthy device every 15 minutes merely
+# because no Home Assistant API client is attached.
+api:
+  reboot_timeout: 0s
+
+external_components:
+  # Narrow, reviewed backports for cross-task playback accounting. The
+  # preparation script retrieves the exact retail source revisions, verifies
+  # them, applies the tracked patches, and exposes only these two components.
+  - source:
+      type: local
+      path: .joydex-modern-pinned-components/esphome/components
+    components:
+      - mixer
+      - speaker_source
+
+  # This source is intentionally last. It replaces only the retail package's
+  # legacy Sendspin component while retaining the pinned media_source ABI.
+  - source:
+      type: local
+      path: components
+    components:
+      - sendspin

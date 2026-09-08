@@ -1,0 +1,81 @@
+substitutions:
+  # The wake acknowledgement is local and immediate at wake detection.
+  wake_word_triggered_sound_file: sounds/WakeBlip.flac
+
+packages:
+  score_diagnostic: !include joydex-voice-pe-score-canary.yaml
+
+esphome:
+  project:
+    name: Joydex.Voice PE Score Diagnostic
+    version: "0.1.11"
+
+# Joydex writes the confirmed Codex Voice lifecycle through this trusted-LAN
+# entity. The built-in LED effects remain the single rendering implementation.
+select:
+  - platform: template
+    id: joydex_voice_session_state
+    name: Joydex Voice Session State
+    entity_category: diagnostic
+    optimistic: true
+    restore_value: false
+    initial_option: Armed
+    options:
+      - Armed
+      - Starting
+      - Listening
+      - Error
+    set_action:
+      - lambda: |-
+          if (x == "Starting") {
+            id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
+          } else if (x == "Listening") {
+            id(voice_assistant_phase) = ${voice_assist_listening_for_command_phase_id};
+          } else if (x == "Error") {
+            id(voice_assistant_phase) = ${voice_assist_error_phase_id};
+          } else {
+            id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+          }
+      - script.execute: control_leds
+      - if:
+          condition:
+            lambda: return x == "Starting";
+          then:
+            - script.execute: joydex_voice_start_timeout
+      - if:
+          condition:
+            lambda: return x == "Error";
+          then:
+            - script.execute: joydex_voice_error_timeout
+
+binary_sensor:
+  - id: !extend joydex_voice_wake
+    on_press:
+      - select.set:
+          id: joydex_voice_session_state
+          option: Starting
+
+script:
+  # Recover automatically if Joydex never confirms that Codex Voice started.
+  - id: joydex_voice_start_timeout
+    mode: restart
+    then:
+      - delay: 20s
+      - if:
+          condition:
+            lambda: return id(joydex_voice_session_state).current_option() == "Starting";
+          then:
+            - select.set:
+                id: joydex_voice_session_state
+                option: Error
+  - id: joydex_voice_error_timeout
+    mode: restart
+    then:
+      - delay: 1500ms
+      - if:
+          condition:
+            lambda: return id(joydex_voice_session_state).current_option() == "Error";
+          then:
+            - select.set:
+                id: joydex_voice_session_state
+                option: Armed

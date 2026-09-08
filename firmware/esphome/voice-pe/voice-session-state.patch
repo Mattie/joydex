@@ -1,0 +1,23 @@
+diff --git a/joydex-voice-pe-score-sound-canary.yaml b/joydex-voice-pe-score-sound-canary.yaml
+--- a/joydex-voice-pe-score-sound-canary.yaml
++++ b/joydex-voice-pe-score-sound-canary.yaml
+@@ -24,9 +24,19 @@ select:
+       - Armed
+       - Starting
+       - Listening
++      - Muted
+       - Error
+     set_action:
+       - lambda: |-
++          if (x == "Armed" || x == "Starting") {
++            id(joydex_voice_ready_cue_pending) = true;
++          }
++          if (x == "Listening" || x == "Muted") {
++            id(joydex_voice_session_was_active) = true;
++          } else if (x == "Armed" && id(joydex_voice_session_was_active)) {
++            id(joydex_voice_session_was_active) = false;
++            id(joydex_voice_end_cue_pending) = true;
++          }
+           if (x == "Starting") {
+             id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
+           } else if (x == "Listening") {

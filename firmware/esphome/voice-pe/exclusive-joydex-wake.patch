@@ -1,0 +1,159 @@
+diff --git a/home-assistant-voice.yaml b/home-assistant-voice.yaml
+index 163401f..af276ef 100644
+--- a/home-assistant-voice.yaml
++++ b/home-assistant-voice.yaml
+@@ -17,22 +17,22 @@ substitutions:
+   # Change this to true in case you ahve a hidden SSID at home.
+   hidden_ssid: "false"
+   # Substitutions for audio files
+-  jack_connected_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/jack_connected.flac
+-  jack_disconnected_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/jack_disconnected.flac
+-  mute_switch_on_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/mute_switch_on.flac
+-  mute_switch_off_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/mute_switch_off.flac
+-  timer_finished_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
+-  wake_word_triggered_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/wake_word_triggered.flac
+-  center_button_press_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_press.flac
+-  center_button_double_press_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_double_press.flac
+-  center_button_triple_press_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_triple_press.flac
+-  center_button_long_press_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/center_button_long_press.flac
+-  factory_reset_initiated_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/factory_reset_initiated.mp3
+-  factory_reset_cancelled_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/factory_reset_cancelled.mp3
+-  factory_reset_confirmed_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/factory_reset_confirmed.mp3
+-  easter_egg_tick_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/easter_egg_tick.mp3
+-  easter_egg_tada_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/easter_egg_tada.mp3
+-  error_cloud_expired_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/error_cloud_expired.mp3
++  jack_connected_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/jack_connected.flac
++  jack_disconnected_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/jack_disconnected.flac
++  mute_switch_on_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/mute_switch_on.flac
++  mute_switch_off_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/mute_switch_off.flac
++  timer_finished_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/timer_finished.flac
++  wake_word_triggered_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/wake_word_triggered.flac
++  center_button_press_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/center_button_press.flac
++  center_button_double_press_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/center_button_double_press.flac
++  center_button_triple_press_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/center_button_triple_press.flac
++  center_button_long_press_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/center_button_long_press.flac
++  factory_reset_initiated_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/factory_reset_initiated.mp3
++  factory_reset_cancelled_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/factory_reset_cancelled.mp3
++  factory_reset_confirmed_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/factory_reset_confirmed.mp3
++  easter_egg_tick_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/easter_egg_tick.mp3
++  easter_egg_tada_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/easter_egg_tada.mp3
++  error_cloud_expired_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/a163e7b980c572df9d3811ff98094350f5aae541/sounds/error_cloud_expired.mp3
+ 
+ esphome:
+   name: home-assistant-voice
+@@ -341,7 +341,7 @@ binary_sensor:
+                                                   priority: true
+                                                   sound_file: "center_button_press_sound"
+                                               - delay: 300ms
+-                                              - voice_assistant.start:
++                                              - script.execute: joydex_voice_wake_pulse
+       # Double Click
+       #  . Exposed as an event entity. To be used in automations inside Home Assistant
+       - timing:
+@@ -1043,6 +1043,6 @@ script:
+           } else if (id(init_in_progress)) {
+             id(control_leds_init_state).execute();
+-          } else if (!id(wifi_id).is_connected() || !id(api_id).is_connected()){
++          } else if (!id(wifi_id).is_connected()){
+             id(control_leds_no_ha_connection_state).execute();
+           } else if (id(center_button).state) {
+             id(control_leds_center_button_touched).execute();
+@@ -1664,7 +1664,7 @@ external_components:
+   - source:
+       type: git
+       url: https://github.com/esphome/home-assistant-voice-pe
+-      ref: dev
++      ref: a163e7b980c572df9d3811ff98094350f5aae541
+     components:
+       - voice_kit
+     refresh: 0s
+@@ -1719,58 +1719,41 @@ micro_wake_word:
+-    gain_factor: 4
++    id: wake_word_mic
++    gain_factor: 4
+   stop_after_detection: false
+   models:
++    - model: https://raw.githubusercontent.com/esphome/micro-wake-word-models/05b65922cc433c9df13e98e32a7fe520758c837e/models/v2/experiments/okay_computer.json
++      id: okay_computer
++      # Preserve the room-tested profile as the firmware fallback. Joydex tuning
++      # entities can change these values at runtime without another OTA.
++      probability_cutoff: 35%
++      sliding_window_size: 5
+     - model: https://github.com/kahrendt/microWakeWord/releases/download/okay_nabu_20241226.3/okay_nabu.json
+       id: okay_nabu
+-    - model: hey_jarvis
++    - model: https://raw.githubusercontent.com/esphome/micro-wake-word-models/05b65922cc433c9df13e98e32a7fe520758c837e/models/v2/hey_jarvis.json
+       id: hey_jarvis
+-    - model: hey_mycroft
++    - model: https://raw.githubusercontent.com/esphome/micro-wake-word-models/05b65922cc433c9df13e98e32a7fe520758c837e/models/v2/hey_mycroft.json
+       id: hey_mycroft
+     - model: https://github.com/kahrendt/microWakeWord/releases/download/stop/stop.json
+       id: stop
+       internal: true
+   vad:
++    model: https://raw.githubusercontent.com/esphome/micro-wake-word-models/05b65922cc433c9df13e98e32a7fe520758c837e/models/v2/vad.json
++    probability_cutoff: 10%
+   on_wake_word_detected:
+-    # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
++    # Preserve the physical/software mute boundary and publish one Joydex-only wake edge.
+     - if:
+         condition:
+           switch.is_off: master_mute_switch
+         then:
+-          # If a timer is ringing: Stop it, do not start the voice assistant (We can stop timer from voice!)
+-          - if:
+-              condition:
+-                switch.is_on: timer_ringing
+-              then:
+-                - switch.turn_off: timer_ringing
+-              # Stop voice assistant if running
+-              else:
+-                - if:
+-                    condition:
+-                      voice_assistant.is_running:
+-                    then:
+-                      voice_assistant.stop:
+-                    # Stop any other media player announcement
+-                    else:
+-                      - if:
+-                          condition:
+-                            media_player.is_announcing:
+-                              id: external_media_player
+-                          then:
+-                            - media_player.stop:
+-                                announcement: true
+-                                id: external_media_player
+-                          # Start the voice assistant and play the wake sound, if enabled
+-                          else:
+-                            - if:
+-                                condition:
+-                                  switch.is_on: wake_sound
+-                                then:
+-                                  - script.execute:
+-                                      id: play_sound
+-                                      priority: true
+-                                      sound_file: "wake_word_triggered_sound"
+-                                  - delay: 300ms
+-                            - voice_assistant.start:
+-                                wake_word: !lambda return wake_word;
++          - if:
++              condition:
++                switch.is_on: wake_sound
++              then:
++                - script.execute:
++                    id: play_sound
++                    priority: true
++                    sound_file: "wake_word_triggered_sound"
++                - delay: 300ms
++          - script.execute: joydex_voice_wake_pulse
+ 
+ select:
+   - platform: template
+@@ -1777,6 +1758,7 @@ select:
+     name: "Wake word sensitivity"
++    internal: true
+     optimistic: true
+     initial_option: Slightly sensitive
+     restore_value: true
+     entity_category: config
+     options:
