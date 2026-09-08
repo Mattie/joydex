@@ -258,6 +258,14 @@
       "action": "reasoning-up"
     },
     {
+      "name": "T6 down - Archive chat",
+      "deviceId": "cm3",
+      "bank": "always",
+      "button": 47,
+      "trigger": "press",
+      "action": "archive-chat"
+    },
+    {
       "name": "T7 up - Home",
       "deviceId": "cm3",
       "bank": "always",

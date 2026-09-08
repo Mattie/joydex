@@ -99,6 +99,7 @@ The checked-in starter configuration follows the Codex Micro controls for a CM3 
 | Base encoder E1 | Any | Reasoning up/down; push toggles Fast mode |
 | Five-way hat | Any | Plan, Forward, Sidebar, Back |
 | Toggle T3 | Any | Hold the floating button map open |
+| Toggle T6 down | Any | Archive the current chat |
 
 The floating map reads its labels from the active configuration, so remapped controls are reflected in the UI. Additional controllers and their map controls can be added separately.
 

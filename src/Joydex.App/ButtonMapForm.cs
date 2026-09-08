@@ -805,6 +805,7 @@ internal sealed class ButtonMapCanvas : Control
         "home" => "Home",
         "end" => "End",
         "button-map" => "Button map",
+        "archive-chat" => "Archive chat",
         "new-task" => "New task",
         "side-conversation" => "Side conversation",
         "previous-task" => "Previous task",

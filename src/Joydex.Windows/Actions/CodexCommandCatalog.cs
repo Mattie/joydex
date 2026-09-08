@@ -75,6 +75,7 @@ internal static class CodexCommandCatalog
             "composer.decreaseReasoningEffort",
             [],
             "Ctrl+Alt+PageDown");
+        yield return new(CodexAction.ArchiveChat, "archiveThread", ["Ctrl+Shift+A"]);
         yield return new(CodexAction.NewTask, "newTask", ["Ctrl+N", "Ctrl+Shift+O"]);
         yield return new(CodexAction.SideConversation, "openSideChat", []);
         yield return new(CodexAction.PreviousTask, "previousThread", ["Ctrl+Shift+[", "Ctrl+PageUp"]);

@@ -4,6 +4,7 @@ This file records the major capabilities and fixes added since Joydex was first 
 
 ## 2026-09-08
 
+- Added an Archive chat action backed by Codex's `archiveThread` command and mapped CM3 toggle T6 down (button 47) to it in the starter profile.
 - Added experimental Room Voice support for a dedicated Home Assistant Voice Preview Edition, including wake-triggered Codex conversations, full-duplex microphone and speaker transport, device mute and hangup controls, live transcript display, and per-session records.
 - Added an optional dedicated Codex workspace and owned task for Room Voice. The working directory is organizational rather than a filesystem security boundary, and the task retains full-access/no-approval behavior.
 - Added an experimental Desktop Task Bridge for sending explicit voice-authored follow-up prompts to a selected local Codex Desktop task. Failed deliveries are held for manual review.

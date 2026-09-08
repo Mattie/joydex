@@ -60,6 +60,19 @@ public sealed class CodexKeybindingServiceTests
     }
 
     [Fact]
+    public async Task ArchiveChatFallsBackToTheVerifiedWindowsDefault()
+    {
+        var fixture = CreateFixture();
+        await using var service = await fixture.StartAsync();
+
+        var resolution = await service.ResolveAsync(CodexAction.ArchiveChat, CancellationToken.None);
+
+        Assert.Equal("archiveThread", resolution.CommandId);
+        Assert.Equal("Ctrl+Shift+A", resolution.Sequence!.NormalizedText);
+        Assert.Equal(CodexBindingSource.Default, resolution.Source);
+    }
+
+    [Fact]
     public async Task StartVoiceChatIgnoresTheLegacyRealtimeVoiceBinding()
     {
         var fixture = CreateFixture(

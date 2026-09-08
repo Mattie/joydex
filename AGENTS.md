@@ -10,11 +10,11 @@ Before changing domain language or architecture, review the applicable `CONCEPTS
 
 ## Codex App compatibility
 
-The Codex command IDs, Windows default bindings, and keybinding precedence behavior in this repository were last validated on 2026-08-05 against:
+The Codex command IDs, Windows default bindings, and keybinding precedence behavior in this repository were last validated on 2026-09-07 against:
 
-- Windows package: `OpenAI.Codex 26.730.8199.0`
-- Bundled app release: `26.730`
-- Codex build: `0.147.0-alpha.1.2`
+- Windows package: `OpenAI.Codex 26.901.6511.0`
+- Bundled app release: `26.901`
+- Codex build: `0.153.4`
 
 Any change to command IDs, default bindings, aliases, or precedence behavior must be revalidated against the installed Codex App for Windows. Update all three version values and the validation date in this file with that change.
 
