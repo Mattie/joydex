@@ -20,6 +20,13 @@ $dotnet = (Get-Command $DotnetPath -ErrorAction Stop).Source
     --output $output
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+& $dotnet publish (Join-Path $repositoryRoot 'src\Joydex.DesktopBridgeHost\Joydex.DesktopBridgeHost.csproj') `
+    --configuration Release `
+    --runtime win-x64 `
+    --self-contained false `
+    --output $output
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 & $dotnet publish (Join-Path $repositoryRoot 'src\Joydex.HookRelay\Joydex.HookRelay.csproj') `
     --configuration Release `
     --runtime win-x64 `

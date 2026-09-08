@@ -1,4 +1,6 @@
 using Joydex.App;
+using Joydex.Core.Voice;
+using Joydex.Windows.Voice;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 
@@ -107,6 +109,70 @@ public sealed class TrayMenuStatusTests
         Assert.Equal(
             "Controllers: 2/3 Connected",
             TrayApplicationContext.FormatControllerSummary(total: 3, statuses));
+    }
+
+    [Theory]
+    [InlineData(false, VoicePeSessionState.Armed, true, false, "Room Voice — Disabled")]
+    [InlineData(true, VoicePeSessionState.Starting, true, false, "Room Voice — Connecting")]
+    [InlineData(true, VoicePeSessionState.Listening, true, false, "Room Voice — Listening")]
+    [InlineData(true, VoicePeSessionState.Muted, true, false, "Room Voice — Muted")]
+    [InlineData(true, VoicePeSessionState.Error, true, false, "Room Voice — Needs attention")]
+    [InlineData(true, VoicePeSessionState.Armed, true, false, "Room Voice")]
+    public void RoomVoiceMenuUsesCompactProductStatus(
+        bool enabled,
+        VoicePeSessionState state,
+        bool ownerReady,
+        bool startupActive,
+        string expected)
+    {
+        var preferences = new VoicePePreferences(
+            Enabled: enabled,
+            SessionMode: VoicePeSessionMode.JoydexOwner);
+        var conversation = new RoomVoiceConversationSnapshot(
+            [],
+            state,
+            ownerReady,
+            SessionActive: state is VoicePeSessionState.Starting
+                or VoicePeSessionState.Listening
+                or VoicePeSessionState.Muted,
+            HistoryAvailable: true,
+            Stale: false,
+            Status: string.Empty,
+            Error: null);
+
+        Assert.Equal(
+            expected,
+            TrayApplicationContext.FormatRoomVoiceMenuText(
+                preferences,
+                conversation,
+                ownerReady,
+                startupActive));
+    }
+
+    [Fact]
+    public void InvalidRoomVoicePreferencesFallBackWithoutBlockingJoydexStartup()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-voice-preferences-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "voice-pe.json");
+            File.WriteAllText(path, "{ this is not valid JSON }");
+            var messages = new List<string>();
+
+            var preferences = TrayApplicationContext.LoadRoomVoicePreferences(
+                path,
+                messages.Add,
+                out var error);
+
+            Assert.Equal(VoicePePreferences.Default, preferences);
+            Assert.False(string.IsNullOrWhiteSpace(error));
+            Assert.Contains(messages, message => message.Contains("normal Joydex features will continue", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     [DllImport("user32.dll")]

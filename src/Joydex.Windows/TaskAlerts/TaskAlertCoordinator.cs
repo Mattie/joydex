@@ -55,6 +55,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
     private readonly CancellationTokenSource _cancellation = new();
     private readonly SemaphoreSlim _eventSignal = new(0);
     private readonly Queue<TaskAlertEventTrace> _recentEvents = new();
+    private HashSet<string> _internallySuppressedTaskIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly Task _reducerTask;
     private TaskAlertPreferences _preferences;
     private int? _detectedBank;
@@ -94,6 +95,10 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         lock (_sync)
         {
             if (!_pool.Enabled)
+            {
+                return false;
+            }
+            if (_internallySuppressedTaskIds.Contains(taskEvent.SessionId))
             {
                 return false;
             }
@@ -157,6 +162,29 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
                 _detectedBank = bank;
                 snapshot = SnapshotUnsafe();
             }
+        }
+
+        RaiseChanged(snapshot);
+    }
+
+    /// <summary>
+    /// Excludes application-owned tasks without adding them to the user's ignored-task settings.
+    /// </summary>
+    public void SetInternallySuppressedTaskIds(IEnumerable<string> taskIds)
+    {
+        ArgumentNullException.ThrowIfNull(taskIds);
+        TaskAlertSnapshot snapshot;
+        lock (_sync)
+        {
+            _internallySuppressedTaskIds = taskIds
+                .Where(taskId => !string.IsNullOrWhiteSpace(taskId))
+                .Select(taskId => taskId.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            _pool.RemoveAssignments(
+                assignment => _internallySuppressedTaskIds.Contains(assignment.SessionId),
+                DateTimeOffset.UtcNow);
+            TrySaveStateUnsafe();
+            snapshot = SnapshotUnsafe();
         }
 
         RaiseChanged(snapshot);
@@ -301,6 +329,10 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             {
                 lock (_sync)
                 {
+                    if (_internallySuppressedTaskIds.Contains(taskEvent.SessionId))
+                    {
+                        continue;
+                    }
                     var workspace = TaskAlertSuppression.NormalizeWorkspace(taskEvent.Workspace);
                     var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace);
                     var taskSuppressed = IsSuppressedUnsafe(

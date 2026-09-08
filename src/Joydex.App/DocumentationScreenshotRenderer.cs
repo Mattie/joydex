@@ -145,7 +145,7 @@ internal static class DocumentationScreenshotRenderer
 
                 _ = taskAlertCoordinator.AddSuppression(
                     TaskAlertSuppressionScope.Workspace,
-                    @"C:\Users\Mattie\Documents\Codex\realtime-voice-chat");
+                    @"C:\Users\Example\Documents\Codex\realtime-voice-chat");
                 using var ignoredSources = new IgnoredTaskSourcesForm(taskAlertCoordinator);
                 RenderForm(
                     ignoredSources,
@@ -193,7 +193,7 @@ internal static class DocumentationScreenshotRenderer
     private static TaskAlertSnapshot CreateTaskAlertDocumentationSnapshot()
     {
         var now = DateTimeOffset.Now;
-        var workspace = @"C:\Users\Mattie\Documents\Codex\project-name";
+        var workspace = @"C:\Users\Example\Documents\Codex\project-name";
         var assignments = new[]
         {
             new TaskAlertAssignment(1, "00000000-0000-7000-8000-000000000001", "turn-01", TaskAlertState.Running, now, Workspace: workspace),
@@ -220,7 +220,7 @@ internal static class DocumentationScreenshotRenderer
             RecentEvents: recentEvents,
             Suppressions:
             [
-                new(TaskAlertSuppressionScope.Workspace, @"C:\Users\Mattie\Documents\Codex\realtime-voice-chat"),
+                new(TaskAlertSuppressionScope.Workspace, @"C:\Users\Example\Documents\Codex\realtime-voice-chat"),
             ]);
     }
 
