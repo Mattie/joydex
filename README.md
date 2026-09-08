@@ -24,8 +24,8 @@ Joydex is a source project, so the easiest path is to clone the repository, open
 
 1. [Build and run Joydex](#build-and-explore-the-source) with the example configuration closest to your hardware.
 2. Open **Configure...** from the tray. Use **Load defaults** if the CM3 Codex Micro layout is useful, then adjust or capture the devices, bindings, prompt pickers, and map controls you want.
-3. Open **Testing / Advanced > Test controls...** and exercise each button, encoder, mode, and maintained switch. Check both press and release events where the action depends on a held control.
-4. Save the configuration. Turn off **Testing / Advanced > Dry run** only after the event log matches the physical controls.
+3. Open **Advanced > Test controls...** and exercise each button, encoder, mode, and maintained switch. Check both press and release events where the action depends on a held control.
+4. Save the configuration. Turn off **Advanced > Dry run** only after the event log matches the physical controls.
 
 The task-status LEDs use Codex hooks, so they take a few extra steps to set up. Joydex can drive them directly over USB or through VIRPIL LinkTool.
 
@@ -115,7 +115,7 @@ Dim gray means running, yellow means the task needs attention, and low green mea
 These steps target a CM3 throttle and an Alpha/WarBRD stick. VIRPIL Controls LinkTool v3 remains the proven default. Direct USB is an experimental option for the same devices while the remaining hardware recovery checks are completed. Other hardware may need different LED mappings.
 
 1. Connect both VIRPIL devices, then start Joydex.
-2. Open **Testing / Advanced > Task alerts / ignored tasks...**, choose **Configure LEDs...**, and select **Direct USB**. Close LinkTool and any VPC utilities before you confirm the change. Direct USB does not need a LinkTool profile or listener.
+2. Open **Advanced > Task alerts / ignored tasks...**, choose **Configure LEDs...**, and select **Direct USB**. Close LinkTool and any VPC utilities before you confirm the change. Direct USB does not need a LinkTool profile or listener.
 3. If you prefer LinkTool, select **VIRPIL LinkTool**, choose **Show LED profile**, load `joydex-linktool.led.json`, and start its listener on `127.0.0.1:4123`.
 4. In the same Joydex window, choose **Install / Repair hooks** and confirm the status reads `Hooks: installed`. If Codex marks the new handlers for review, open its Hooks screen and trust the Joydex handlers; untrusted command hooks do not run.
 5. Make sure **Task alerts** is checked in the top level of the Joydex tray menu.
@@ -154,6 +154,12 @@ The checked-in [advanced configuration](config/joydex.advanced.example.json) is 
 ### Custom button-map images
 
 The repository includes a small [`calibrate-button-maps`](skills/calibrate-button-maps/SKILL.md) agent skill for adapting Joydex to another controller or repairing a shifted label region. Give this skill to your agent to help it build these dynamic button map diagrams.
+
+## Experimental Room Voice
+
+Joydex includes disabled-by-default support for using a dedicated Home Assistant Voice Preview Edition as a hands-free Codex endpoint. A wake word starts a dedicated Joydex-owned Voice task, sends microphone audio to Codex, plays the response through the device, and supports barge-in and spoken hangup. It works independently of the VIRPIL controllers.
+
+Configure it under **Configure → Room Voice**. The tray's **Room Voice** item opens a conversation workspace with live transcription, connection state, session controls, and an optional bridge for sending a prompt to a selected Desktop-owned task. This is an experimental trusted-LAN feature whose dedicated task runs with full filesystem access and no approval prompts. Read the [Room Voice setup and security guide](docs/ROOM_VOICE.md) before enabling it; the [Voice PE firmware guide](firmware/esphome/voice-pe/README.md) covers the source-only device build.
 
 ## Experimental wireless touchscreen
 
@@ -227,9 +233,11 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 | `src/Joydex.Virpil` | Shared VIRPIL device access, LED control, and checks for competing LED writers |
 | `src/Joydex.Windows` | DirectInput, shortcut resolution and injection, safety guards, task links, hooks, and task-alert LED services |
 | `src/Joydex.App` | Tray lifecycle, configuration UI, dry-run inspector, prompt overlays, diagnostics, and button maps |
+| `src/Joydex.DesktopBridgeHost` | Experimental, constrained broker for sending Room Voice prompts through Codex Desktop's task tools |
 | `src/Joydex.HookRelay` | Native hook command that forwards Codex lifecycle events to Joydex |
 | `src/Joydex.Guardian` | Crash cleanup for active task-status LEDs |
 | `tools/Joydex.Trace` | DirectInput discovery and event tracing |
+| `firmware/esphome/voice-pe` | Source-only Home Assistant Voice PE firmware recipe, cues, and diagnostic history |
 | `tests/Joydex.Tests` | Unit and Windows interop coverage |
 | `skills/calibrate-button-maps` | Agent workflow and utility for custom button-map region calibration |
 | `config/joydex.example.json` | Safe, machine-neutral starter configuration |
@@ -260,6 +268,6 @@ Yes. Joydex's built-in task-status LEDs are described above. Gremlin can also dr
 
 ## License and trademarks
 
-The source code is available under the [MIT License](LICENSE). Visual-asset provenance and third-party attribution are recorded in [Third-party notices](THIRD_PARTY_NOTICES.md).
+Joydex-authored desktop application code, tools, configuration examples, and documentation are available under the [MIT License](LICENSE), except where a narrower notice says otherwise. The customized Voice PE firmware includes GPLv3 runtime-derived code and Apache-2.0 dependencies; its file-level boundary is described in the [Voice PE firmware license](firmware/esphome/voice-pe/LICENSE.md). Visual-asset provenance and other third-party attribution are recorded in [Third-party notices](THIRD_PARTY_NOTICES.md).
 
 Joydex is an independent project and is not affiliated with or endorsed by VIRPIL Controls, OpenAI, or Work Louder. VIRPIL, VPC, OpenAI, ChatGPT, Codex, Work Louder, and associated marks are the property of their respective owners.

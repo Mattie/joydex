@@ -2,6 +2,13 @@
 
 This file records the major capabilities and fixes added since Joydex was first uploaded to GitHub. Entries are grouped by date because the project has not used versioned releases yet. New entries go at the top.
 
+## 2026-09-08
+
+- Added experimental Room Voice support for a dedicated Home Assistant Voice Preview Edition, including wake-triggered Codex conversations, full-duplex microphone and speaker transport, device mute and hangup controls, live transcript display, and per-session records.
+- Added an optional dedicated Codex workspace and owned task for Room Voice. The working directory is organizational rather than a filesystem security boundary, and the task retains full-access/no-approval behavior.
+- Added an experimental Desktop Task Bridge for sending explicit voice-authored follow-up prompts to a selected local Codex Desktop task. Failed deliveries are held for manual review.
+- Added the source-only Voice PE firmware recipe, three Mattie Casper MIT-licensed cue recordings, reproducible upstream pins, and the GPL/Apache licensing boundary for the combined firmware.
+
 ## 2026-08-18
 
 - Added an experimental Direct USB option for task-status LEDs on the CM3 throttle and Constellation Alpha. LED colors are configurable in the app, with recovery handling for alerts, device changes, Windows resume, and unexpected exits.
