@@ -1,0 +1,78 @@
+diff --git a/esphome/components/sendspin/media_source/sendspin_media_source.cpp b/esphome/components/sendspin/media_source/sendspin_media_source.cpp
+index 4ea9dae..9961cef 100644
+--- a/esphome/components/sendspin/media_source/sendspin_media_source.cpp
++++ b/esphome/components/sendspin/media_source/sendspin_media_source.cpp
+@@ -43,7 +43,10 @@ static const int64_t SOFT_SYNC_THRESHOLD_US = 100;
+ 
+ static const uint32_t INITIAL_SYNC_ZEROS_DURATION_MS = 25;
+ 
+-static const UBaseType_t SYNC_TASK_PRIORITY = 5;
++// The WebSocket HTTPD task runs at priority 17. Keep decode/playback above it
++// so sustained packet intake cannot starve the player and make already queued
++// chunks miss their playback deadlines.
++static const UBaseType_t SYNC_TASK_PRIORITY = 18;
+ static const size_t SYNC_TASK_STACK_SIZE = 6192;  // Opus uses more stack than FLAC
+ 
+ static const char *const TAG = "sendspin_media_source";
+@@ -245,7 +248,7 @@ void SendspinMediaSource::loop() {
+           snprintf(task_name, sizeof(task_name), "Sendspin_%zu", pipeline);
+ 
+           auto *params = new GenerateTaskParams{this, pipeline};
+-          ctx.sync_task_handle = xTaskCreateStatic(sync_task, task_name, SYNC_TASK_STACK_SIZE, params, 1,
++          ctx.sync_task_handle = xTaskCreateStatic(sync_task, task_name, SYNC_TASK_STACK_SIZE, params, SYNC_TASK_PRIORITY,
+                                                    ctx.sync_task_stack_buffer, &ctx.sync_task_stack);
+           if (ctx.sync_task_handle == nullptr) {
+             ESP_LOGE(TAG, "Failed to create generate task for pipeline %zu", pipeline);
+@@ -270,6 +273,7 @@ void SendspinMediaSource::loop() {
+           ESP_LOGD(TAG, "Pipeline %zu running", pipeline);
+           xEventGroupClearBits(ctx.event_group, TASK_RUNNING);
+           this->set_state_(media_source::MediaSourceState::PLAYING, pipeline);
++          this->playback_tasks_started_.fetch_add(1, std::memory_order_relaxed);
+         }
+ 
+         if (event_bits & TASK_STOPPING) {
+@@ -736,6 +740,10 @@ bool SendspinMediaSource::sync_decode_audio_(SyncContext &sync_context, Sendspin
+     // some chunks if needed.
+     if (time_until_playback_us < sync_context.initial_decode * 400000) {
+       // Chunk was already supposed to play, skip it!
++      this->late_audio_chunks_skipped_.fetch_add(1, std::memory_order_relaxed);
++      if (sync_context.initial_decode) {
++        this->initial_audio_chunks_skipped_.fetch_add(1, std::memory_order_relaxed);
++      }
+       sync_context.encoded_chunk = nullptr;  // shared_ptr automatically handles cleanup
+       return false;
+     }
+diff --git a/esphome/components/sendspin/media_source/sendspin_media_source.h b/esphome/components/sendspin/media_source/sendspin_media_source.h
+index 57bc713..0b3e339 100644
+--- a/esphome/components/sendspin/media_source/sendspin_media_source.h
++++ b/esphome/components/sendspin/media_source/sendspin_media_source.h
+@@ -21,6 +21,7 @@
+ #include <freertos/task.h>
+ #include <freertos/queue.h>
+ 
++#include <atomic>
+ #include <deque>
+ #include <optional>
+ 
+@@ -113,7 +114,21 @@ class SendspinMediaSource : public Component, public media_source::MediaSource,
+   // Configuration setters
+   void set_task_stack_in_psram(bool task_stack_in_psram) { this->task_stack_in_psram_ = task_stack_in_psram; }
+ 
++  uint32_t get_playback_tasks_started() const {
++    return this->playback_tasks_started_.load(std::memory_order_relaxed);
++  }
++  uint32_t get_late_audio_chunks_skipped() const {
++    return this->late_audio_chunks_skipped_.load(std::memory_order_relaxed);
++  }
++  uint32_t get_initial_audio_chunks_skipped() const {
++    return this->initial_audio_chunks_skipped_.load(std::memory_order_relaxed);
++  }
++
+  protected:
++  std::atomic<uint32_t> playback_tasks_started_{0};
++  std::atomic<uint32_t> late_audio_chunks_skipped_{0};
++  std::atomic<uint32_t> initial_audio_chunks_skipped_{0};
++
+   static void sync_task(void *params);
+ 
+   // Return true if ready to move onto next stage, false if more audio needs to be sent

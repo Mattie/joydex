@@ -1,0 +1,66 @@
+diff --git a/esphome/components/sendspin/media_source/sendspin_media_source.cpp b/esphome/components/sendspin/media_source/sendspin_media_source.cpp
+index 4ea9dae..7412c58 100644
+--- a/esphome/components/sendspin/media_source/sendspin_media_source.cpp
++++ b/esphome/components/sendspin/media_source/sendspin_media_source.cpp
+@@ -225,7 +225,6 @@ void SendspinMediaSource::loop() {
+           xEventGroupClearBits(ctx.event_group, EventGroupBits::TASK_STARTING | EventGroupBits::TASK_RUNNING |
+                                                     EventGroupBits::TASK_STOPPING | EventGroupBits::TASK_STOPPED |
+                                                     EventGroupBits::COMMAND_STOP);
+-          this->parent_->update_state(SendspinClientState::SYNCHRONIZED);
+           if (ctx.sync_task_stack_buffer == nullptr) {
+             if (this->task_stack_in_psram_) {
+               RAMAllocator<StackType_t> stack_allocator(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
+@@ -271,6 +270,8 @@ void SendspinMediaSource::loop() {
+           ESP_LOGD(TAG, "Pipeline %zu running", pipeline);
+           xEventGroupClearBits(ctx.event_group, TASK_RUNNING);
+           this->set_state_(media_source::MediaSourceState::PLAYING, pipeline);
++          this->playback_tasks_started_.fetch_add(1, std::memory_order_relaxed);
++          this->parent_->update_state(SendspinClientState::SYNCHRONIZED);
+         }
+ 
+         if (event_bits & TASK_STOPPING) {
+@@ -736,6 +737,10 @@ bool SendspinMediaSource::sync_decode_audio_(SyncContext &sync_context, Sendspin
+     // some chunks if needed.
+     if (time_until_playback_us < sync_context.initial_decode * 400000) {
+       // Chunk was already supposed to play, skip it!
++      this->late_audio_chunks_skipped_.fetch_add(1, std::memory_order_relaxed);
++      if (sync_context.initial_decode) {
++        this->initial_audio_chunks_skipped_.fetch_add(1, std::memory_order_relaxed);
++      }
+       sync_context.encoded_chunk = nullptr;  // shared_ptr automatically handles cleanup
+       return false;
+     }
+diff --git a/esphome/components/sendspin/media_source/sendspin_media_source.h b/esphome/components/sendspin/media_source/sendspin_media_source.h
+index 57bc713..0b3e339 100644
+--- a/esphome/components/sendspin/media_source/sendspin_media_source.h
++++ b/esphome/components/sendspin/media_source/sendspin_media_source.h
+@@ -21,6 +21,7 @@
+ #include <freertos/task.h>
+ #include <freertos/queue.h>
+ 
++#include <atomic>
+ #include <deque>
+ #include <optional>
+ 
+@@ -113,7 +114,21 @@ class SendspinMediaSource : public Component, public media_source::MediaSource,
+   // Configuration setters
+   void set_task_stack_in_psram(bool task_stack_in_psram) { this->task_stack_in_psram_ = task_stack_in_psram; }
+ 
++  uint32_t get_playback_tasks_started() const {
++    return this->playback_tasks_started_.load(std::memory_order_relaxed);
++  }
++  uint32_t get_late_audio_chunks_skipped() const {
++    return this->late_audio_chunks_skipped_.load(std::memory_order_relaxed);
++  }
++  uint32_t get_initial_audio_chunks_skipped() const {
++    return this->initial_audio_chunks_skipped_.load(std::memory_order_relaxed);
++  }
++
+  protected:
++  std::atomic<uint32_t> playback_tasks_started_{0};
++  std::atomic<uint32_t> late_audio_chunks_skipped_{0};
++  std::atomic<uint32_t> initial_audio_chunks_skipped_{0};
++
+   static void sync_task(void *params);
+ 
+   // Return true if ready to move onto next stage, false if more audio needs to be sent

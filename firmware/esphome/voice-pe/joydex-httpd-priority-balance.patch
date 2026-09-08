@@ -1,0 +1,15 @@
+diff --git a/components/joydex_lan_audio/joydex_lan_audio.cpp b/components/joydex_lan_audio/joydex_lan_audio.cpp
+index 81358c6..f909f66 100644
+--- a/components/joydex_lan_audio/joydex_lan_audio.cpp
++++ b/components/joydex_lan_audio/joydex_lan_audio.cpp
+@@ -103,6 +103,10 @@ void JoydexLanAudio::setup() {
+   });
+ 
+   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
++  // The call-long Sendspin player and packet-intake tasks both run at 18.
++  // Keep queued microphone WebSocket sends in the same time-sliced media group
++  // so continuous speaker work cannot starve the HTTPD worker completing them.
++  config.task_priority = 18;
+   config.server_port = this->port_;
+   config.ctrl_port = ESP_HTTPD_DEF_CTRL_PORT + 2;  // Port 80 uses +0; Sendspin uses +1.
+   config.max_open_sockets = 1;

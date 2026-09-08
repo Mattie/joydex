@@ -1,0 +1,32 @@
+diff --git a/esphome/components/sendspin/sendspin_hub.cpp b/esphome/components/sendspin/sendspin_hub.cpp
+index 2ccb6dc..0e11535 100644
+--- a/esphome/components/sendspin/sendspin_hub.cpp
++++ b/esphome/components/sendspin/sendspin_hub.cpp
+@@ -44,6 +44,10 @@ static const int64_t TIME_MESSAGE_DELAY_THRESHOLD_HIGH_MS = 500;
+ static const int64_t TIME_MESSAGE_DELAY_DEFAULT_MS = 200;
+ 
+-static const UBaseType_t WEBSOCKET_TASK_PRIORITY = 17;
++// Joydex keeps one Sendspin stream active for the full Voice Session and sends
++// silence between replies, so the player queue intentionally never empties.
++// Time-slice packet intake with the priority-18 player instead of relying on
++// an empty player queue to yield to a lower-priority WebSocket server.
++static const UBaseType_t WEBSOCKET_TASK_PRIORITY = 18;
+ 
+ enum EventGroupBits : uint32_t {
+   COMMAND_STOP = (1 << 0),
+diff --git a/esphome/components/sendspin/media_source/sendspin_media_source.cpp b/esphome/components/sendspin/media_source/sendspin_media_source.cpp
+--- a/esphome/components/sendspin/media_source/sendspin_media_source.cpp
++++ b/esphome/components/sendspin/media_source/sendspin_media_source.cpp
+@@ -43,9 +43,9 @@ static const int32_t HARD_SYNC_THRESHOLD_US = 100'000;
+ 
+ static const uint32_t INITIAL_SYNC_ZEROS_DURATION_MS = 25;
+ 
+-// The WebSocket HTTPD task runs at priority 17. Keep decode/playback above it
+-// so sustained packet intake cannot starve the player and make already queued
+-// chunks miss their playback deadlines.
++// Joydex keeps packet intake and decode/playback at priority 18 because its
++// call-long silence stream keeps both tasks continuously active. Equal priority
++// allows best-effort task time-slicing between them.
+ static const UBaseType_t SYNC_TASK_PRIORITY = 18;
+ static const size_t SYNC_TASK_STACK_SIZE = 6192;  // Opus uses more stack than FLAC
+ 

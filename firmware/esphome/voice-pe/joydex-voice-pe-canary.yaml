@@ -1,0 +1,244 @@
+substitutions:
+  # Public source uses a neutral identity; operators should select a unique local name.
+  name: joydex-voice-pe
+  friendly_name: Joydex Voice PE
+
+packages:
+  home_assistant_voice_pe: !include home-assistant-voice.yaml
+
+# ESPHome 2025.12.2 exposes runtime cutoff and microphone gain setters, but its
+# microWakeWord sliding window is compile-time only. The preparation script pins
+# this local component to the exact 2025.12.2 source and adds the bounded setter.
+external_components:
+  - source:
+      type: local
+      path: .joydex-esphome/esphome/components
+    components:
+      - micro_wake_word
+
+# The pinned 2025.12.2 microWakeWord component permits esp-nn ^1.1.0. Without an
+# explicit constraint, a 2026 build silently resolves 1.3.0, whose ESP32-S3
+# kernels exceed the tensor arenas declared by these manifests. Reproduce the
+# working 2025 dependency set instead of mixing a future component API into it.
+esp32:
+  framework:
+    components:
+      - espressif/esp-nn==1.1.2
+
+esphome:
+  project:
+    name: Joydex.Voice PE Bridge Canary
+    version: "0.1.8"
+  on_boot:
+    # Preserve the retail Voice PE boot sequence that the overlay previously replaced.
+    - priority: 375
+      then:
+        - script.execute: control_leds
+        - delay: 1s
+        - switch.turn_on: internal_speaker_amp
+        - delay: 10min
+        - if:
+            condition:
+              lambda: return id(init_in_progress);
+            then:
+              - lambda: id(init_in_progress) = false;
+              - script.execute: control_leds
+    # Start after all audio components have completed setup.
+    - priority: -100
+      then:
+        # Loading every compiled model exhausts tensor memory on the Voice PE. This
+        # dedicated endpoint only needs Okay Computer; keep the stock models compiled
+        # because the pinned retail base still references them elsewhere.
+        - micro_wake_word.disable_model: okay_nabu
+        - micro_wake_word.disable_model: hey_jarvis
+        - micro_wake_word.disable_model: hey_mycroft
+        - micro_wake_word.disable_model: stop
+        # Template numbers have restored their persisted values by this priority.
+        # Apply the complete profile while inference is stopped.
+        - lambda: |-
+            id(wake_word_mic).set_gain_factor(static_cast<int32_t>(id(joydex_wake_microphone_gain).state));
+            id(okay_computer).set_probability_cutoff(
+                static_cast<uint8_t>(id(joydex_wake_probability_cutoff).state * 255.0f + 0.5f));
+            id(mww).set_vad_probability_cutoff(
+                static_cast<uint8_t>(id(joydex_vad_probability_cutoff).state * 255.0f + 0.5f));
+            if (!id(okay_computer).set_sliding_window_size(
+                    static_cast<size_t>(id(joydex_wake_sliding_window).state))) {
+              ESP_LOGE("joydex.voice", "Rejected the restored wake sliding-window size");
+            }
+        # The Joydex wake path must not depend on a Home Assistant API client connecting.
+        - delay: 2s
+        - micro_wake_word.start:
+        - wait_until:
+            condition:
+              lambda: return id(mww).is_running();
+            timeout: 5s
+        # The retail LED state waits for a Home Assistant Voice client. This endpoint
+        # is ready when its local wake engine is running, so show the quiet armed state.
+        - if:
+            condition:
+              lambda: return id(mww).is_running();
+            then:
+              - lambda: |-
+                  id(init_in_progress) = false;
+                  id(voice_assistant_phase) = 1;
+              - script.execute: control_leds
+
+# The retained Home Assistant pairing key blocks unattended diagnostics. Joydex does not
+# accept inbound API commands, so plaintext logs on the trusted LAN are sufficient here.
+api:
+  encryption: !remove
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: Joydex Voice PE Recovery
+    password: !secret web_server_password
+
+captive_portal:
+
+# Joydex initiates every connection from Windows, so this adds no inbound Windows listener.
+# Authentication is intentionally omitted for the user's trusted-LAN canary.
+web_server:
+  port: 80
+  version: 3
+  include_internal: true
+  ota: false
+  log: true
+
+number:
+  - platform: template
+    id: joydex_wake_microphone_gain
+    name: Joydex Wake Microphone Gain
+    entity_category: config
+    min_value: 1
+    max_value: 8
+    step: 1
+    initial_value: 4
+    restore_value: true
+    set_action:
+      - lambda: |-
+          const int32_t gain = static_cast<int32_t>(x);
+          id(wake_word_mic).set_gain_factor(gain);
+          id(joydex_wake_microphone_gain).publish_state(gain);
+
+  - platform: template
+    id: joydex_wake_probability_cutoff
+    name: Joydex Wake Probability Cutoff
+    entity_category: config
+    min_value: 0.10
+    max_value: 0.95
+    step: 0.01
+    initial_value: 0.35
+    restore_value: true
+    set_action:
+      - lambda: |-
+          id(okay_computer).set_probability_cutoff(static_cast<uint8_t>(x * 255.0f + 0.5f));
+          id(joydex_wake_probability_cutoff).publish_state(x);
+
+  - platform: template
+    id: joydex_wake_sliding_window
+    name: Joydex Wake Sliding Window
+    entity_category: config
+    min_value: 1
+    max_value: 10
+    step: 1
+    initial_value: 5
+    restore_value: true
+    set_action:
+      - script.execute:
+          id: joydex_apply_wake_window
+          requested_window: !lambda return static_cast<int>(x);
+
+  - platform: template
+    id: joydex_vad_probability_cutoff
+    name: Joydex VAD Probability Cutoff
+    entity_category: config
+    min_value: 0.01
+    max_value: 0.50
+    step: 0.01
+    initial_value: 0.10
+    restore_value: true
+    set_action:
+      - lambda: |-
+          id(mww).set_vad_probability_cutoff(static_cast<uint8_t>(x * 255.0f + 0.5f));
+          id(joydex_vad_probability_cutoff).publish_state(x);
+
+binary_sensor:
+  - platform: template
+    id: joydex_voice_wake
+    name: Joydex Voice Wake
+    device_class: sound
+  - platform: template
+    id: joydex_wake_engine_running
+    name: Joydex Wake Engine Running
+    entity_category: diagnostic
+    lambda: return id(mww).is_running();
+  - platform: template
+    id: joydex_microphone_capturing
+    name: Joydex Microphone Capturing
+    entity_category: diagnostic
+    lambda: return id(i2s_mics).is_running();
+  - platform: template
+    id: joydex_microphone_muted
+    name: Joydex Microphone Muted
+    entity_category: diagnostic
+    lambda: return id(i2s_mics).get_mute_state();
+  - platform: template
+    id: joydex_vad_active
+    name: Joydex VAD Active
+    entity_category: diagnostic
+    lambda: return id(mww).get_vad_state();
+
+script:
+  - id: joydex_apply_wake_window
+    mode: restart
+    parameters:
+      requested_window: int
+    then:
+      - if:
+          condition:
+            lambda: return id(okay_computer).get_sliding_window_size() != static_cast<size_t>(requested_window);
+          then:
+            # The inference task reads the probability vector. Stop it before resizing.
+            - micro_wake_word.stop:
+            - wait_until:
+                condition:
+                  lambda: return !id(mww).is_running();
+                timeout: 5s
+            - if:
+                condition:
+                  lambda: return !id(mww).is_running();
+                then:
+                  - lambda: |-
+                      if (id(okay_computer).set_sliding_window_size(
+                              static_cast<size_t>(requested_window))) {
+                        id(joydex_wake_sliding_window).publish_state(requested_window);
+                      } else {
+                        ESP_LOGE("joydex.voice", "Rejected wake sliding-window size %d", requested_window);
+                      }
+                  - micro_wake_word.start:
+                  - wait_until:
+                      condition:
+                        lambda: return id(mww).is_running();
+                      timeout: 5s
+                else:
+                  - lambda: |-
+                      ESP_LOGE("joydex.voice", "Wake engine did not stop; sliding window remains %u",
+                               static_cast<unsigned>(id(okay_computer).get_sliding_window_size()));
+                      id(joydex_wake_sliding_window).publish_state(
+                          id(okay_computer).get_sliding_window_size());
+          else:
+            - lambda: |-
+                id(joydex_wake_sliding_window).publish_state(requested_window);
+
+  - id: joydex_voice_wake_pulse
+    mode: restart
+    then:
+      - binary_sensor.template.publish:
+          id: joydex_voice_wake
+          state: ON
+      - delay: 250ms
+      - binary_sensor.template.publish:
+          id: joydex_voice_wake
+          state: OFF

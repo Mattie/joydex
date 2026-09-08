@@ -1,0 +1,42 @@
+packages:
+  audio_canary: !include joydex-voice-pe-audio-canary.yaml
+
+esphome:
+  project:
+    name: Joydex.Voice PE Audio Bridge
+    version: "0.1.27"
+
+external_components:
+  # Preserve the exact Sendspin revision selected by the retail Voice PE package,
+  # but adapt its player task priority using the locally reviewed patch.
+  - source:
+      type: local
+      path: .joydex-sendspin/esphome/components
+    components:
+      - sendspin
+
+sensor:
+  - platform: template
+    name: Joydex Sendspin Playback Tasks Started
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: return id(sendspin_source).get_playback_tasks_started();
+    filters:
+      - delta: 1
+  - platform: template
+    name: Joydex Sendspin Late Audio Chunks Skipped
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: return id(sendspin_source).get_late_audio_chunks_skipped();
+    filters:
+      - delta: 1
+  - platform: template
+    name: Joydex Sendspin Initial Audio Chunks Skipped
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: return id(sendspin_source).get_initial_audio_chunks_skipped();
+    filters:
+      - delta: 1

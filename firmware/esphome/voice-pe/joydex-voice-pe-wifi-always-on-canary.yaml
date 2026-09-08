@@ -1,0 +1,10 @@
+packages:
+  lease_fix_canary: !include joydex-voice-pe-sendspin-lease-fix-canary.yaml
+
+esphome:
+  project:
+    name: Joydex.Voice PE Audio Bridge
+    version: "0.1.30"
+
+wifi:
+  power_save_mode: none

@@ -1,0 +1,7 @@
+packages:
+  balanced_canary: !include joydex-voice-pe-sendspin-balanced-canary.yaml
+
+esphome:
+  project:
+    name: Joydex.Voice PE Audio Bridge
+    version: "0.1.29"
