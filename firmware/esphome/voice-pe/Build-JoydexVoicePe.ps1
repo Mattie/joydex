@@ -2,12 +2,22 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$SecretsPath,
-    [string]$Destination = (Join-Path $PSScriptRoot "..\..\..\.tools\voice-pe-build"),
+    [string]$Destination,
     [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+if ($PSVersionTable.PSVersion -lt [version]"7.2") {
+    throw "The Voice PE build requires PowerShell 7.2 or later."
+}
+
+$usesDefaultDestination = [string]::IsNullOrWhiteSpace($Destination)
+if ($usesDefaultDestination) {
+    $directoryName = if ($ValidateOnly) { "voice-pe-validate" } else { "voice-pe-build" }
+    $Destination = Join-Path $PSScriptRoot "..\..\..\.tools\$directoryName"
+}
 
 $destinationPath = [IO.Path]::GetFullPath($Destination)
 $resolvedSecretsPath = [IO.Path]::GetFullPath($SecretsPath)
@@ -29,6 +39,16 @@ if (Test-Path -LiteralPath $gitPatch -PathType Leaf) {
 }
 if ($null -eq (Get-Command patch.exe -ErrorAction SilentlyContinue)) {
     throw "patch.exe is required. Install Git for Windows with its Unix tools."
+}
+
+if ($usesDefaultDestination -and (Test-Path -LiteralPath $destinationPath)) {
+    $expectedDefaultPath = [IO.Path]::GetFullPath(
+        (Join-Path $PSScriptRoot "..\..\..\.tools\$directoryName"))
+    if (-not $destinationPath.Equals($expectedDefaultPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to recreate an unexpected Voice PE build directory: $destinationPath"
+    }
+
+    Remove-Item -LiteralPath $destinationPath -Recurse -Force
 }
 
 & $preparationScript -Destination $destinationPath -SecretsPath $resolvedSecretsPath

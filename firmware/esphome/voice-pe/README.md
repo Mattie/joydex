@@ -24,7 +24,8 @@ compiles it once. It never connects to or updates a device.
 
 Prerequisites:
 
-- Windows, Python, and Git for Windows with `patch.exe` under `usr\bin`.
+- Windows, PowerShell 7.2 or later, Python, and Git for Windows with
+  `patch.exe` under `usr\bin`.
 - A local ESPHome virtual environment created from the pinned
   [`requirements.txt`](requirements.txt).
 - A private secrets file based on [`secrets.example.yaml`](secrets.example.yaml).
@@ -47,6 +48,10 @@ Copy-Item .\firmware\esphome\voice-pe\secrets.example.yaml `
 .\firmware\esphome\voice-pe\Build-JoydexVoicePe.ps1 `
   -SecretsPath .\firmware\esphome\voice-pe\secrets.yaml
 ```
+
+The wrapper recreates separate ignored default directories for validation and
+compilation, so the two documented commands can run in sequence or be repeated.
+When supplying `-Destination`, use a fresh dedicated disposable directory.
 
 The compiled OTA and factory image paths are printed when the build completes.
 Review ESPHome's device-specific installation and recovery guidance before
