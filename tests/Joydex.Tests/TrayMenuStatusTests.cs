@@ -175,6 +175,17 @@ public sealed class TrayMenuStatusTests
         }
     }
 
+    [Theory]
+    [InlineData("failed to load configuration: config.toml: invalid type: map, expected a boolean")]
+    [InlineData("Failed to load bootstrap configuration")]
+    public void CodexConfigurationFailuresDoNotEnterTheRoomVoiceRetryLoop(string message)
+    {
+        Assert.False(TrayApplicationContext.IsTransientOwnerStartupFailure(
+            new InvalidOperationException(message)));
+        Assert.True(TrayApplicationContext.IsTransientOwnerStartupFailure(
+            new InvalidOperationException("The App Server connection closed unexpectedly.")));
+    }
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ShowWindow(IntPtr window, int command);

@@ -1655,15 +1655,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
         cancellation.Dispose();
     }
 
-    private static bool IsTransientOwnerStartupFailure(Exception exception) => exception switch
+    internal static bool IsTransientOwnerStartupFailure(Exception exception)
     {
-        CodexDedicatedVoiceCompatibilityException => false,
-        InvalidDataException => false,
-        FileNotFoundException => false,
-        UnauthorizedAccessException => false,
-        ArgumentException => false,
-        _ => true,
-    };
+        ArgumentNullException.ThrowIfNull(exception);
+        if (exception.Message.Contains("failed to load configuration", StringComparison.OrdinalIgnoreCase)
+            || exception.Message.Contains("failed to load bootstrap configuration", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return exception switch
+        {
+            CodexDedicatedVoiceCompatibilityException => false,
+            InvalidDataException => false,
+            FileNotFoundException => false,
+            UnauthorizedAccessException => false,
+            ArgumentException => false,
+            _ => true,
+        };
+    }
 
     private async Task MonitorVoicePeOwnerAsync(
         VoicePeBridgeRuntime runtime,

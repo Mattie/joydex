@@ -7,10 +7,10 @@ namespace Joydex.Windows.Voice;
 /// </summary>
 public static class CodexAppServerBinaryPolicy
 {
-    public const string PinnedVersion = "0.150.0-alpha.9";
-    public const string PinnedSha256 = "5ffd7a27694e1529d717a0247858d7650438273ba10d4d8a4f0a73f5e1414082";
+    public const string PinnedVersion = "0.153.4";
+    public const string PinnedSha256 = "e5aa76d19c7c94e2e9ef9b707d590206a73ac0e97c8ddc8382181242494bef75";
     public const string CodeModeHostFileName = "codex-code-mode-host.exe";
-    public const string PinnedCodeModeHostSha256 = "39db8fcd843b6dbfd4e5fb4e92bcb1c74b17a00bff2ae24d9afdedd6ea26b0c0";
+    public const string PinnedCodeModeHostSha256 = "3eb2083b58f0982506e5c3cb7a550fb6538d718c29f0a75ca4848852a0aff0c7";
 
     public static async Task<CodexAppServerBinary> VerifyAsync(
         string executablePath,

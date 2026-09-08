@@ -20,8 +20,13 @@ audio through the Windows speaker path, wrote a valid remote-audio capture, and 
 closure. It required no first-party attestation token. The raw PCM transport reached App Server and
 then failed with `realtime conversation requires API key auth`.
 
+The installed Codex `0.153.4` runtime was revalidated after the corresponding Desktop upgrade. Its
+schema checks passed, and the host-only WebRTC canary again completed deterministic microphone
+uplink, remote Opus audio playback through the Windows speaker path, capture writing, and typed
+session closure without requesting first-party attestation.
+
 Codex task rollouts have an exclusive local writer. After the first canary updated the configured Voice
-Chat`, the running Codex Desktop App Server held that task's writer lock. A separately launched App
+Chat, the running Codex Desktop App Server held that task's writer lock. A separately launched App
 Server could no longer resume it. An ephemeral task reproduced the full media result without
 contending with Desktop, which separates the proven audio path from the unresolved durable-task
 ownership path.
@@ -182,6 +187,14 @@ leave normal Room Voice operation intact and hold attempted outbound delivery fo
 ## Evidence
 
 - `tools/Joydex.WebRtcCanary` host-only canary
+- Revalidated on 2026-09-08 against Windows package `OpenAI.Codex 26.901.6511.0`, bundled app
+  release `26.901`, and Codex `0.153.4`
+- Verified Codex `0.153.4` binary SHA-256
+  `e5aa76d19c7c94e2e9ef9b707d590206a73ac0e97c8ddc8382181242494bef75`
+- Verified matching `codex-code-mode-host.exe` SHA-256
+  `3eb2083b58f0982506e5c3cb7a550fb6538d718c29f0a75ca4848852a0aff0c7`
+- Successful `0.153.4` deterministic microphone uplink, remote model-audio track, Windows speaker
+  playback with nonzero audio energy, 273,243-byte WebM capture, and typed requested close
 - Verified upstream Codex `0.150.0-alpha.9` binary SHA-256
   `5ffd7a27694e1529d717a0247858d7650438273ba10d4d8a4f0a73f5e1414082`
 - Verified matching `codex-code-mode-host.exe` SHA-256

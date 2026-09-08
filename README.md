@@ -247,7 +247,7 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 
 ## Versions and Config
 
-Command IDs, Windows defaults, aliases, and precedence behavior were last checked on 2026-08-05 against OpenAI Codex package `26.730.8199.0`, bundled app release `26.730`, build `0.147.0-alpha.1.2`.
+Command IDs, Windows defaults, aliases, and precedence behavior were last checked on 2026-09-07 against OpenAI Codex package `26.901.6511.0`, bundled app release `26.901`, build `0.153.4`.
 
 The `voice-chat` action uses Codex's current **Toggle voice chat** shortcut. Before mapping `side-conversation`, `end-voice-chat`, or `toggle-voice-mic`, make sure **Open Side Chat**, **End Voice Chat**, and **Toggle Voice Chat microphone** have shortcuts assigned in Codex's Keyboard shortcuts.
 
