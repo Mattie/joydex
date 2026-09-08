@@ -1,6 +1,6 @@
-diff --git a/joydex-voice-pe-audio-canary.yaml b/joydex-voice-pe-audio-canary.yaml
---- a/joydex-voice-pe-audio-canary.yaml
-+++ b/joydex-voice-pe-audio-canary.yaml
+diff --git a/joydex-voice-pe-audio.yaml b/joydex-voice-pe-audio.yaml
+--- a/joydex-voice-pe-audio.yaml
++++ b/joydex-voice-pe-audio.yaml
 @@ -55,7 +55,10 @@ select:
        - if:
            condition:

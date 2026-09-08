@@ -1,6 +1,6 @@
-diff --git a/joydex-voice-pe-score-sound-canary.yaml b/joydex-voice-pe-score-sound-canary.yaml
---- a/joydex-voice-pe-score-sound-canary.yaml
-+++ b/joydex-voice-pe-score-sound-canary.yaml
+diff --git a/joydex-voice-pe-cues.yaml b/joydex-voice-pe-cues.yaml
+--- a/joydex-voice-pe-cues.yaml
++++ b/joydex-voice-pe-cues.yaml
 @@ -24,9 +24,19 @@ select:
        - Armed
        - Starting

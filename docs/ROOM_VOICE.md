@@ -1,7 +1,8 @@
 # Room Voice setup
 
-Room Voice is an experimental Joydex feature that turns one Home Assistant
-Voice Preview Edition into a hands-free Codex endpoint. The device recognizes
+Room Voice is an experimental Joydex feature that turns one
+[Home Assistant Voice Preview Edition](https://www.home-assistant.io/voice-pe/)
+into a hands-free Codex endpoint. The device recognizes
 the wake word locally, Joydex owns a dedicated Codex task, and live microphone
 and speaker audio travel over the local network.
 

@@ -21,8 +21,8 @@ if ($usesDefaultDestination) {
 
 $destinationPath = [IO.Path]::GetFullPath($Destination)
 $resolvedSecretsPath = [IO.Path]::GetFullPath($SecretsPath)
-$preparationScript = Join-Path $PSScriptRoot "prepare-session-controls-canary.ps1"
-$configurationName = "joydex-voice-pe-session-controls-canary.yaml"
+$preparationScript = Join-Path $PSScriptRoot "Prepare-JoydexVoicePe.ps1"
+$configurationName = "joydex-voice-pe.yaml"
 $configurationPath = Join-Path $destinationPath $configurationName
 $espHomeExecutable = Join-Path $PSScriptRoot "..\.venv\Scripts\esphome.exe"
 $gitUnixTools = Join-Path $env:ProgramFiles "Git\usr\bin"

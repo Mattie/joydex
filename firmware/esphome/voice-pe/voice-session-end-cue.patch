@@ -1,6 +1,6 @@
-diff --git a/joydex-voice-pe-audio-canary.yaml b/joydex-voice-pe-audio-canary.yaml
---- a/joydex-voice-pe-audio-canary.yaml
-+++ b/joydex-voice-pe-audio-canary.yaml
+diff --git a/joydex-voice-pe-audio.yaml b/joydex-voice-pe-audio.yaml
+--- a/joydex-voice-pe-audio.yaml
++++ b/joydex-voice-pe-audio.yaml
 @@ -1,6 +1,7 @@
  substitutions:
    # The second cue confirms that Codex realtime and both media paths are ready.
@@ -8,7 +8,7 @@ diff --git a/joydex-voice-pe-audio-canary.yaml b/joydex-voice-pe-audio-canary.ya
 +  joydex_end_sound_file: sounds/EndBlip.flac
  
  packages:
-   score_sound_and_led: !include joydex-voice-pe-score-sound-canary.yaml
+   cues: !include joydex-voice-pe-cues.yaml
 @@ -34,6 +35,8 @@ media_source:
      files:
        - id: joydex_ready_sound

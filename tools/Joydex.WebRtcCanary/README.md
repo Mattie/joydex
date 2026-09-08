@@ -1,10 +1,8 @@
 # Joydex WebRTC Canary
 
-This is a throwaway, host-only prototype. It answers four App Server questions:
+This is a host-only compatibility tool. It answers three App Server questions:
 
 > Can a Joydex-owned client start Codex App Server Realtime on the configured Dedicated Voice Task, complete a browser WebRTC audio negotiation, receive model audio, and observe typed session closure?
-
-> Can the same ChatGPT-authenticated App Server accept deterministic 24 kHz mono PCM speech through `thread/realtime/appendAudio`, return signed 16-bit PCM through `thread/realtime/outputAudio/delta`, and write a playable WAVE artifact?
 
 > Can Joydex keep a durable task loaded in its own App Server, reject a rival App Server writer,
 > release ownership cleanly, and allow a new owner to resume the same task?
@@ -133,16 +131,3 @@ Run from the repository root:
 By default the runner copies the installed Codex package's `codex.exe` to a versioned temporary directory because Windows package ACLs do not permit launching the package binary directly from a normal shell. Pass `-CodexPath` to test an isolated upstream executable, `-AttestationMode observe` only for the explicit attestation diagnostic, and `-NoOpen` when a browser-native test client will open the page itself. It registers the localhost process as a session-scoped development server, then opens the canary page unless `-NoOpen` is set. **Start canary** negotiates with a muted synthetic input; **Use live microphone** performs the separate permission and capture check. Say “hang up” after attaching the microphone, or press **Stop session** to test closure.
 
 Pass `-InputWav` to expose a deterministic WAVE fixture, `-CaptureWebm` to save the remote track, and `-EphemeralThread` to run the media canary without creating or modifying a durable task. Pass `-ThreadId` or `-ThreadTitle` only when deliberately testing task ownership and routing.
-
-## PCM round-trip prototype
-
-Prepare an uncompressed 24 kHz mono 16-bit PCM WAVE input, then run:
-
-```powershell
-.\scripts\run-pcm-canary.ps1 `
-  -CodexPath D:\Temp\joydex-webrtc-canary\releases\rust-v0.150.0-alpha.9\codex-x86_64-pc-windows-msvc.exe `
-  -InputWav D:\Temp\joydex-pcm-canary\input-pcm24k-mono.wav `
-  -OutputWav D:\Temp\joydex-pcm-canary\output.wav
-```
-
-The canary streams 20 ms chunks at realtime cadence with leading and trailing silence for server VAD. With cached ChatGPT authentication, upstream `0.150.0-alpha.9` rejects this transport with `realtime conversation requires API key auth`; no output WAVE is written. This makes raw App Server PCM an API-key fallback rather than the native ChatGPT-auth product path. The WebRTC canary is the primary transport proof.

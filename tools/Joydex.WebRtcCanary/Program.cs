@@ -58,19 +58,6 @@ internal static class Program
 
             await appServer.StartAsync(cancellation.Token).ConfigureAwait(false);
 
-            if (string.Equals(options.Mode, "pcm", StringComparison.OrdinalIgnoreCase))
-            {
-                await using var pcmCanary = new CodexPcmCanary(
-                    appServer,
-                    options.ThreadId,
-                    options.ThreadTitle);
-                await pcmCanary.RunAsync(
-                    options.InputWav!,
-                    options.OutputWav!,
-                    cancellation.Token).ConfigureAwait(false);
-                return 0;
-            }
-
             state.HostReady();
 
             var realtime = new CodexRealtimeCanary(
@@ -119,7 +106,6 @@ internal sealed record CanaryOptions(
     string ThreadTitle,
     string? ThreadId,
     string? InputWav,
-    string? OutputWav,
     string? CaptureWebm,
     string AttestationMode,
     bool EphemeralThread,
@@ -134,13 +120,12 @@ internal sealed record CanaryOptions(
         var port = ParseInt(GetOption(args, "--port") ?? "8766", "--port", 1, 65_535);
         var mode = GetOption(args, "--mode") ?? "webrtc";
         if (!string.Equals(mode, "webrtc", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(mode, "pcm", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(mode, "ownership", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(mode, "desktop-attach", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(mode, "dedicated-create", StringComparison.OrdinalIgnoreCase))
         {
             throw new ArgumentException(
-                "--mode must be 'webrtc', 'pcm', 'ownership', 'desktop-attach', or 'dedicated-create'.");
+                "--mode must be 'webrtc', 'ownership', 'desktop-attach', or 'dedicated-create'.");
         }
 
         var codexPath = GetOption(args, "--codex-path") ?? "codex.exe";
@@ -148,13 +133,7 @@ internal sealed record CanaryOptions(
         var threadTitle = GetOption(args, "--thread-title") ?? "Codex Voice Chat";
         var threadId = GetOption(args, "--thread-id");
         var inputWav = GetOption(args, "--input-wav");
-        var outputWav = GetOption(args, "--output-wav");
         var captureWebm = GetOption(args, "--capture-webm");
-        if (string.Equals(mode, "pcm", StringComparison.OrdinalIgnoreCase) &&
-            (string.IsNullOrWhiteSpace(inputWav) || string.IsNullOrWhiteSpace(outputWav)))
-        {
-            throw new ArgumentException("PCM mode requires --input-wav and --output-wav.");
-        }
 
         var attestationMode = GetOption(args, "--attestation-mode") ?? "disabled";
         if (!string.Equals(attestationMode, "disabled", StringComparison.OrdinalIgnoreCase) &&
@@ -194,7 +173,6 @@ internal sealed record CanaryOptions(
             threadTitle,
             threadId,
             inputWav,
-            outputWav,
             captureWebm,
             attestationMode.ToLowerInvariant(),
             ephemeralThread,

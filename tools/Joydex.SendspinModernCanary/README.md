@@ -5,13 +5,10 @@ future Voice PE firmware build. It advertises 48 kHz mono Opus and PCM, runs the
 current decoder and synchronization task, and reports played frames through a
 bounded realtime fake speaker.
 
-The existing `Joydex.SendspinCanary device` command connects to it unchanged.
-A passing run proves that Joydex's plaintext `player@v1` server dialect is wire
-compatible with the current player engine. It does not change or validate the
-deployed Voice PE firmware.
-
-The decision gate uses `Joydex.SendspinProductionCanary`, which exercises the
-actual production session across three responses in one call-scoped stream.
+`Joydex.SendspinProductionCanary` connects the production session to this
+harness and exercises three responses in one call-scoped stream. A passing run
+proves that Joydex's plaintext `player@v1` server dialect is wire compatible
+with the current player engine. It does not validate physical Voice PE audio.
 
 Pin `sendspin-cpp` tag `v0.7.2`, commit
 `30514d5102c269a0c7fa6a13932d6bf7f2ae1abc`. Later encryption work changes the
@@ -36,7 +33,7 @@ cmake -S <this-directory> -B <build-directory> \
 cmake --build <build-directory> --parallel
 ```
 
-Run the harness on port `8927`, then point the existing Joydex canary at
+Run the harness on port `8927`, then run the production canary against
 loopback:
 
 ```text
