@@ -813,6 +813,7 @@ internal sealed class ButtonMapCanvas : Control
         "navigate-back" => "Back",
         "navigate-forward" => "Forward",
         "toggle-sidebar" => "Sidebar",
+        "toggle-review" => "Toggle review panel",
         "open-skills" => "Skills",
         "voice-chat" => "Voice chat",
         "end-voice-chat" => "End voice chat",
