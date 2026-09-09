@@ -49,7 +49,7 @@ the endpoint.
 Run both prototypes from the repository root:
 
 ```powershell
-.\scripts\run-appserver-ownership-prototypes.ps1
+.\scripts\run-appserver-ownership-prototypes.ps1 -CodexPath C:\path\to\codex.exe
 ```
 
 The ownership prototype is an interactive terminal state display. Press `O` for the disposable
@@ -57,7 +57,8 @@ owner/handoff proof, `P` for a no-turn configured-task ownership probe, and `Q` 
 discovery result. Pass `-Auto` to run both ownership actions without input. Exit code `0` means both
 the mechanism and configured-task acquisition passed; exit code `3` means the mechanism passed while
 another App Server still owns the configured task. The runner accepts `3` and labels it explicitly.
-Pass `-CodexPath` to select another exact App Server build.
+The required `-CodexPath` identifies the exact App Server build under test; the runner reports its
+version and SHA-256 in the result.
 
 ## Dedicated Joydex task — 2026-08-25
 

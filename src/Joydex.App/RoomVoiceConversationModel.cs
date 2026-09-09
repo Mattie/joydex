@@ -31,7 +31,7 @@ internal sealed class RoomVoiceConversationModel
 
     private readonly object _sync = new();
     private readonly List<RoomVoiceConversationEntry> _entries = [];
-    private DateTimeOffset? _hiddenThrough;
+    private bool _visibleConversationCleared;
     private VoicePeSessionState _sessionState = VoicePeSessionState.Armed;
     private bool _ownerReady;
     private bool _sessionActive;
@@ -67,17 +67,19 @@ internal sealed class RoomVoiceConversationModel
         ArgumentNullException.ThrowIfNull(entries);
         lock (_sync)
         {
-            _entries.Clear();
-            _entries.AddRange(entries
-                .Where(entry => _hiddenThrough is null || entry.Timestamp > _hiddenThrough.Value)
-                .OrderBy(entry => entry.Timestamp)
-                .TakeLast(MaximumVisibleEntries)
-                .Select(entry => new RoomVoiceConversationEntry(
-                    entry.Id,
-                    entry.Timestamp,
-                    entry.Kind,
-                    entry.Text,
-                    RawText: entry.RawText)));
+            if (!_visibleConversationCleared)
+            {
+                _entries.Clear();
+                _entries.AddRange(entries
+                    .OrderBy(entry => entry.Timestamp)
+                    .TakeLast(MaximumVisibleEntries)
+                    .Select(entry => new RoomVoiceConversationEntry(
+                        entry.Id,
+                        entry.Timestamp,
+                        entry.Kind,
+                        entry.Text,
+                        RawText: entry.RawText)));
+            }
             _historyAvailable = true;
             _stale = false;
             _error = null;
@@ -90,9 +92,10 @@ internal sealed class RoomVoiceConversationModel
     {
         lock (_sync)
         {
-            _hiddenThrough = _entries.Count > 0
-                ? _entries.Max(entry => entry.Timestamp)
-                : DateTimeOffset.Now;
+            // Canonical items use their enclosing turn's timestamp, so a later refresh cannot
+            // reliably separate entries seen before this clear from live entries added afterward.
+            // Keep the post-clear live view authoritative for the remainder of this model's run.
+            _visibleConversationCleared = true;
             _entries.Clear();
             _historyAvailable = true;
             _stale = false;

@@ -391,6 +391,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 controlTransport,
                 async token =>
                 {
+                    var previousState = conversation.GetSnapshot();
                     var archiveCreated = false;
                     var archive = sessionArchiveState?.Begin(out archiveCreated);
                     conversation.SetRuntimeState(
@@ -399,19 +400,14 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                         sessionActive: true,
                         "Connecting the voice session…");
                     var result = await coordinator.StartAsync(token).ConfigureAwait(false);
-                    if (!result.Accepted)
+                    if (!result.Accepted && result.Status != VoiceSessionStartStatus.SessionActive)
                     {
                         if (archiveCreated)
                         {
                             sessionArchiveState?.CompleteIfCurrent(archive, "rejected", result.Message);
                         }
-                        conversation.SetRuntimeState(
-                            VoicePeSessionState.Error,
-                            ownerReady: true,
-                            sessionActive: false,
-                            "The voice session could not start.",
-                            result.Message);
                     }
+                    ApplyStartResult(conversation, previousState, result);
                     return result;
                 },
                 log,
@@ -509,6 +505,41 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 _ => VoiceSessionStartStatus.Rejected,
             },
             result.Message);
+
+    internal static void ApplyStartResult(
+        RoomVoiceConversationModel conversation,
+        RoomVoiceConversationSnapshot previousState,
+        VoiceSessionStartResult result)
+    {
+        ArgumentNullException.ThrowIfNull(conversation);
+        ArgumentNullException.ThrowIfNull(previousState);
+        ArgumentNullException.ThrowIfNull(result);
+
+        if (result.Status == VoiceSessionStartStatus.SessionActive)
+        {
+            if (previousState.SessionActive)
+            {
+                conversation.SetRuntimeState(
+                    previousState.SessionState,
+                    previousState.OwnerReady,
+                    sessionActive: true,
+                    previousState.Status,
+                    previousState.Error,
+                    previousState.Stale);
+            }
+            return;
+        }
+
+        if (!result.Accepted)
+        {
+            conversation.SetRuntimeState(
+                VoicePeSessionState.Error,
+                ownerReady: true,
+                sessionActive: false,
+                "The voice session could not start.",
+                result.Message);
+        }
+    }
 
     private sealed class VoiceSessionArchiveState(VoicePePreferences preferences, Action<string> log)
     {

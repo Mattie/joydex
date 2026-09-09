@@ -130,7 +130,60 @@ public sealed class RoomVoiceConversationModelTests
     }
 
     [Fact]
-    public void ClearedEntriesStayHiddenAcrossRefreshWhileNewEntriesAppear()
+    public void DuplicateWakeRestoresTheActiveConversationState()
+    {
+        var model = new RoomVoiceConversationModel();
+        model.SetRuntimeState(
+            VoicePeSessionState.Muted,
+            ownerReady: true,
+            sessionActive: true,
+            "Microphone muted");
+        var active = model.GetSnapshot();
+        model.SetRuntimeState(
+            VoicePeSessionState.Starting,
+            ownerReady: true,
+            sessionActive: true,
+            "Connecting the voice session…");
+
+        VoicePeBridgeRuntime.ApplyStartResult(
+            model,
+            active,
+            new VoiceSessionStartResult(VoiceSessionStartStatus.SessionActive, "already active"));
+
+        var restored = model.GetSnapshot();
+        Assert.Equal(VoicePeSessionState.Muted, restored.SessionState);
+        Assert.True(restored.OwnerReady);
+        Assert.True(restored.SessionActive);
+        Assert.Equal("Microphone muted", restored.Status);
+        Assert.Null(restored.Error);
+    }
+
+    [Fact]
+    public void DuplicateWakeDuringStartupKeepsTheCurrentStartingState()
+    {
+        var model = new RoomVoiceConversationModel();
+        var armed = model.GetSnapshot();
+        model.SetRuntimeState(
+            VoicePeSessionState.Starting,
+            ownerReady: true,
+            sessionActive: true,
+            "Connecting the voice session…");
+
+        VoicePeBridgeRuntime.ApplyStartResult(
+            model,
+            armed,
+            new VoiceSessionStartResult(VoiceSessionStartStatus.SessionActive, "start in progress"));
+
+        var current = model.GetSnapshot();
+        Assert.Equal(VoicePeSessionState.Starting, current.SessionState);
+        Assert.True(current.OwnerReady);
+        Assert.True(current.SessionActive);
+        Assert.Equal("Connecting the voice session…", current.Status);
+        Assert.Null(current.Error);
+    }
+
+    [Fact]
+    public void CanonicalRefreshPreservesEntriesAddedAfterClear()
     {
         var model = new RoomVoiceConversationModel();
         var oldEntry = new CodexVoiceConversationEntry(
@@ -141,16 +194,18 @@ public sealed class RoomVoiceConversationModelTests
         model.ReplaceHistory([oldEntry]);
 
         model.ClearVisibleConversation();
+        model.UpdateLiveTranscript(CodexVoiceConversationKind.Assistant, "new", final: true);
         model.ReplaceHistory([
             oldEntry,
             new CodexVoiceConversationEntry(
                 "new-item",
-                DateTimeOffset.UnixEpoch.AddMinutes(1),
+                DateTimeOffset.UnixEpoch,
                 CodexVoiceConversationKind.Assistant,
                 "new"),
         ]);
 
         var visible = Assert.Single(model.GetSnapshot().Entries);
-        Assert.Equal("new-item", visible.Id);
+        Assert.StartsWith("live-", visible.Id, StringComparison.Ordinal);
+        Assert.Equal("new", visible.Text);
     }
 }

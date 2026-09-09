@@ -10,10 +10,9 @@ param(
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $selectedCodex = $CodexPath
-$usingPinnedDefault = [string]::IsNullOrWhiteSpace($selectedCodex)
 
-if ($usingPinnedDefault) {
-    throw "Pass -CodexPath for the previously verified Codex 0.150.0-alpha.9 executable."
+if ([string]::IsNullOrWhiteSpace($selectedCodex)) {
+    throw "Pass -CodexPath for the exact Codex executable to test."
 }
 
 if (-not (Test-Path -LiteralPath $selectedCodex -PathType Leaf)) {
@@ -26,10 +25,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $codexHash = (Get-FileHash -LiteralPath $selectedCodex -Algorithm SHA256).Hash.ToLowerInvariant()
-$pinnedHash = "5ffd7a27694e1529d717a0247858d7650438273ba10d4d8a4f0a73f5e1414082"
-if ($usingPinnedDefault -and $codexHash -ne $pinnedHash) {
-    throw "The default Codex binary hash is $codexHash; expected the validated 0.150.0-alpha.9 hash $pinnedHash."
-}
 
 Write-Host "App Server binary: $selectedCodex"
 Write-Host "App Server version: $codexVersion"

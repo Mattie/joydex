@@ -539,8 +539,12 @@ internal sealed class RoomVoiceForm : ThemedForm
         if (!Visible)
         {
             _renderTimer.Stop();
+            _taskMessagingTimer.Stop();
             return;
         }
+
+        _taskMessagingTimer.Start();
+        _ = RefreshTaskMessagingAsync(showErrors: false);
 
         if (_renderDirty)
         {
