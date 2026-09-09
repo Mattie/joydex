@@ -121,13 +121,75 @@ public sealed class PinnedVoiceCoordinatorTests
 
         var first = await coordinator.StartAsync(EnabledPreferences);
         var blocked = await coordinator.StartAsync(EnabledPreferences);
-        coordinator.ConfirmSessionEnded();
+        var ended = coordinator.ConfirmSessionEnded();
         var afterStop = await coordinator.StartAsync(EnabledPreferences);
 
         Assert.Equal(PinnedVoiceStartStatus.Requested, first.Status);
         Assert.Equal(PinnedVoiceStartStatus.SessionActive, blocked.Status);
+        Assert.True(ended);
         Assert.Equal(PinnedVoiceStartStatus.Requested, afterStop.Status);
         Assert.Equal(2, executions);
+    }
+
+    [Fact]
+    public async Task UnconfirmedAcceptedStartReleasesLatchAfterBoundedTimeout()
+    {
+        var expiration = new TaskCompletionSource();
+        var laterExpiration = new TaskCompletionSource();
+        var timeoutObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var scheduledTimeouts = 0;
+        var executions = 0;
+        var coordinator = new PinnedVoiceCoordinator(
+            new SafetyOptions { DryRun = false },
+            message =>
+            {
+                if (message.StartsWith("TIMED OUT", StringComparison.Ordinal))
+                {
+                    timeoutObserved.TrySetResult();
+                }
+            },
+            new StubNavigator((_, _) => Task.FromResult(true)),
+            (_, _) =>
+            {
+                executions++;
+                return Task.FromResult(ActionExecutionResult.Success("started"));
+            },
+            new FixedGuard(true),
+            (_, _) => Interlocked.Increment(ref scheduledTimeouts) == 1
+                ? expiration.Task
+                : laterExpiration.Task,
+            startConfirmationTimeout: TimeSpan.FromSeconds(20));
+
+        Assert.Equal(PinnedVoiceStartStatus.Requested, (await coordinator.StartAsync(EnabledPreferences)).Status);
+        Assert.Equal(PinnedVoiceStartStatus.SessionActive, (await coordinator.StartAsync(EnabledPreferences)).Status);
+
+        expiration.SetResult();
+
+        await timeoutObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(PinnedVoiceStartStatus.Requested, (await coordinator.StartAsync(EnabledPreferences)).Status);
+        Assert.Equal(2, executions);
+    }
+
+    [Fact]
+    public async Task StartConfirmationPreventsTimeoutFromReleasingActiveSession()
+    {
+        var expiration = new TaskCompletionSource();
+        var coordinator = new PinnedVoiceCoordinator(
+            new SafetyOptions { DryRun = false },
+            _ => { },
+            new StubNavigator((_, _) => Task.FromResult(true)),
+            (_, _) => Task.FromResult(ActionExecutionResult.Success("started")),
+            new FixedGuard(true),
+            (_, _) => expiration.Task,
+            startConfirmationTimeout: TimeSpan.FromSeconds(20));
+
+        Assert.Equal(PinnedVoiceStartStatus.Requested, (await coordinator.StartAsync(EnabledPreferences)).Status);
+        Assert.True(coordinator.ConfirmSessionStarted());
+
+        expiration.SetResult();
+
+        Assert.Equal(PinnedVoiceStartStatus.SessionActive, (await coordinator.StartAsync(EnabledPreferences)).Status);
+        Assert.True(coordinator.ConfirmSessionEnded());
     }
 
     private sealed class StubNavigator(

@@ -10,6 +10,7 @@ public sealed class CodexRealtimeSessionException(string message) : InvalidOpera
 public sealed class CodexRealtimeSession : IAsyncDisposable
 {
     private const int MaximumSdpCharacters = 1024 * 1024;
+    private static readonly TimeSpan FailedStartStopTimeout = TimeSpan.FromSeconds(5);
     private const string DesktopTaskMessagingInstructions =
         "A live tool named send_message_to_codex_task is available. Whenever the user asks to send, relay, submit, post, or pass a message to a Codex task, you must call that tool in the same turn. Always call it even if an earlier turn said the bridge was unavailable; the current tool result is the only authority. Do not claim delivery or unavailability without calling it. Omit target for this/current task, otherwise pass the spoken task name. Pass only the clean intended message and report the tool result accurately.";
     private readonly ICodexRealtimeControl _control;
@@ -88,6 +89,7 @@ public sealed class CodexRealtimeSession : IAsyncDisposable
             _active = true;
         }
 
+        var startAccepted = false;
         try
         {
             await _control.RequestAsync(
@@ -109,6 +111,7 @@ public sealed class CodexRealtimeSession : IAsyncDisposable
                 },
                 TimeSpan.FromSeconds(30),
                 cancellationToken).ConfigureAwait(false);
+            startAccepted = true;
 
             return await _sdpAnswer.Task
                 .WaitAsync(TimeSpan.FromSeconds(30), cancellationToken)
@@ -117,7 +120,27 @@ public sealed class CodexRealtimeSession : IAsyncDisposable
         catch (Exception exception)
         {
             Fail(exception);
+            if (startAccepted)
+            {
+                await TryStopFailedStartAsync().ConfigureAwait(false);
+            }
             throw;
+        }
+    }
+
+    private async Task TryStopFailedStartAsync()
+    {
+        try
+        {
+            await _control.RequestAsync(
+                "thread/realtime/stop",
+                new { threadId = ThreadId },
+                FailedStartStopTimeout,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The original start failure remains authoritative; this stop is best-effort cleanup.
         }
     }
 

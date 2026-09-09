@@ -32,6 +32,7 @@ public sealed class PinnedVoiceCoordinator
 {
     private static readonly TimeSpan DefaultFocusTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan DefaultStartConfirmationTimeout = TimeSpan.FromSeconds(20);
 
     private readonly SafetyOptions _safety;
     private readonly Action<string> _log;
@@ -41,8 +42,11 @@ public sealed class PinnedVoiceCoordinator
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly TimeSpan _focusTimeout;
     private readonly TimeSpan _pollInterval;
+    private readonly TimeSpan _startConfirmationTimeout;
     private readonly SemaphoreSlim _startGate = new(1, 1);
-    private int _sessionLatched;
+    private readonly object _sessionGate = new();
+    private long _sessionGeneration;
+    private SessionLatchState _sessionState;
 
     public PinnedVoiceCoordinator(
         SafetyOptions safety,
@@ -52,7 +56,8 @@ public sealed class PinnedVoiceCoordinator
         IForegroundProcessGuard? foregroundGuard = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         TimeSpan? focusTimeout = null,
-        TimeSpan? pollInterval = null)
+        TimeSpan? pollInterval = null,
+        TimeSpan? startConfirmationTimeout = null)
     {
         _safety = safety ?? throw new ArgumentNullException(nameof(safety));
         _log = log ?? throw new ArgumentNullException(nameof(log));
@@ -62,6 +67,7 @@ public sealed class PinnedVoiceCoordinator
         _delay = delay ?? Task.Delay;
         _focusTimeout = focusTimeout ?? DefaultFocusTimeout;
         _pollInterval = pollInterval ?? DefaultPollInterval;
+        _startConfirmationTimeout = startConfirmationTimeout ?? DefaultStartConfirmationTimeout;
         if (_focusTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(focusTimeout));
@@ -70,6 +76,11 @@ public sealed class PinnedVoiceCoordinator
         if (_pollInterval <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(pollInterval));
+        }
+
+        if (_startConfirmationTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(startConfirmationTimeout));
         }
     }
 
@@ -84,9 +95,26 @@ public sealed class PinnedVoiceCoordinator
         }
 
         var startAccepted = false;
+        var sessionLatchAcquired = false;
+        long sessionGeneration = 0;
         try
         {
-            if (Interlocked.CompareExchange(ref _sessionLatched, 1, 0) != 0)
+            var sessionAlreadyActive = false;
+            lock (_sessionGate)
+            {
+                if (_sessionState is not SessionLatchState.None)
+                {
+                    sessionAlreadyActive = true;
+                }
+                else
+                {
+                    sessionLatchAcquired = true;
+                    sessionGeneration = ++_sessionGeneration;
+                    _sessionState = SessionLatchState.AwaitingStart;
+                }
+            }
+
+            if (sessionAlreadyActive)
             {
                 return Result(
                     PinnedVoiceStartStatus.SessionActive,
@@ -150,15 +178,16 @@ public sealed class PinnedVoiceCoordinator
             }
 
             startAccepted = true;
+            _ = ReleaseUnconfirmedStartAsync(sessionGeneration);
             return Result(
                 PinnedVoiceStartStatus.Requested,
                 $"EXECUTED Voice PE wake; pinned={label}; awaiting Codex realtime-session confirmation.");
         }
         finally
         {
-            if (!startAccepted)
+            if (sessionLatchAcquired && !startAccepted)
             {
-                Interlocked.Exchange(ref _sessionLatched, 0);
+                ReleaseSessionLatch(sessionGeneration);
             }
             _startGate.Release();
         }
@@ -166,9 +195,14 @@ public sealed class PinnedVoiceCoordinator
 
     public bool ConfirmSessionStarted()
     {
-        if (Volatile.Read(ref _sessionLatched) == 0)
+        lock (_sessionGate)
         {
-            return false;
+            if (_sessionState is SessionLatchState.None)
+            {
+                return false;
+            }
+
+            _sessionState = SessionLatchState.Started;
         }
 
         _log("CONFIRMED Codex Voice realtime session started.");
@@ -177,13 +211,58 @@ public sealed class PinnedVoiceCoordinator
 
     public bool ConfirmSessionEnded()
     {
-        if (Interlocked.Exchange(ref _sessionLatched, 0) == 0)
+        lock (_sessionGate)
         {
-            return false;
+            if (_sessionState is SessionLatchState.None)
+            {
+                return false;
+            }
+
+            _sessionState = SessionLatchState.None;
+            _sessionGeneration++;
         }
 
         _log("CONFIRMED Codex Voice session ended; Voice PE wake is ready.");
         return true;
+    }
+
+    private async Task ReleaseUnconfirmedStartAsync(long sessionGeneration)
+    {
+        try
+        {
+            await _delay(_startConfirmationTimeout, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            _log($"FAILED Voice PE start-confirmation timeout; error={exception.Message}");
+            return;
+        }
+
+        lock (_sessionGate)
+        {
+            if (_sessionGeneration != sessionGeneration
+                || _sessionState is not SessionLatchState.AwaitingStart)
+            {
+                return;
+            }
+
+            _sessionState = SessionLatchState.None;
+            _sessionGeneration++;
+        }
+
+        _log("TIMED OUT waiting for Codex Voice realtime-session confirmation; native LASTVOICE wake is ready.");
+    }
+
+    private void ReleaseSessionLatch(long sessionGeneration)
+    {
+        lock (_sessionGate)
+        {
+            if (_sessionGeneration == sessionGeneration)
+            {
+                _sessionState = SessionLatchState.None;
+                _sessionGeneration++;
+            }
+        }
     }
 
     private async Task<bool> WaitForCodexForegroundAsync(CancellationToken cancellationToken)
@@ -213,5 +292,12 @@ public sealed class PinnedVoiceCoordinator
     {
         _log(message);
         return new PinnedVoiceStartResult(status, message);
+    }
+
+    private enum SessionLatchState
+    {
+        None,
+        AwaitingStart,
+        Started,
     }
 }

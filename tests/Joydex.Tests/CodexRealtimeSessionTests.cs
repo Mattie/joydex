@@ -97,6 +97,26 @@ public sealed class CodexRealtimeSessionTests
         await Assert.ThrowsAsync<CodexRealtimeSessionException>(() => session.Completion);
     }
 
+    [Fact]
+    public async Task AcceptedStartIsStoppedWhenSdpWaitIsCanceled()
+    {
+        var threadId = Guid.NewGuid().ToString("D");
+        var control = new FakeRealtimeControl(threadId);
+        await using var session = new CodexRealtimeSession(control);
+        using var cancellation = new CancellationTokenSource();
+        var start = session.StartAsync("v=0\r\n", cancellation.Token);
+        await control.WaitForRequestAsync("thread/realtime/start");
+
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start);
+        await control.WaitForRequestAsync("thread/realtime/stop");
+        var stopRequest = Assert.Single(control.Requests, value => value.Method == "thread/realtime/stop");
+        Assert.Equal(
+            threadId,
+            stopRequest.Parameters.GetProperty("threadId").GetString());
+    }
+
     private sealed class FakeRealtimeControl(string threadId) : ICodexRealtimeControl
     {
         private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);

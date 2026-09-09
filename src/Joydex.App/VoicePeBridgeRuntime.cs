@@ -220,7 +220,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         var logRoot = CodexVoiceSessionObserver.FindDefaultLogRoot();
         if (logRoot is null)
         {
-            log("Codex Voice log directory was not found; native LASTVOICE will stay latched after an accepted start.");
+            log("Codex Voice log directory was not found; native LASTVOICE will use the bounded start-confirmation timeout.");
         }
         else
         {
