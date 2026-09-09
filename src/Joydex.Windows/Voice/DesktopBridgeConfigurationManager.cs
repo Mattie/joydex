@@ -41,7 +41,6 @@ public sealed class DesktopBridgeConfigurationManager(string configPath, string?
 
     public DesktopBridgeConfigurationStatus Inspect(string hostExecutablePath)
     {
-        var expected = BuildManagedBlock(hostExecutablePath, ResolvePackagedAdapterRoot());
         var text = File.Exists(_configPath) ? File.ReadAllText(_configPath, Encoding.UTF8) : string.Empty;
         var range = FindManagedRange(text);
         if (range.Conflict is { } conflict)
@@ -59,6 +58,7 @@ public sealed class DesktopBridgeConfigurationManager(string configPath, string?
                     "Desktop Task Bridge is not installed.");
         }
 
+        var expected = BuildManagedBlock(hostExecutablePath, ResolvePackagedAdapterRoot());
         var current = text[range.Start..range.End];
         return string.Equals(NormalizeNewlines(current).Trim(), expected.Trim(), StringComparison.Ordinal)
             ? new DesktopBridgeConfigurationStatus(

@@ -543,7 +543,10 @@ internal sealed class RoomVoiceSettingsControl : UserControl
                     ? Color.IndianRed
                     : SystemColors.GrayText;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or ArgumentException
+            or InvalidOperationException)
         {
             _desktopBridgeStatus.Text = "Desktop Task Bridge status is unavailable: " + exception.Message;
             _desktopBridgeStatus.ForeColor = Color.IndianRed;

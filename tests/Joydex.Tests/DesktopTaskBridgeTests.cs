@@ -152,6 +152,19 @@ public sealed class DesktopTaskBridgeTests : IDisposable
     }
 
     [Fact]
+    public void InspectingAnUninstalledBridgeDoesNotRequireThePackagedAdapter()
+    {
+        var config = Path.Combine(_root, "missing", "config.toml");
+        var host = Path.Combine(_root, "Joydex.DesktopBridgeHost.exe");
+        var missingAdapter = Path.Combine(_root, "missing-codex-app-tools");
+        var manager = new DesktopBridgeConfigurationManager(config, missingAdapter);
+
+        var status = manager.Inspect(host);
+
+        Assert.Equal(DesktopBridgeConfigurationState.NotInstalled, status.State);
+    }
+
+    [Fact]
     public void AppServerAddsOnlyConstrainedVoiceMcpConfiguration()
     {
         Directory.CreateDirectory(_root);
