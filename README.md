@@ -238,7 +238,7 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 | `src/Joydex.HookRelay` | Native hook command that forwards Codex lifecycle events to Joydex |
 | `src/Joydex.Guardian` | Crash cleanup for active task-status LEDs |
 | `tools/Joydex.Trace` | DirectInput discovery and event tracing |
-| `firmware/esphome/voice-pe` | Source-only Home Assistant Voice PE firmware recipe, cues, and diagnostic history |
+| `firmware/esphome/voice-pe` | Source-only Home Assistant Voice PE firmware, cues, custom components, and build tooling |
 | `tests/Joydex.Tests` | Unit and Windows interop coverage |
 | `skills/calibrate-button-maps` | Agent workflow and utility for custom button-map region calibration |
 | `config/joydex.example.json` | Safe, machine-neutral starter configuration |
