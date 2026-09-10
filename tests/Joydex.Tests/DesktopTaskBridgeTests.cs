@@ -172,17 +172,19 @@ public sealed class DesktopTaskBridgeTests : IDisposable
         var preferences = Path.Combine(_root, "voice-pe.json");
         File.WriteAllText(host, string.Empty);
         var source = Guid.NewGuid().ToString("D");
+        const string pipe = "Joydex.DesktopTasks.test-capability";
 
         var start = CodexAppServerClient.CreateStartInfo(
             @"C:\runtime\codex.exe",
             _root,
-            new CodexVoiceToolConfiguration(host, preferences, source));
+            new CodexVoiceToolConfiguration(host, preferences, source, pipe));
         var arguments = start.ArgumentList.ToArray();
 
         Assert.Contains(arguments, value => value.StartsWith("mcp_servers.joydex_voice.command=", StringComparison.Ordinal));
         Assert.Contains(arguments, value => value.StartsWith("mcp_servers.joydex_voice.args=", StringComparison.Ordinal));
         Assert.DoesNotContain(arguments, value => value.Contains("thread/resume", StringComparison.Ordinal));
         Assert.DoesNotContain(arguments, value => value.Contains("send_message_to_thread", StringComparison.Ordinal));
+        Assert.Contains(arguments, value => value.Contains(pipe, StringComparison.Ordinal));
     }
 
     [Fact]

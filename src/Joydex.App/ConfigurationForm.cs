@@ -18,6 +18,7 @@ internal sealed class ConfigurationForm : ThemedForm
     private readonly System.Windows.Forms.Timer _pollTimer;
     private readonly bool _documentationMode;
     private readonly RoomVoiceSettingsControl? _roomVoiceSettings;
+    private readonly PebbleIndexSettingsControl? _pebbleIndexSettings;
     private readonly ComboBox _deviceCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label _connectionLabel = new() { AutoSize = true, Text = "Looking for controller..." };
     private readonly Label _inputLabel = new() { AutoSize = true, Text = "Held buttons: none" };
@@ -52,13 +53,15 @@ internal sealed class ConfigurationForm : ThemedForm
         string windowStatePath,
         IntPtr cooperativeWindowHandle,
         bool documentationMode = false,
-        RoomVoiceSettingsControl? roomVoiceSettings = null)
+        RoomVoiceSettingsControl? roomVoiceSettings = null,
+        PebbleIndexSettingsControl? pebbleIndexSettings = null)
     {
         _configPath = configPath;
         _windowStatePath = windowStatePath;
         _cooperativeWindowHandle = cooperativeWindowHandle;
         _documentationMode = documentationMode;
         _roomVoiceSettings = roomVoiceSettings;
+        _pebbleIndexSettings = pebbleIndexSettings;
         try
         {
             _originalConfig = ConfigStore.LoadOrCreate(configPath);
@@ -206,6 +209,10 @@ internal sealed class ConfigurationForm : ThemedForm
         {
             AddNavigationPage("Room Voice", BuildRoomVoicePage(), navigation);
         }
+        if (_pebbleIndexSettings is not null)
+        {
+            AddNavigationPage("Pebble Index", BuildPebbleIndexPage(), navigation);
+        }
         AddNavigationPage("General", BuildGeneralPage(), navigation);
         ShowPage(0, focusNavigation: false);
 
@@ -288,6 +295,7 @@ internal sealed class ConfigurationForm : ThemedForm
                 "Prompt Pickers" => NavGlyph.PromptPickers,
                 "Button Maps" => NavGlyph.ButtonMaps,
                 "Room Voice" => NavGlyph.RoomVoice,
+                "Pebble Index" => NavGlyph.RoomVoice,
                 "General" => NavGlyph.General,
                 _ => NavGlyph.None,
             },
@@ -369,6 +377,13 @@ internal sealed class ConfigurationForm : ThemedForm
         {
             page.Controls.Add(_roomVoiceSettings);
         }
+        return page;
+    }
+
+    private Control BuildPebbleIndexPage()
+    {
+        var page = CreatePage(new Padding(0));
+        if (_pebbleIndexSettings is not null) page.Controls.Add(_pebbleIndexSettings);
         return page;
     }
 
@@ -1456,6 +1471,16 @@ internal sealed class ConfigurationForm : ThemedForm
                 MessageBoxIcon.Warning);
             return;
         }
+        var pebbleIndexPreferences = _pebbleIndexSettings?.ReadPreferences();
+        var pebbleIndexErrors = pebbleIndexPreferences?.Validate() ?? [];
+        if (pebbleIndexErrors.Count > 0)
+        {
+            SelectPage("Pebble Index");
+            MessageBox.Show(this,
+                string.Join(Environment.NewLine, pebbleIndexErrors.Select(error => $"- {error}")),
+                "Pebble Index settings need attention", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
 
         var bankSelectors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var bindings = new List<ButtonBinding>();
@@ -1623,6 +1648,7 @@ internal sealed class ConfigurationForm : ThemedForm
         {
             ConfigStore.Save(_configPath, config);
             RoomVoicePreferences = roomVoicePreferences;
+            PebbleIndexPreferences = pebbleIndexPreferences;
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -1633,6 +1659,7 @@ internal sealed class ConfigurationForm : ThemedForm
     }
 
     internal VoicePePreferences? RoomVoicePreferences { get; private set; }
+    internal PebbleIndexPreferences? PebbleIndexPreferences { get; private set; }
 
     private enum BindingCluster
     {

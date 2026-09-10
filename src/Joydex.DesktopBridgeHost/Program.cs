@@ -39,11 +39,11 @@ internal static class DesktopBridgeProgram
             return 0;
         }
 
-        if (args.Length == 2
+        if (args.Length == 3
             && string.Equals(args[0], "--serve-desktop", StringComparison.Ordinal)
             && int.TryParse(args[1], out var ownerProcessId))
         {
-            return await RunDesktopBrokerWorkerAsync(ownerProcessId).ConfigureAwait(false);
+            return await RunDesktopBrokerWorkerAsync(ownerProcessId, args[2]).ConfigureAwait(false);
         }
 
         using var lifetime = new CancellationTokenSource();
@@ -53,9 +53,9 @@ internal static class DesktopBridgeProgram
             lifetime.Cancel();
         };
 
-        if (args.Length == 3 && string.Equals(args[0], "--voice-tools", StringComparison.Ordinal))
+        if (args.Length == 4 && string.Equals(args[0], "--voice-tools", StringComparison.Ordinal))
         {
-            return await RunVoiceToolsMcpServerAsync(args[1], args[2], lifetime.Token).ConfigureAwait(false);
+            return await RunVoiceToolsMcpServerAsync(args[1], args[2], args[3], lifetime.Token).ConfigureAwait(false);
         }
 
         using var transportLease = DesktopTaskBridgeTransportLease.TryAcquire();
@@ -90,7 +90,7 @@ internal static class DesktopBridgeProgram
         }
     }
 
-    private static async Task<int> RunDesktopBrokerWorkerAsync(int ownerProcessId)
+    private static async Task<int> RunDesktopBrokerWorkerAsync(int ownerProcessId, string pipeName)
     {
         Process owner;
         try
@@ -143,7 +143,8 @@ internal static class DesktopBridgeProgram
 
                     await using var bridge = new DesktopTaskBridgePipeServer(
                         desktopTools,
-                        Console.Error.WriteLine);
+                        Console.Error.WriteLine,
+                        pipeName);
                     bridge.Start();
                     Console.Error.WriteLine(
                         $"Joydex Desktop Task Bridge is connected to Desktop App Server {desktopAppServerProcessId}.");
@@ -180,6 +181,7 @@ internal static class DesktopBridgeProgram
     private static async Task<int> RunVoiceToolsMcpServerAsync(
         string preferencesPath,
         string sourceThreadId,
+        string pipeName,
         CancellationToken cancellationToken)
     {
         if (!CodexTaskReference.TryParse(sourceThreadId, out sourceThreadId))
@@ -188,7 +190,7 @@ internal static class DesktopBridgeProgram
             return 2;
         }
 
-        var bridge = new DesktopTaskBridgeClient();
+        var bridge = new DesktopTaskBridgeClient(pipeName);
         var recentDeliveries = new VoiceTaskDeliveryDeduplicator();
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -670,8 +672,12 @@ internal sealed class DesktopTaskBridgeTransportLease : IDisposable
 
 internal sealed class DesktopTaskBridgePipeServer(
     PackagedCodexAppToolsClient nativeClient,
-    Action<string>? log = null) : IAsyncDisposable
+    Action<string>? log = null,
+    string pipeName = DesktopTaskBridgeProtocol.PipeName) : IAsyncDisposable
 {
+    private readonly string _pipeName = string.IsNullOrWhiteSpace(pipeName)
+        ? throw new ArgumentException("A Desktop task bridge pipe name is required.", nameof(pipeName))
+        : pipeName.Trim();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly ConcurrentDictionary<Task, byte> _connections = new();
     private Task? _acceptTask;
@@ -685,7 +691,7 @@ internal sealed class DesktopTaskBridgePipeServer(
             while (!cancellationToken.IsCancellationRequested)
             {
                 var server = new NamedPipeServerStream(
-                    DesktopTaskBridgeProtocol.PipeName,
+                    _pipeName,
                     PipeDirection.InOut,
                     NamedPipeServerStream.MaxAllowedServerInstances,
                     PipeTransmissionMode.Byte,

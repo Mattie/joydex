@@ -24,8 +24,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly string _buttonMapStatePath;
     private readonly string _roomVoiceWindowStatePath;
     private readonly string _voicePePreferencesPath;
+    private readonly string _pebbleIndexPreferencesPath;
+    private readonly string _pebbleIndexSecretPath;
+    private readonly string _pebbleIndexInboxDirectory;
     private readonly string _voiceWebViewDataDirectory;
     private VoicePePreferences _voicePePreferences = VoicePePreferences.Default;
+    private PebbleIndexPreferences _pebbleIndexPreferences = PebbleIndexPreferences.Default;
     private string? _voicePePreferencesError;
     private readonly FileLog _log;
     private readonly CodexKeybindingService _keybindingService;
@@ -65,6 +69,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private CompanionConfig? _activeConfig;
     private EspHomePanelAdapter? _wirelessPanelAdapter;
     private VoicePeBridgeRuntime? _voicePeRuntime;
+    private readonly CancellableRuntimeCoordinator<PebbleIndexReceiverRuntime> _pebbleIndexCoordinator = new();
+    private PebbleIndexReceiverStatus _pebbleIndexStatus = new(false, "Receiver is off.");
+    private DesktopTaskBridgeBrokerProcess? _desktopTaskBroker;
+    private Task<DesktopTaskBridgeBrokerProcess>? _desktopTaskBrokerStartup;
+    private readonly string _desktopTaskBridgePipeName =
+        DesktopTaskBridgeProtocol.PipeName + "." + Guid.NewGuid().ToString("N");
+    private readonly CancellationTokenSource _desktopTaskBrokerCancellation = new();
+    private int _desktopTaskBrokerRestartAttempt;
     private readonly RoomVoiceConversationModel _roomVoiceConversation = new();
     private RoomVoiceForm? _roomVoiceForm;
     private Task<VoicePeBridgeRuntime>? _voicePeRuntimeStartup;
@@ -96,12 +108,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _buttonMapStatePath = Path.Combine(dataDirectory, "button-map-window.json");
         _roomVoiceWindowStatePath = Path.Combine(dataDirectory, "room-voice-window.json");
         _voicePePreferencesPath = Path.Combine(dataDirectory, "voice-pe.json");
+        _pebbleIndexPreferencesPath = Path.Combine(dataDirectory, "pebble-index.json");
+        _pebbleIndexSecretPath = Path.Combine(dataDirectory, "pebble-index.secret");
+        _pebbleIndexInboxDirectory = Path.Combine(dataDirectory, "pebble-index", "inbox");
         _voiceWebViewDataDirectory = Path.Combine(dataDirectory, "webview2-voice");
         _log = new FileLog(Path.Combine(dataDirectory, "joydex.log"));
         _voicePePreferences = LoadRoomVoicePreferences(
             _voicePePreferencesPath,
             _log.Write,
             out _voicePePreferencesError);
+        _pebbleIndexPreferences = LoadPebbleIndexPreferences(
+            _pebbleIndexPreferencesPath,
+            _log.Write,
+            out var pebbleIndexPreferencesError);
+        _pebbleIndexStatus = PebbleIndexReceiverRuntime.ReadStoredStatus(
+            false,
+            pebbleIndexPreferencesError is null
+                ? "Receiver is off."
+                : "Pebble Index settings need attention: " + pebbleIndexPreferencesError,
+            _pebbleIndexInboxDirectory);
         if (_voicePePreferencesError is not null)
         {
             _roomVoiceConversation.SetRuntimeState(
@@ -274,6 +299,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _shiftModeMonitor.Start();
         _taskAlertPipe.Start();
+        if (DesktopTaskBrokerNeeded) StartDesktopTaskBroker();
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         SystemEvents.SessionEnding += OnSessionEnding;
 
@@ -360,6 +386,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _promptOverlay = null;
 
         await StopWorkersAsync();
+
+        await StopPebbleIndexReceiverAsync().ConfigureAwait(false);
+
+        _desktopTaskBrokerCancellation.Cancel();
+        var brokerStartup = _desktopTaskBrokerStartup;
+        if (brokerStartup is not null)
+        {
+            try { _desktopTaskBroker ??= await brokerStartup.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+            catch (Exception exception) { _log.Write($"Desktop Task Bridge broker shutdown observed an error: {exception.Message}"); }
+        }
+        if (_desktopTaskBroker is not null) await _desktopTaskBroker.DisposeAsync().ConfigureAwait(false);
+        _desktopTaskBrokerCancellation.Dispose();
 
         await _shiftModeMonitor.DisposeAsync();
         await _taskAlertPipe.DisposeAsync();
@@ -571,6 +610,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _configuring = true;
         _configureItem.Enabled = false;
         _modeItem.Enabled = false;
+        StartDesktopTaskBroker();
         try
         {
             if (activeVoiceSession && _voicePeRuntime is not null)
@@ -583,6 +623,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _log.Write,
                 out var preferencesError);
             _voicePePreferences = originalVoicePreferences;
+            var originalPebbleIndexPreferences = LoadPebbleIndexPreferences(
+                _pebbleIndexPreferencesPath,
+                _log.Write,
+                out var pebbleIndexPreferencesError);
+            _pebbleIndexPreferences = originalPebbleIndexPreferences;
             _voicePePreferencesError = preferencesError;
             if (preferencesError is not null)
             {
@@ -591,6 +636,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     "Room Voice settings could not be read. Disabled defaults are shown; saving will replace the invalid Room Voice settings file."
                     + Environment.NewLine + Environment.NewLine + preferencesError,
                     "Room Voice settings need attention",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            if (pebbleIndexPreferencesError is not null)
+            {
+                MessageBox.Show(
+                    _roomVoiceForm,
+                    "Pebble Index settings could not be read. Disabled defaults are shown; saving will replace the invalid Pebble Index settings file."
+                    + Environment.NewLine + Environment.NewLine + pebbleIndexPreferencesError,
+                    "Pebble Index settings need attention",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }
@@ -637,11 +692,28 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     var workspace = new CodexVoiceWorkspaceService(appServerPath, _log.Write);
                     return await workspace.ProvisionAsync(request, cancellationToken).ConfigureAwait(true);
                 });
+            using var pebbleIndexSettings = new PebbleIndexSettingsControl(
+                originalPebbleIndexPreferences,
+                _pebbleIndexSecretPath,
+                _pebbleIndexInboxDirectory,
+                async (candidateSourceTaskId, cancellationToken) =>
+                {
+                    var sourceTaskId = ResolvePebbleIndexSourceTaskId(
+                        candidateSourceTaskId,
+                        originalPebbleIndexPreferences,
+                        originalVoicePreferences);
+                    var bridge = await GetDesktopTaskBridgeClientAsync(cancellationToken).ConfigureAwait(true);
+                    return await bridge
+                        .ListTasksAsync(sourceTaskId, cancellationToken: cancellationToken)
+                        .ConfigureAwait(true);
+                },
+                _pebbleIndexStatus);
             using var form = new ConfigurationForm(
                 _configPath,
                 _windowStatePath,
                 _cooperativeWindow.Handle,
-                roomVoiceSettings: roomVoiceSettings);
+                roomVoiceSettings: roomVoiceSettings,
+                pebbleIndexSettings: pebbleIndexSettings);
             if (initialPage is not null)
             {
                 form.SelectPage(initialPage);
@@ -655,6 +727,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _voicePePreferencesError = null;
                 ConfigureRoomVoiceTaskAlertExclusion(savedVoicePreferences);
             }
+            if (result == DialogResult.OK && form.PebbleIndexPreferences is { } savedPebbleIndexPreferences)
+            {
+                PebbleIndexPreferencesStore.Save(_pebbleIndexPreferencesPath, savedPebbleIndexPreferences);
+                _pebbleIndexPreferences = savedPebbleIndexPreferences.Normalize();
+                await StopPebbleIndexReceiverAsync().ConfigureAwait(true);
+            }
 
             StartWorker(showFirstRunNotice: false);
             if (result == DialogResult.OK)
@@ -662,7 +740,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _notifyIcon.ShowBalloonTip(
                     4000,
                     "Joydex configuration saved",
-                    "Controllers and Room Voice have been reloaded.",
+                    "Joydex reloaded the saved settings.",
                     ToolTipIcon.Info);
 
                 if (_activeConfig?.Safety.DryRun == true)
@@ -688,6 +766,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             _configuring = false;
+            await StopDesktopTaskBrokerIfUnusedAsync().ConfigureAwait(true);
             _configureItem.Enabled = true;
             _modeItem.Enabled = _activeConfig is not null;
             RefreshVoicePeMenu();
@@ -757,7 +836,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            var bridge = new DesktopTaskBridgeClient();
+            var bridge = await GetDesktopTaskBridgeClientAsync(cancellationToken).ConfigureAwait(true);
             var catalog = await bridge.ListTasksAsync(
                     preferences.DedicatedTaskId,
                     preferences.DedicatedTaskId,
@@ -815,7 +894,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ?? throw new InvalidOperationException("The Voice Agent Workspace is unavailable.");
         try
         {
-            var bridge = new DesktopTaskBridgeClient();
+            var bridge = await GetDesktopTaskBridgeClientAsync(cancellationToken).ConfigureAwait(true);
             var catalog = await bridge.ListTasksAsync(
                     preferences.DedicatedTaskId,
                     preferences.DedicatedTaskId,
@@ -995,6 +1074,202 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private async void StartDesktopTaskBroker()
+    {
+        if (!DesktopTaskBrokerNeeded || _desktopTaskBrokerCancellation.IsCancellationRequested) return;
+        if (_desktopTaskBroker is not null || _desktopTaskBrokerStartup is not null) return;
+        Task<DesktopTaskBridgeBrokerProcess>? startup = null;
+        DesktopTaskBridgeBrokerProcess? broker = null;
+        try
+        {
+            startup = DesktopTaskBridgeBrokerProcess.StartAsync(
+                Path.Combine(AppContext.BaseDirectory, "Joydex.DesktopBridgeHost.exe"),
+                _desktopTaskBridgePipeName,
+                _log.Write,
+                _desktopTaskBrokerCancellation.Token);
+            _desktopTaskBrokerStartup = startup;
+            broker = await startup.ConfigureAwait(true);
+            if (Interlocked.CompareExchange(ref _desktopTaskBroker, broker, null) is not null)
+            {
+                await broker.DisposeAsync().ConfigureAwait(true);
+                return;
+            }
+            _ = MonitorDesktopTaskBrokerAsync(broker, startup);
+            _ = ResetDesktopTaskBrokerBackoffAfterStabilityAsync(broker);
+            if (_pebbleIndexPreferences.Enabled) StartPebbleIndexReceiver();
+        }
+        catch (OperationCanceledException) when (_desktopTaskBrokerCancellation.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            _log.Write($"Desktop Task Bridge broker worker is unavailable: {exception.Message}");
+            ScheduleDesktopTaskBrokerRestart();
+        }
+        finally
+        {
+            if (broker is null && startup is not null)
+                _ = Interlocked.CompareExchange(ref _desktopTaskBrokerStartup, null, startup);
+        }
+    }
+
+    private async Task<DesktopTaskBridgeBrokerProcess> GetDesktopTaskBrokerAsync(CancellationToken cancellationToken)
+    {
+        StartDesktopTaskBroker();
+        var startup = Volatile.Read(ref _desktopTaskBrokerStartup)
+            ?? throw new InvalidOperationException("The Desktop Task Bridge is not enabled.");
+        return await startup.WaitAsync(cancellationToken).ConfigureAwait(true);
+    }
+
+    private async Task<DesktopTaskBridgeClient> GetDesktopTaskBridgeClientAsync(CancellationToken cancellationToken)
+    {
+        var broker = await GetDesktopTaskBrokerAsync(cancellationToken).ConfigureAwait(true);
+        return new DesktopTaskBridgeClient(broker.PipeName);
+    }
+
+    private async Task MonitorDesktopTaskBrokerAsync(
+        DesktopTaskBridgeBrokerProcess broker,
+        Task<DesktopTaskBridgeBrokerProcess> startup)
+    {
+        try
+        {
+            await broker.Completion.ConfigureAwait(false);
+            if (!_desktopTaskBrokerCancellation.IsCancellationRequested)
+                _log.Write("Desktop Task Bridge broker worker exited; scheduling a restart.");
+        }
+        catch (Exception exception)
+        {
+            if (!_desktopTaskBrokerCancellation.IsCancellationRequested)
+                _log.Write($"Desktop Task Bridge broker monitor failed: {exception.Message}");
+        }
+        finally
+        {
+            var owned = ReferenceEquals(Interlocked.CompareExchange(ref _desktopTaskBroker, null, broker), broker);
+            _ = Interlocked.CompareExchange(ref _desktopTaskBrokerStartup, null, startup);
+            await broker.DisposeAsync().ConfigureAwait(false);
+            if (owned) ScheduleDesktopTaskBrokerRestart();
+        }
+    }
+
+    private void ScheduleDesktopTaskBrokerRestart()
+    {
+        if (!DesktopTaskBrokerNeeded || _desktopTaskBrokerCancellation.IsCancellationRequested) return;
+        var attempt = Interlocked.Increment(ref _desktopTaskBrokerRestartAttempt);
+        var seconds = Math.Min(30, 1 << Math.Min(attempt - 1, 4));
+        _ = RestartDesktopTaskBrokerAfterDelayAsync(TimeSpan.FromSeconds(seconds));
+    }
+
+    private async Task RestartDesktopTaskBrokerAfterDelayAsync(TimeSpan delay)
+    {
+        try
+        {
+            await Task.Delay(delay, _desktopTaskBrokerCancellation.Token).ConfigureAwait(false);
+            if (DesktopTaskBrokerNeeded)
+                _uiContext.Post(_ => StartDesktopTaskBroker(), null);
+        }
+        catch (OperationCanceledException) when (_desktopTaskBrokerCancellation.IsCancellationRequested) { }
+    }
+
+    private async Task ResetDesktopTaskBrokerBackoffAfterStabilityAsync(DesktopTaskBridgeBrokerProcess broker)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), _desktopTaskBrokerCancellation.Token).ConfigureAwait(false);
+            if (ReferenceEquals(Volatile.Read(ref _desktopTaskBroker), broker))
+                Interlocked.Exchange(ref _desktopTaskBrokerRestartAttempt, 0);
+        }
+        catch (OperationCanceledException) when (_desktopTaskBrokerCancellation.IsCancellationRequested) { }
+    }
+
+    private async Task StopDesktopTaskBrokerIfUnusedAsync()
+    {
+        if (DesktopTaskBrokerNeeded) return;
+        var startup = Volatile.Read(ref _desktopTaskBrokerStartup);
+        if (startup is null) return;
+        try
+        {
+            var broker = await startup.ConfigureAwait(true);
+            Interlocked.CompareExchange(ref _desktopTaskBroker, null, broker);
+            _ = Interlocked.CompareExchange(ref _desktopTaskBrokerStartup, null, startup);
+            await broker.DisposeAsync().ConfigureAwait(true);
+        }
+        catch (Exception exception)
+        {
+            _ = Interlocked.CompareExchange(ref _desktopTaskBrokerStartup, null, startup);
+            _log.Write($"Desktop Task Bridge broker stop observed an error: {exception.Message}");
+        }
+    }
+
+    private bool DesktopTaskBrokerNeeded => ShouldStartDesktopTaskBroker(
+        _configuring,
+        _voicePePreferences,
+        _pebbleIndexPreferences);
+
+    internal static bool ShouldStartDesktopTaskBroker(
+        bool configuring,
+        VoicePePreferences voicePreferences,
+        PebbleIndexPreferences pebbleIndexPreferences)
+    {
+        ArgumentNullException.ThrowIfNull(voicePreferences);
+        ArgumentNullException.ThrowIfNull(pebbleIndexPreferences);
+        return configuring
+            || voicePreferences.DesktopTaskMessagingEnabled
+            || pebbleIndexPreferences.Enabled;
+    }
+
+    private void StartPebbleIndexReceiver()
+    {
+        if (_exitStarted || _desktopTaskBrokerCancellation.IsCancellationRequested) return;
+        PebbleIndexPreferences preferences;
+        try
+        {
+            preferences = PebbleIndexPreferencesStore.LoadOrCreate(_pebbleIndexPreferencesPath);
+            _pebbleIndexPreferences = preferences;
+        }
+        catch (Exception exception)
+        {
+            ReportPebbleIndexUnavailable(exception);
+            return;
+        }
+        if (!preferences.Enabled)
+        {
+            _pebbleIndexStatus = PebbleIndexReceiverRuntime.ReadStoredStatus(
+                false,
+                "Receiver is off.",
+                _pebbleIndexInboxDirectory);
+            return;
+        }
+
+        _ = _pebbleIndexCoordinator.Start(
+            async cancellationToken =>
+            {
+                var broker = await GetDesktopTaskBrokerAsync(cancellationToken).ConfigureAwait(false);
+                return await PebbleIndexReceiverRuntime.StartAsync(
+                    preferences,
+                    _pebbleIndexSecretPath,
+                    _pebbleIndexInboxDirectory,
+                    broker.PipeName,
+                    status => _uiContext.Post(_ => _pebbleIndexStatus = status, null),
+                    _log.Write,
+                    cancellationToken).ConfigureAwait(false);
+            },
+            ReportPebbleIndexUnavailable);
+    }
+
+    private void ReportPebbleIndexUnavailable(Exception exception)
+    {
+        try
+        {
+            _pebbleIndexStatus = PebbleIndexReceiverRuntime.ReadStoredStatus(
+                false,
+                "Receiver unavailable: " + exception.Message,
+                _pebbleIndexInboxDirectory);
+            _log.Write(_pebbleIndexStatus.Message);
+        }
+        catch (Exception statusException)
+        {
+            _log.Write($"Pebble Index receiver and recovery status are unavailable: {statusException.Message}");
+        }
+    }
+
     private void StartWorker(bool showFirstRunNotice)
     {
         try
@@ -1059,6 +1334,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 voiceExecutor.ExecuteAsync);
             RefreshVoicePeMenu();
             StartVoicePeBridge();
+            StartPebbleIndexReceiver();
             foreach (var device in config.Devices)
             {
                 var source = new DirectInputJoystickSource(_cooperativeWindow.Handle);
@@ -1428,6 +1704,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _workers.Clear();
     }
 
+    private async Task StopPebbleIndexReceiverAsync()
+    {
+        await _pebbleIndexCoordinator.StopAsync(exception =>
+            _log.Write($"Could not stop the Pebble Index receiver: {exception.Message}")).ConfigureAwait(false);
+    }
+
     private async Task StopVoicePeBridgeAsync()
     {
         CancelVoicePeStartupRetry();
@@ -1506,6 +1788,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 return;
             }
 
+            if (preferences.DesktopTaskMessagingEnabled)
+                await GetDesktopTaskBrokerAsync(startupToken).ConfigureAwait(true);
             startup = VoicePeBridgeRuntime.StartAsync(
                 preferences,
                 config.Safety,
@@ -1516,6 +1800,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 WriteActivity,
                 _voicePePreferencesPath,
                 Path.Combine(AppContext.BaseDirectory, "Joydex.DesktopBridgeHost.exe"),
+                _desktopTaskBridgePipeName,
                 startupToken);
             Volatile.Write(ref _voicePeRuntimeStartup, startup);
             unpublishedRuntime = await startup.ConfigureAwait(true);
@@ -1901,6 +2186,49 @@ internal sealed class TrayApplicationContext : ApplicationContext
             log($"Room Voice settings are unavailable; normal Joydex features will continue: {exception.Message}");
             return VoicePePreferences.Default;
         }
+    }
+
+    internal static PebbleIndexPreferences LoadPebbleIndexPreferences(
+        string path,
+        Action<string> log,
+        out string? error)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(log);
+        try
+        {
+            error = null;
+            return PebbleIndexPreferencesStore.LoadOrCreate(path);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidDataException
+            or System.Text.Json.JsonException)
+        {
+            error = exception.Message;
+            log($"Pebble Index settings are unavailable; normal Joydex features will continue: {exception.Message}");
+            return PebbleIndexPreferences.Default;
+        }
+    }
+
+    internal static string ResolvePebbleIndexSourceTaskId(
+        string? candidateSourceTaskId,
+        PebbleIndexPreferences pebbleIndexPreferences,
+        VoicePePreferences voicePreferences)
+    {
+        ArgumentNullException.ThrowIfNull(pebbleIndexPreferences);
+        ArgumentNullException.ThrowIfNull(voicePreferences);
+        foreach (var candidate in new[]
+        {
+            candidateSourceTaskId,
+            pebbleIndexPreferences.TargetTaskId,
+            voicePreferences.DedicatedTaskId,
+        })
+        {
+            if (CodexTaskReference.TryParse(candidate, out var sourceTaskId)) return sourceTaskId;
+        }
+        throw new InvalidOperationException(
+            "Paste an existing Codex task ID before refreshing the Desktop task list.");
     }
 
     private async void OnToggleTaskAlerts(object? sender, EventArgs eventArgs)

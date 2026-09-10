@@ -12,18 +12,25 @@ internal sealed class DesktopTaskBridgeBrokerProcess : IAsyncDisposable
     private readonly Task _stderr;
     private int _disposed;
 
-    private DesktopTaskBridgeBrokerProcess(Process process, Task stderr)
+    private DesktopTaskBridgeBrokerProcess(Process process, Task stderr, string pipeName)
     {
         _process = process;
         _stderr = stderr;
+        PipeName = pipeName;
     }
+
+    public string PipeName { get; }
+
+    public Task Completion => _process.WaitForExitAsync();
 
     public static async Task<DesktopTaskBridgeBrokerProcess> StartAsync(
         string executablePath,
+        string pipeName,
         Action<string> log,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pipeName);
         ArgumentNullException.ThrowIfNull(log);
         var fullPath = Path.GetFullPath(executablePath.Trim());
         if (!File.Exists(fullPath))
@@ -31,11 +38,11 @@ internal sealed class DesktopTaskBridgeBrokerProcess : IAsyncDisposable
             throw new FileNotFoundException("The Desktop Task Bridge host is missing.", fullPath);
         }
 
-        var startInfo = CreateStartInfo(fullPath);
+        var startInfo = CreateStartInfo(fullPath, pipeName);
         var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("The Desktop Task Bridge broker worker did not start.");
         var stderr = DrainStandardErrorAsync(process, log);
-        var broker = new DesktopTaskBridgeBrokerProcess(process, stderr);
+        var broker = new DesktopTaskBridgeBrokerProcess(process, stderr, pipeName.Trim());
         try
         {
             using var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -61,9 +68,10 @@ internal sealed class DesktopTaskBridgeBrokerProcess : IAsyncDisposable
         }
     }
 
-    internal static ProcessStartInfo CreateStartInfo(string executablePath)
+    internal static ProcessStartInfo CreateStartInfo(string executablePath, string pipeName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pipeName);
         var fullPath = Path.GetFullPath(executablePath.Trim());
         var startInfo = new ProcessStartInfo
         {
@@ -78,6 +86,7 @@ internal sealed class DesktopTaskBridgeBrokerProcess : IAsyncDisposable
         };
         startInfo.ArgumentList.Add("--serve-desktop");
         startInfo.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        startInfo.ArgumentList.Add(pipeName.Trim());
         return startInfo;
     }
 

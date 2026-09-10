@@ -252,3 +252,7 @@ _Avoid_: Hardware mute, paused, Armed
 **Spoken Hangup**:
 A voice-only request such as “hang up,” “cancel,” “goodbye,” “bye,” “shut up,” “end,” or “die” that closes the active Voice Session and returns the endpoint to Armed. Short stop words are exact-command forms so ordinary questions ending in words such as “die” or “end” remain conversation.
 _Avoid_: End turn, stop response
+
+**Pebble Index Receiver**:
+An opt-in, loopback-only Joydex HTTP endpoint for authenticated, transcript-only multipart webhooks from the Pebble Index mobile app. Each accepted transcription is durably recorded before acknowledgement and receives at most one automatic delivery attempt to one configured Desktop Task through the Desktop Task Bridge. A stable delivery header is preferred for duplicate identity; otherwise the recorded timestamp, client, trigger, and transcript form the identity. Duplicate requests never cause another send, and any unconfirmed send remains Delivery Uncertain for manual review rather than automatic retry. The receiver stores its preferences and secret independently from Room Voice and rejects uploaded audio.
+_Avoid_: Voice session, generic public task bridge, automatic retry queue

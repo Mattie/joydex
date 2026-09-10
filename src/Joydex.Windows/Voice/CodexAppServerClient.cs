@@ -159,6 +159,7 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
                     "--voice-tools",
                     normalized.PreferencesPath,
                     normalized.SourceThreadId,
+                    normalized.PipeName,
                 }.Select(value => JsonSerializer.Serialize(value)))
                 + "]");
             startInfo.ArgumentList.Add("-c");
@@ -497,7 +498,8 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
 public sealed record CodexVoiceToolConfiguration(
     string HostExecutablePath,
     string PreferencesPath,
-    string SourceThreadId)
+    string SourceThreadId,
+    string PipeName = DesktopTaskBridgeProtocol.PipeName)
 {
     public CodexVoiceToolConfiguration Normalize()
     {
@@ -511,11 +513,16 @@ public sealed record CodexVoiceToolConfiguration(
         {
             throw new FileNotFoundException("The Joydex voice tool host is missing.", host);
         }
+        if (string.IsNullOrWhiteSpace(PipeName))
+        {
+            throw new ArgumentException("A Desktop task bridge pipe name is required.", nameof(PipeName));
+        }
         return this with
         {
             HostExecutablePath = host,
             PreferencesPath = preferences,
             SourceThreadId = sourceThreadId,
+            PipeName = PipeName.Trim(),
         };
     }
 }
