@@ -6,3 +6,6 @@
 *.png binary
 *.pdf binary
 *.webp binary
+
+# These byte-pinned firmware inputs include upstream patch whitespace and must remain exact.
+firmware/esphome/voice-pe/** whitespace=-blank-at-eol,-blank-at-eof

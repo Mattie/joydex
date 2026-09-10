@@ -1,6 +1,7 @@
 using Joydex.Core.Config;
 using Joydex.Core.Input;
 using Joydex.Core.Mapping;
+using Joydex.Core.Voice;
 using Joydex.Windows.Input;
 
 namespace Joydex.App;
@@ -16,6 +17,7 @@ internal sealed class ConfigurationForm : ThemedForm
     private readonly InputEventDetector _detector;
     private readonly System.Windows.Forms.Timer _pollTimer;
     private readonly bool _documentationMode;
+    private readonly RoomVoiceSettingsControl? _roomVoiceSettings;
     private readonly ComboBox _deviceCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label _connectionLabel = new() { AutoSize = true, Text = "Looking for controller..." };
     private readonly Label _inputLabel = new() { AutoSize = true, Text = "Held buttons: none" };
@@ -49,12 +51,14 @@ internal sealed class ConfigurationForm : ThemedForm
         string configPath,
         string windowStatePath,
         IntPtr cooperativeWindowHandle,
-        bool documentationMode = false)
+        bool documentationMode = false,
+        RoomVoiceSettingsControl? roomVoiceSettings = null)
     {
         _configPath = configPath;
         _windowStatePath = windowStatePath;
         _cooperativeWindowHandle = cooperativeWindowHandle;
         _documentationMode = documentationMode;
+        _roomVoiceSettings = roomVoiceSettings;
         try
         {
             _originalConfig = ConfigStore.LoadOrCreate(configPath);
@@ -198,6 +202,10 @@ internal sealed class ConfigurationForm : ThemedForm
         AddNavigationPage("Bindings", BuildBindingsPage(), navigation);
         AddNavigationPage("Prompt Pickers", BuildPromptPickersPage(), navigation);
         AddNavigationPage("Button Maps", BuildButtonMapsPage(), navigation);
+        if (_roomVoiceSettings is not null)
+        {
+            AddNavigationPage("Room Voice", BuildRoomVoicePage(), navigation);
+        }
         AddNavigationPage("General", BuildGeneralPage(), navigation);
         ShowPage(0, focusNavigation: false);
 
@@ -218,6 +226,8 @@ internal sealed class ConfigurationForm : ThemedForm
             ShowPage(index, focusNavigation: false);
         }
     }
+
+    internal void SelectPage(string pageTitle) => SelectTabForDocumentation(pageTitle);
 
     internal void ExerciseBindingGridEditingForDocumentation()
     {
@@ -277,6 +287,7 @@ internal sealed class ConfigurationForm : ThemedForm
                 "Bindings" => NavGlyph.Bindings,
                 "Prompt Pickers" => NavGlyph.PromptPickers,
                 "Button Maps" => NavGlyph.ButtonMaps,
+                "Room Voice" => NavGlyph.RoomVoice,
                 "General" => NavGlyph.General,
                 _ => NavGlyph.None,
             },
@@ -348,6 +359,16 @@ internal sealed class ConfigurationForm : ThemedForm
         }, 0, 0);
         layout.Controls.Add(BuildButtonMapGroup(), 0, 1);
         page.Controls.Add(layout);
+        return page;
+    }
+
+    private Control BuildRoomVoicePage()
+    {
+        var page = CreatePage(new Padding(0));
+        if (_roomVoiceSettings is not null)
+        {
+            page.Controls.Add(_roomVoiceSettings);
+        }
         return page;
     }
 
@@ -1422,6 +1443,20 @@ internal sealed class ConfigurationForm : ThemedForm
         _bindingGrid.EndEdit();
         _buttonMapGrid.EndEdit();
 
+        var roomVoicePreferences = _roomVoiceSettings?.ReadPreferences();
+        var roomVoiceErrors = roomVoicePreferences?.Validate() ?? [];
+        if (roomVoiceErrors.Count > 0)
+        {
+            SelectPage("Room Voice");
+            MessageBox.Show(
+                this,
+                string.Join(Environment.NewLine, roomVoiceErrors.Select(error => $"- {error}")),
+                "Room Voice settings need attention",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
         var bankSelectors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var bindings = new List<ButtonBinding>();
         var buttonMaps = new Dictionary<string, (string? Template, DeviceControlReference? Hold)>(StringComparer.OrdinalIgnoreCase);
@@ -1587,6 +1622,7 @@ internal sealed class ConfigurationForm : ThemedForm
         try
         {
             ConfigStore.Save(_configPath, config);
+            RoomVoicePreferences = roomVoicePreferences;
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -1595,6 +1631,8 @@ internal sealed class ConfigurationForm : ThemedForm
             MessageBox.Show(this, exception.Message, "Could not save configuration", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
+
+    internal VoicePePreferences? RoomVoicePreferences { get; private set; }
 
     private enum BindingCluster
     {

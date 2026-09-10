@@ -1,0 +1,54 @@
+diff --git a/joydex-voice-pe-audio.yaml b/joydex-voice-pe-audio.yaml
+--- a/joydex-voice-pe-audio.yaml
++++ b/joydex-voice-pe-audio.yaml
+@@ -1,6 +1,7 @@
+ substitutions:
+   # The second cue confirms that Codex realtime and both media paths are ready.
+   joydex_ready_sound_file: sounds/ReadyBlip.flac
++  joydex_end_sound_file: sounds/EndBlip.flac
+ 
+ packages:
+   cues: !include joydex-voice-pe-cues.yaml
+@@ -34,6 +35,8 @@ media_source:
+     files:
+       - id: joydex_ready_sound
+         file: ${joydex_ready_sound_file}
++      - id: joydex_end_sound
++        file: ${joydex_end_sound_file}
+ 
+ # Wake inference is useful only while the room endpoint is armed. Its task has
+ # a higher priority than ESPHome's resampler, so leaving it active throughout a
+@@ -97,6 +100,33 @@ script:
+       - wait_until:
+           condition:
+             lambda: return !id(joydex_audio_bridge).is_session_active();
++      - if:
++          condition:
++            lambda: return id(joydex_voice_end_cue_pending);
++          then:
++            - lambda: id(joydex_voice_end_cue_pending) = false;
++            - script.execute:
++                id: play_sound
++                priority: true
++                sound_file: "joydex_end_sound"
++            - wait_until:
++                condition:
++                  media_player.is_announcing:
++                    id: external_media_player
++                timeout: 2s
++            - if:
++                condition:
++                  media_player.is_announcing:
++                    id: external_media_player
++                then:
++                  - wait_until:
++                      condition:
++                        not:
++                          media_player.is_announcing:
++                            id: external_media_player
++                      timeout: 5s
++                else:
++                  - lambda: ESP_LOGW("joydex.voice", "End cue did not begin before wake rearm");
+       - if:
+           condition:
+             lambda: return id(mww).is_running();

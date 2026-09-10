@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AssemblyName>Joydex.DesktopBridgeHost</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Joydex.Core\Joydex.Core.csproj" />
+    <ProjectReference Include="..\Joydex.Windows\Joydex.Windows.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -488,6 +488,10 @@ internal static class ThemeService
                 control.ForeColor = JoydexTheme.Text;
                 childBackground = JoydexTheme.Surface;
                 break;
+            case RoomVoiceBubblePanel bubble:
+                bubble.ApplyTheme();
+                childBackground = bubble.FillColor;
+                break;
             case TabPage:
                 control.BackColor = JoydexTheme.WindowBg;
                 control.ForeColor = JoydexTheme.Text;

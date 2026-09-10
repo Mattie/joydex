@@ -68,6 +68,7 @@ public static class CodexMicroStarterProfile
         AddBinding(bindings, "E1 push - Fast mode", CompanionConfig.AlwaysBank, 50, "fast-mode");
         AddBinding(bindings, "E1 counterclockwise - Reasoning down", CompanionConfig.AlwaysBank, 51, "reasoning-down");
         AddBinding(bindings, "E1 clockwise - Reasoning up", CompanionConfig.AlwaysBank, 52, "reasoning-up");
+        AddBinding(bindings, "T6 down - Archive chat", CompanionConfig.AlwaysBank, 47, "archive-chat");
         AddBinding(bindings, "T7 up - Home", CompanionConfig.AlwaysBank, 48, "home");
         AddBinding(bindings, "T7 down - End", CompanionConfig.AlwaysBank, 49, "end");
         AddBinding(bindings, "Joystick up - Plan", CompanionConfig.AlwaysBank, 9, "plan-mode");

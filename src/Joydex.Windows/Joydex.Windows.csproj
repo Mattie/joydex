@@ -6,6 +6,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Concentus" Version="2.2.2" />
     <PackageReference Include="HidSharp" Version="2.6.4" />
     <PackageReference Include="Vortice.DirectInput" Version="3.8.3" />
   </ItemGroup>

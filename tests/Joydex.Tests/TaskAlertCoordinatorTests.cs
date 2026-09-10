@@ -315,6 +315,31 @@ public sealed class TaskAlertCoordinatorTests
     }
 
     [Fact]
+    public async Task InternallySuppressedTaskDoesNotEnterAlertsOrUserIgnoreSettings()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var preferencesPath = Path.Combine(directory, "task-alerts.json");
+            await using var coordinator = new TaskAlertCoordinator(preferencesPath);
+            coordinator.SetInternallySuppressedTaskIds(["room-voice-task"]);
+
+            Assert.False(coordinator.TryPublish(new TaskAlertEvent(
+                CodexLifecycleEvent.UserPromptSubmit,
+                "room-voice-task",
+                "turn",
+                DateTimeOffset.UtcNow)));
+            Assert.Empty(coordinator.GetSnapshot().Assignments);
+            Assert.Empty(coordinator.GetSnapshot().Suppressions!);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task CleanDisposeRetriesAStateWriteThatPreviouslyFailed()
     {
         var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));

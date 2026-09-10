@@ -1,0 +1,36 @@
+packages:
+  sendspin: !include joydex-voice-pe-sendspin.yaml
+
+esphome:
+  on_boot:
+    # Template numbers restore before this hook. Apply the persisted cutoff while
+    # wake inference is still stopped; the inherited -100 hook starts it later.
+    - priority: -90
+      then:
+        - lambda: |-
+            const auto cutoff = static_cast<uint8_t>(
+                id(joydex_wake_probability_cutoff).state * 255.0f + 0.5f);
+            id(okay_computer).set_probability_cutoff(cutoff);
+            ESP_LOGI("joydex.voice", "Applied persisted wake cutoff %.2f (%u/255)",
+                     id(joydex_wake_probability_cutoff).state,
+                     static_cast<unsigned>(cutoff));
+
+# Keep inference and audio settings fixed while allowing the wake threshold to
+# be tuned without another firmware build.
+number:
+  - platform: template
+    id: joydex_wake_probability_cutoff
+    name: Joydex Wake Probability Cutoff
+    entity_category: config
+    min_value: 0.10
+    max_value: 0.60
+    step: 0.01
+    initial_value: 0.35
+    restore_value: true
+    set_action:
+      - lambda: |-
+          const auto cutoff = static_cast<uint8_t>(x * 255.0f + 0.5f);
+          id(okay_computer).set_probability_cutoff(cutoff);
+          id(joydex_wake_probability_cutoff).publish_state(x);
+          ESP_LOGI("joydex.voice", "Wake cutoff changed to %.2f (%u/255)",
+                   x, static_cast<unsigned>(cutoff));

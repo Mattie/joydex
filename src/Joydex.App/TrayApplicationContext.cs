@@ -3,12 +3,14 @@ using Joydex.Core.Config;
 using Joydex.Core.Mapping;
 using Joydex.Core.Runtime;
 using Joydex.Core.TaskAlerts;
+using Joydex.Core.Voice;
 using Joydex.WirelessPanel;
 using Joydex.Windows.Actions;
 using Joydex.Windows.Input;
 using Joydex.Windows.Interop;
 using Joydex.Windows.Runtime;
 using Joydex.Windows.TaskAlerts;
+using Joydex.Windows.Voice;
 using Joydex.Virpil;
 using Joydex.Windows.WirelessPanel;
 using Microsoft.Win32;
@@ -20,6 +22,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly string _configPath;
     private readonly string _windowStatePath;
     private readonly string _buttonMapStatePath;
+    private readonly string _roomVoiceWindowStatePath;
+    private readonly string _voicePePreferencesPath;
+    private readonly string _voiceWebViewDataDirectory;
+    private VoicePePreferences _voicePePreferences = VoicePePreferences.Default;
+    private string? _voicePePreferencesError;
     private readonly FileLog _log;
     private readonly CodexKeybindingService _keybindingService;
     private readonly CooperativeWindow _cooperativeWindow;
@@ -35,6 +42,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _startLinkToolAtLoginItem;
     private readonly ToolStripMenuItem _taskAlertsItem;
     private readonly ToolStripMenuItem _taskAlertsStatusItem;
+    private readonly ToolStripMenuItem _voicePeItem;
     private readonly SynchronizationContext _uiContext;
     private readonly TaskAlertCoordinator _taskAlerts;
     private readonly TaskAlertPipeServer _taskAlertPipe;
@@ -56,6 +64,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly Dictionary<string, ToolStripMenuItem> _controllerItems = new(StringComparer.OrdinalIgnoreCase);
     private CompanionConfig? _activeConfig;
     private EspHomePanelAdapter? _wirelessPanelAdapter;
+    private VoicePeBridgeRuntime? _voicePeRuntime;
+    private readonly RoomVoiceConversationModel _roomVoiceConversation = new();
+    private RoomVoiceForm? _roomVoiceForm;
+    private Task<VoicePeBridgeRuntime>? _voicePeRuntimeStartup;
+    private CancellationTokenSource? _voicePeRuntimeCancellation;
+    private CancellationTokenSource? _voicePeStartupRetryCancellation;
+    private int _voicePeOwnerRestartAttempt;
+    private PinnedVoiceCoordinator? _voiceCoordinator;
     private DryRunActivityForm? _activityForm;
     private readonly Dictionary<string, ButtonMapForm> _buttonMapForms = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ToolStripMenuItem> _buttonMapItems = new(StringComparer.OrdinalIgnoreCase);
@@ -65,6 +81,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _taskAlertsShowPending;
     private bool _configuring;
     private bool _guardianRecoveryReady;
+    private bool _exitStarted;
+    private bool _exitCompleted;
 
     public TrayApplicationContext(string configPath)
     {
@@ -76,7 +94,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ?? throw new InvalidOperationException("The configuration path has no parent directory.");
         _windowStatePath = Path.Combine(dataDirectory, "configuration-window.json");
         _buttonMapStatePath = Path.Combine(dataDirectory, "button-map-window.json");
+        _roomVoiceWindowStatePath = Path.Combine(dataDirectory, "room-voice-window.json");
+        _voicePePreferencesPath = Path.Combine(dataDirectory, "voice-pe.json");
+        _voiceWebViewDataDirectory = Path.Combine(dataDirectory, "webview2-voice");
         _log = new FileLog(Path.Combine(dataDirectory, "joydex.log"));
+        _voicePePreferences = LoadRoomVoicePreferences(
+            _voicePePreferencesPath,
+            _log.Write,
+            out _voicePePreferencesError);
+        if (_voicePePreferencesError is not null)
+        {
+            _roomVoiceConversation.SetRuntimeState(
+                VoicePeSessionState.Error,
+                ownerReady: false,
+                sessionActive: false,
+                "Room Voice settings need attention.",
+                _voicePePreferencesError);
+        }
         _joydexLoginStartup = new LoginStartupRegistration(
             Environment.ProcessPath ?? Application.ExecutablePath,
             "Joydex",
@@ -100,6 +134,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 "task-alert-state.json"),
             _log.Write);
         _taskAlertPipe = new TaskAlertPipeServer(_taskAlerts, _log.Write);
+        ConfigureRoomVoiceTaskAlertExclusion(_voicePePreferences);
         _shiftModeMonitor = new VirpilShiftModeMonitor(
             new VirpilShiftModeReader(),
             _taskAlerts.SetDetectedBank,
@@ -177,11 +212,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Checked = _taskAlerts.GetSnapshot().Enabled,
         };
         _taskAlertsStatusItem = new ToolStripMenuItem("Task alerts / ignored tasks...", image: null, OnTaskAlertsStatus);
+        _voicePeItem = new ToolStripMenuItem("Room Voice", image: null, OnToggleRoomVoice)
+        {
+            CheckOnClick = false,
+        };
         var reloadItem = new ToolStripMenuItem("Reload configuration", image: null, OnReloadConfig);
         var openConfigItem = new ToolStripMenuItem("Open config JSON...", image: null, (_, _) => OpenPath(_configPath));
         var openLogItem = new ToolStripMenuItem("Open log", image: null, (_, _) => OpenPath(_log.Path));
-        var exitItem = new ToolStripMenuItem("Exit", image: null, (_, _) => ExitThread());
-        _testingAdvancedMenu = new ToolStripMenuItem("Testing / Advanced");
+        var exitItem = new ToolStripMenuItem("Exit", image: null, (_, _) => BeginExit());
+        _testingAdvancedMenu = new ToolStripMenuItem("Advanced");
         _testingAdvancedMenu.DropDownItems.AddRange([
             _modeItem,
             _testControlsItem,
@@ -200,6 +239,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 {
                     _controllersMenu,
                     _taskAlertsItem,
+                    _voicePeItem,
                     new ToolStripSeparator(),
                     _configureItem,
                     _promptPickersItem,
@@ -218,6 +258,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _notifyIcon.DoubleClick += OnConfigure;
 
         _taskAlerts.Changed += OnTaskAlertsChanged;
+        _roomVoiceConversation.RuntimeStateChanged += OnRoomVoiceRuntimeStateChanged;
         _ledService.StatusChanged += OnLedStatusChanged;
         _ledService.ProfileDirtyChanged += OnProfileDirtyChanged;
         if (initialTaskAlerts.Enabled && initialTaskAlerts.Assignments.Count > 0)
@@ -250,6 +291,49 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     protected override void ExitThreadCore()
     {
+        if (!_exitCompleted)
+        {
+            BeginExit();
+            return;
+        }
+
+        base.ExitThreadCore();
+    }
+
+    private void BeginExit()
+    {
+        if (_exitStarted)
+        {
+            return;
+        }
+
+        _exitStarted = true;
+        if (_notifyIcon.ContextMenuStrip is not null)
+        {
+            _notifyIcon.ContextMenuStrip.Enabled = false;
+        }
+        _ = ShutdownAndExitAsync();
+    }
+
+    private async Task ShutdownAndExitAsync()
+    {
+        try
+        {
+            await ShutdownAsync();
+        }
+        catch (Exception exception)
+        {
+            _log.Write($"Joydex shutdown did not complete cleanly: {exception.Message}");
+        }
+        finally
+        {
+            _exitCompleted = true;
+            ExitThread();
+        }
+    }
+
+    private async Task ShutdownAsync()
+    {
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         SystemEvents.SessionEnding -= OnSessionEnding;
         _deviceChangeMonitor.DevicesChanged -= OnDevicesChanged;
@@ -261,6 +345,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         _taskAlertsForm?.Close();
         _taskAlertsForm = null;
+        _roomVoiceForm?.CloseWorkspace();
+        _roomVoiceForm?.Dispose();
+        _roomVoiceForm = null;
         _activityForm?.Close();
         _activityForm = null;
         foreach (var form in _buttonMapForms.Values)
@@ -272,14 +359,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _promptOverlay?.Dispose();
         _promptOverlay = null;
 
-        StopWorkersAsync().GetAwaiter().GetResult();
+        await StopWorkersAsync();
 
-        _shiftModeMonitor.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        _taskAlertPipe.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        await _shiftModeMonitor.DisposeAsync();
+        await _taskAlertPipe.DisposeAsync();
         _taskAlerts.Changed -= OnTaskAlertsChanged;
+        _roomVoiceConversation.RuntimeStateChanged -= OnRoomVoiceRuntimeStateChanged;
         _ledService.StatusChanged -= OnLedStatusChanged;
         _ledService.ProfileDirtyChanged -= OnProfileDirtyChanged;
-        _ledService.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        await _ledService.DisposeAsync();
         if (!_ledService.RestorePending)
         {
             _guardian.SignalCleanExit();
@@ -287,15 +375,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _guardian.Dispose();
         _ledSwitch.Dispose();
-        _taskAlerts.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        await _taskAlerts.DisposeAsync();
 
-        _keybindingService.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        await _keybindingService.DisposeAsync();
 
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _appIcon.Dispose();
         _cooperativeWindow.Dispose();
-        base.ExitThreadCore();
     }
 
     private async void OnReloadConfig(object? sender, EventArgs eventArgs)
@@ -455,9 +542,28 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private async void OnConfigure(object? sender, EventArgs eventArgs)
+    private async void OnConfigure(object? sender, EventArgs eventArgs) =>
+        await ShowConfigurationAsync(initialPage: null);
+
+    private async void OnVoicePeSettings(object? sender, EventArgs eventArgs) =>
+        await ShowConfigurationAsync("Room Voice");
+
+    private async Task ShowConfigurationAsync(string? initialPage)
     {
         if (_configuring)
+        {
+            return;
+        }
+
+        var activeVoiceSession = _roomVoiceConversation.GetSnapshot().SessionActive;
+        if (activeVoiceSession
+            && MessageBox.Show(
+                _roomVoiceForm,
+                "Room Voice is active. End the session and open Configuration?",
+                "End session and configure",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
         {
             return;
         }
@@ -467,21 +573,96 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _modeItem.Enabled = false;
         try
         {
+            if (activeVoiceSession && _voicePeRuntime is not null)
+            {
+                await _voicePeRuntime.StopSessionAsync().ConfigureAwait(true);
+            }
+
+            var originalVoicePreferences = LoadRoomVoicePreferences(
+                _voicePePreferencesPath,
+                _log.Write,
+                out var preferencesError);
+            _voicePePreferences = originalVoicePreferences;
+            _voicePePreferencesError = preferencesError;
+            if (preferencesError is not null)
+            {
+                MessageBox.Show(
+                    _roomVoiceForm,
+                    "Room Voice settings could not be read. Disabled defaults are shown; saving will replace the invalid Room Voice settings file."
+                    + Environment.NewLine + Environment.NewLine + preferencesError,
+                    "Room Voice settings need attention",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
             CloseActivityForm();
             HideAllButtonMaps();
             _promptPicker?.Dismiss();
             _recentActivity.Clear();
+            _roomVoiceConversation.SetRuntimeState(
+                VoicePeSessionState.Armed,
+                ownerReady: false,
+                sessionActive: false,
+                "Room Voice is paused while Configuration is open.",
+                stale: true);
             await StopWorkersAsync();
 
-            using var form = new ConfigurationForm(_configPath, _windowStatePath, _cooperativeWindow.Handle);
+            using var roomVoiceSettings = new RoomVoiceSettingsControl(
+                originalVoicePreferences,
+                async candidate =>
+                {
+                    var config = _activeConfig
+                        ?? ConfigStore.LoadOrCreate(_configPath);
+                    var navigator = new PinnedVoiceTargetNavigator(config.Safety, WriteActivity);
+                    return await navigator
+                        .NavigateAsync(candidate.PinnedTaskId, CancellationToken.None)
+                        .ConfigureAwait(true);
+                },
+                async (endpoint, cancellationToken) =>
+                {
+                    using var client = new EspHomeVoicePeTuningClient(endpoint);
+                    return await client.GetAsync(cancellationToken).ConfigureAwait(true);
+                },
+                async (endpoint, tuning, cancellationToken) =>
+                {
+                    using var client = new EspHomeVoicePeTuningClient(endpoint);
+                    return await client.SetAsync(tuning, cancellationToken).ConfigureAwait(true);
+                },
+                async (appServerPath, cancellationToken) =>
+                {
+                    var workspace = new CodexVoiceWorkspaceService(appServerPath, _log.Write);
+                    return await workspace.ListProjectRootsAsync(cancellationToken).ConfigureAwait(true);
+                },
+                async (appServerPath, request, cancellationToken) =>
+                {
+                    var workspace = new CodexVoiceWorkspaceService(appServerPath, _log.Write);
+                    return await workspace.ProvisionAsync(request, cancellationToken).ConfigureAwait(true);
+                });
+            using var form = new ConfigurationForm(
+                _configPath,
+                _windowStatePath,
+                _cooperativeWindow.Handle,
+                roomVoiceSettings: roomVoiceSettings);
+            if (initialPage is not null)
+            {
+                form.SelectPage(initialPage);
+            }
+
             var result = form.ShowDialog();
+            if (result == DialogResult.OK && form.RoomVoicePreferences is { } savedVoicePreferences)
+            {
+                VoicePePreferencesStore.Save(_voicePePreferencesPath, savedVoicePreferences);
+                _voicePePreferences = savedVoicePreferences;
+                _voicePePreferencesError = null;
+                ConfigureRoomVoiceTaskAlertExclusion(savedVoicePreferences);
+            }
+
             StartWorker(showFirstRunNotice: false);
             if (result == DialogResult.OK)
             {
                 _notifyIcon.ShowBalloonTip(
                     4000,
                     "Joydex configuration saved",
-                    "The throttle mapping has been reloaded.",
+                    "Controllers and Room Voice have been reloaded.",
                     ToolTipIcon.Info);
 
                 if (_activeConfig?.Safety.DryRun == true)
@@ -492,7 +673,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception exception)
         {
-            HandleConfigurationError(exception);
+            _log.Write($"Configuration window error: {exception}");
+            _notifyIcon.ShowBalloonTip(
+                5000,
+                "Joydex settings error",
+                "Settings could not be opened or saved. Joydex kept its active configuration; see the log for details.",
+                ToolTipIcon.Error);
         }
         finally
         {
@@ -504,6 +690,308 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _configuring = false;
             _configureItem.Enabled = true;
             _modeItem.Enabled = _activeConfig is not null;
+            RefreshVoicePeMenu();
+        }
+    }
+
+    private void OnToggleRoomVoice(object? sender, EventArgs eventArgs)
+    {
+        var form = EnsureRoomVoiceForm();
+        if (form.Visible)
+        {
+            form.HideWorkspace();
+        }
+        else
+        {
+            form.ShowWorkspace();
+        }
+        RefreshVoicePeMenu();
+    }
+
+    private RoomVoiceForm EnsureRoomVoiceForm()
+    {
+        if (_roomVoiceForm is { IsDisposed: false } existing)
+        {
+            return existing;
+        }
+
+        _roomVoiceForm = new RoomVoiceForm(
+            _roomVoiceConversation,
+            _roomVoiceWindowStatePath,
+            RefreshRoomVoiceConversationAsync,
+            EndRoomVoiceSessionAsync,
+            RestartRoomVoiceAsync,
+            () => OnVoicePeSettings(this, EventArgs.Empty),
+            visible =>
+            {
+                _voicePeItem.Checked = visible;
+                RefreshVoicePeMenu();
+            },
+            new RoomVoiceTaskMessagingCallbacks(
+                RefreshRoomVoiceTaskMessagingAsync,
+                SaveRoomVoiceTargetAsync,
+                RetryRoomVoiceDraftAsync,
+                RetargetRoomVoiceDraftAsync,
+                DiscardRoomVoiceDraft,
+                LoadRoomVoiceDrafts));
+        return _roomVoiceForm;
+    }
+
+    private async Task<RoomVoiceTaskMessagingSnapshot> RefreshRoomVoiceTaskMessagingAsync(
+        CancellationToken cancellationToken)
+    {
+        var preferences = _voicePePreferences.Normalize();
+        var drafts = LoadRoomVoiceDrafts();
+        if (!preferences.DesktopTaskMessagingEnabled)
+        {
+            return new RoomVoiceTaskMessagingSnapshot(
+                Enabled: false,
+                BridgeAvailable: false,
+                "Desktop task messaging is off.",
+                [],
+                preferences.VoiceTargetTaskId,
+                preferences.VoiceTargetHostId,
+                preferences.VoiceTargetTaskLabel,
+                drafts);
+        }
+
+        try
+        {
+            var bridge = new DesktopTaskBridgeClient();
+            var catalog = await bridge.ListTasksAsync(
+                    preferences.DedicatedTaskId,
+                    preferences.DedicatedTaskId,
+                    cancellationToken)
+                .ConfigureAwait(true);
+            return new RoomVoiceTaskMessagingSnapshot(
+                Enabled: true,
+                BridgeAvailable: true,
+                "Desktop bridge connected.",
+                catalog.Tasks,
+                preferences.VoiceTargetTaskId,
+                preferences.VoiceTargetHostId,
+                preferences.VoiceTargetTaskLabel,
+                drafts);
+        }
+        catch (Exception exception) when (exception is IOException
+            or TimeoutException
+            or InvalidDataException
+            or InvalidOperationException)
+        {
+            return new RoomVoiceTaskMessagingSnapshot(
+                Enabled: true,
+                BridgeAvailable: false,
+                "Desktop bridge unavailable: " + exception.Message,
+                [],
+                preferences.VoiceTargetTaskId,
+                preferences.VoiceTargetHostId,
+                preferences.VoiceTargetTaskLabel,
+                drafts);
+        }
+    }
+
+    private Task SaveRoomVoiceTargetAsync(
+        DesktopTaskSummary target,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var updated = _voicePePreferences with
+        {
+            VoiceTargetTaskId = target.Id,
+            VoiceTargetHostId = target.HostId,
+            VoiceTargetTaskLabel = target.Title,
+        };
+        VoicePePreferencesStore.Save(_voicePePreferencesPath, updated);
+        _voicePePreferences = updated.Normalize();
+        return Task.CompletedTask;
+    }
+
+    private async Task<string> RetryRoomVoiceDraftAsync(
+        VoiceTaskOutboxDraft draft,
+        CancellationToken cancellationToken)
+    {
+        var preferences = _voicePePreferences.Normalize();
+        var outbox = CreateVoiceTaskOutbox(preferences)
+            ?? throw new InvalidOperationException("The Voice Agent Workspace is unavailable.");
+        try
+        {
+            var bridge = new DesktopTaskBridgeClient();
+            var catalog = await bridge.ListTasksAsync(
+                    preferences.DedicatedTaskId,
+                    preferences.DedicatedTaskId,
+                    cancellationToken)
+                .ConfigureAwait(true);
+            var target = catalog.Tasks.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id, draft.TargetTaskId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(candidate.HostId, draft.TargetHostId, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException(
+                    $"Target task '{draft.TargetTitle}' is unavailable. Retarget the draft before retrying.");
+            var result = await bridge.SendMessageAsync(
+                    preferences.DedicatedTaskId,
+                    target,
+                    draft.Message,
+                    cancellationToken)
+                .ConfigureAwait(true);
+            outbox.Remove(draft.Id);
+            return result.Queued ? "Queued to the running task." : "Delivered.";
+        }
+        catch (Exception exception)
+        {
+            outbox.RecordFailedAttempt(draft, exception.Message);
+            throw;
+        }
+    }
+
+    private Task RetargetRoomVoiceDraftAsync(
+        VoiceTaskOutboxDraft draft,
+        DesktopTaskSummary target,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var outbox = CreateVoiceTaskOutbox(_voicePePreferences)
+            ?? throw new InvalidOperationException("The Voice Agent Workspace is unavailable.");
+        outbox.Retarget(draft, target);
+        return Task.CompletedTask;
+    }
+
+    private void DiscardRoomVoiceDraft(VoiceTaskOutboxDraft draft)
+    {
+        var outbox = CreateVoiceTaskOutbox(_voicePePreferences)
+            ?? throw new InvalidOperationException("The Voice Agent Workspace is unavailable.");
+        outbox.Remove(draft.Id);
+    }
+
+    private IReadOnlyList<VoiceTaskOutboxDraft> LoadRoomVoiceDrafts()
+    {
+        try
+        {
+            return CreateVoiceTaskOutbox(_voicePePreferences)?.Load() ?? [];
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidDataException
+            or ArgumentException)
+        {
+            _log.Write($"Could not read Room Voice pending-message metadata: {exception.Message}");
+            return [];
+        }
+    }
+
+    private static VoiceTaskOutbox? CreateVoiceTaskOutbox(VoicePePreferences preferences) =>
+        string.IsNullOrWhiteSpace(preferences.AgentWorkspacePath)
+            ? null
+            : new VoiceTaskOutbox(preferences.AgentWorkspacePath);
+
+    private async Task RefreshRoomVoiceConversationAsync()
+    {
+        var runtime = _voicePeRuntime
+            ?? throw new InvalidOperationException("Room Voice is still connecting.");
+        await runtime.RefreshConversationAsync().ConfigureAwait(true);
+    }
+
+    private async Task EndRoomVoiceSessionAsync()
+    {
+        var runtime = _voicePeRuntime
+            ?? throw new InvalidOperationException("Room Voice is not running.");
+        if (runtime.IsSessionActive)
+        {
+            await runtime.StopSessionAsync().ConfigureAwait(true);
+            return;
+        }
+
+        if (_roomVoiceConversation.GetSnapshot().SessionActive)
+        {
+            await RestartRoomVoiceAsync().ConfigureAwait(true);
+        }
+    }
+
+    private async Task RestartRoomVoiceAsync()
+    {
+        _roomVoiceConversation.SetRuntimeState(
+            VoicePeSessionState.Starting,
+            ownerReady: false,
+            sessionActive: false,
+            "Restarting Room Voice…",
+            stale: true);
+        await StopVoicePeBridgeAsync().ConfigureAwait(true);
+        StartVoicePeBridge();
+    }
+
+    private void RefreshVoicePeMenu()
+    {
+        try
+        {
+            if (_voicePePreferencesError is not null)
+            {
+                _voicePeItem.Text = "Room Voice — Needs attention";
+                _voicePeItem.Checked = _roomVoiceForm?.Visible == true;
+                return;
+            }
+
+            var conversation = _roomVoiceConversation.GetSnapshot();
+            _voicePeItem.Checked = _roomVoiceForm?.Visible == true;
+            _voicePeItem.Text = FormatRoomVoiceMenuText(
+                _voicePePreferences,
+                conversation,
+                _voicePeRuntime?.OwnerReady == true,
+                _voicePeRuntimeStartup is not null);
+        }
+        catch (Exception exception)
+        {
+            _voicePeItem.Text = "Room Voice — Needs attention";
+            _voicePeItem.Checked = _roomVoiceForm?.Visible == true;
+            _log.Write($"Voice PE settings are unavailable: {exception.Message}");
+        }
+    }
+
+    private void OnRoomVoiceRuntimeStateChanged(object? sender, EventArgs eventArgs) =>
+        _uiContext.Post(_ => RefreshVoicePeMenu(), null);
+
+    internal static string FormatRoomVoiceMenuText(
+        VoicePePreferences preferences,
+        RoomVoiceConversationSnapshot conversation,
+        bool ownerReady,
+        bool startupActive)
+    {
+        if (!preferences.Enabled)
+        {
+            return "Room Voice — Disabled";
+        }
+        if (startupActive || conversation.SessionState == VoicePeSessionState.Starting)
+        {
+            return "Room Voice — Connecting";
+        }
+        if (conversation.SessionState == VoicePeSessionState.Listening)
+        {
+            return "Room Voice — Listening";
+        }
+        if (conversation.SessionState == VoicePeSessionState.Muted)
+        {
+            return "Room Voice — Muted";
+        }
+        if (conversation.SessionState == VoicePeSessionState.Error
+            || (preferences.SessionMode == VoicePeSessionMode.JoydexOwner && !ownerReady))
+        {
+            return "Room Voice — Needs attention";
+        }
+
+        return "Room Voice";
+    }
+
+    private void ConfigureRoomVoiceTaskAlertExclusion(VoicePePreferences? preferences = null)
+    {
+        try
+        {
+            preferences ??= _voicePePreferences;
+            var taskIds = preferences.SessionMode == VoicePeSessionMode.JoydexOwner
+                && CodexTaskReference.TryParse(preferences.DedicatedTaskId, out var taskId)
+                    ? new[] { taskId }
+                    : [];
+            _taskAlerts.SetInternallySuppressedTaskIds(taskIds);
+        }
+        catch (Exception exception)
+        {
+            _log.Write($"Could not exclude the Dedicated Voice Task from task alerts: {exception.Message}");
         }
     }
 
@@ -520,8 +1008,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _modeItem.ForeColor = SystemColors.ControlText;
             _testControlsItem.Enabled = config.Safety.DryRun;
             _testingAdvancedMenu.Text = config.Safety.DryRun
-                ? "Testing / Advanced (DRY RUN)"
-                : "Testing / Advanced";
+                ? "Advanced (DRY RUN)"
+                : "Advanced";
             ConfigureControllersMenu(config);
             foreach (var form in _buttonMapForms.Values)
             {
@@ -558,6 +1046,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _promptPicker.Changed += (_, snapshot) => _promptOverlay.Apply(snapshot);
 
             var taskAlertNavigator = new TaskDeepLinkNavigator(config.Safety, WriteActivity);
+            var voiceNavigator = new PinnedVoiceTargetNavigator(config.Safety, WriteActivity);
+            var voiceExecutor = new CodexActionExecutor(
+                config.Safety,
+                WriteActivity,
+                _keybindingService,
+                config.OpenWorkingDirectory);
+            _voiceCoordinator = new PinnedVoiceCoordinator(
+                config.Safety,
+                WriteActivity,
+                voiceNavigator,
+                voiceExecutor.ExecuteAsync);
+            RefreshVoicePeMenu();
+            StartVoicePeBridge();
             foreach (var device in config.Devices)
             {
                 var source = new DirectInputJoystickSource(_cooperativeWindow.Handle);
@@ -904,6 +1405,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task StopWorkersAsync()
     {
+        await StopVoicePeBridgeAsync().ConfigureAwait(false);
+
+        _voiceCoordinator = null;
         var wirelessPanelAdapter = Interlocked.Exchange(ref _wirelessPanelAdapter, null);
         if (wirelessPanelAdapter is not null)
         {
@@ -922,6 +1426,343 @@ internal sealed class TrayApplicationContext : ApplicationContext
             await worker.DisposeAsync().ConfigureAwait(false);
         }
         _workers.Clear();
+    }
+
+    private async Task StopVoicePeBridgeAsync()
+    {
+        CancelVoicePeStartupRetry();
+        var cancellation = Interlocked.Exchange(ref _voicePeRuntimeCancellation, null);
+        cancellation?.Cancel();
+        var startup = Interlocked.Exchange(ref _voicePeRuntimeStartup, null);
+        if (startup is not null)
+        {
+            try
+            {
+                var completedStartup = await startup.ConfigureAwait(false);
+                if (!ReferenceEquals(completedStartup, Volatile.Read(ref _voicePeRuntime)))
+                {
+                    await completedStartup.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (cancellation?.IsCancellationRequested == true)
+            {
+            }
+            catch (Exception exception)
+            {
+                _log.Write($"Voice PE bridge startup ended with an error: {exception.Message}");
+            }
+        }
+
+        cancellation?.Dispose();
+        var runtime = Interlocked.Exchange(ref _voicePeRuntime, null);
+        if (runtime is not null)
+        {
+            await runtime.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private async void StartVoicePeBridge()
+    {
+        CancelVoicePeStartupRetry();
+        CancellationTokenSource? cancellation = null;
+        Task<VoicePeBridgeRuntime>? startup = null;
+        VoicePeBridgeRuntime? unpublishedRuntime = null;
+        var retryOwnerStartup = false;
+        try
+        {
+            var preferences = LoadRoomVoicePreferences(
+                _voicePePreferencesPath,
+                _log.Write,
+                out var preferencesError);
+            _voicePePreferences = preferences;
+            _voicePePreferencesError = preferencesError;
+            if (preferencesError is not null)
+            {
+                throw new InvalidDataException(preferencesError);
+            }
+            if (!preferences.Enabled)
+            {
+                _log.Write("Voice PE bridge is disabled.");
+                _roomVoiceConversation.SetFallbackState(enabled: false);
+                RefreshVoicePeMenu();
+                return;
+            }
+
+            retryOwnerStartup = preferences.SessionMode == VoicePeSessionMode.JoydexOwner;
+
+            var coordinator = _voiceCoordinator;
+            var config = _activeConfig;
+            if (coordinator is null || config is null)
+            {
+                throw new InvalidDataException("The enabled Voice PE bridge has no active Joydex coordinator.");
+            }
+
+            cancellation = new CancellationTokenSource();
+            var startupToken = cancellation.Token;
+            if (Interlocked.CompareExchange(ref _voicePeRuntimeCancellation, cancellation, null) is not null)
+            {
+                cancellation.Dispose();
+                _log.Write("Voice PE bridge startup is already active.");
+                return;
+            }
+
+            startup = VoicePeBridgeRuntime.StartAsync(
+                preferences,
+                config.Safety,
+                coordinator,
+                _uiContext,
+                _voiceWebViewDataDirectory,
+                _roomVoiceConversation,
+                WriteActivity,
+                _voicePePreferencesPath,
+                Path.Combine(AppContext.BaseDirectory, "Joydex.DesktopBridgeHost.exe"),
+                startupToken);
+            Volatile.Write(ref _voicePeRuntimeStartup, startup);
+            unpublishedRuntime = await startup.ConfigureAwait(true);
+            startupToken.ThrowIfCancellationRequested();
+            var runtime = unpublishedRuntime;
+            var replaced = Interlocked.Exchange(ref _voicePeRuntime, runtime);
+            unpublishedRuntime = null;
+            if (replaced is not null)
+            {
+                await replaced.DisposeAsync().ConfigureAwait(true);
+            }
+
+            if (runtime.Mode == VoicePeSessionMode.JoydexOwner)
+            {
+                _ = MonitorVoicePeOwnerAsync(runtime, startupToken);
+                _ = ResetVoicePeOwnerRestartBackoffAfterStabilityAsync(runtime, startupToken);
+            }
+
+            RefreshVoicePeMenu();
+        }
+        catch (OperationCanceledException) when (cancellation?.IsCancellationRequested == true)
+        {
+        }
+        catch (Exception exception)
+        {
+            _log.Write($"Voice PE bridge is unavailable: {exception.Message}");
+            _roomVoiceConversation.SetRuntimeState(
+                VoicePeSessionState.Error,
+                ownerReady: false,
+                sessionActive: false,
+                "Room Voice needs attention.",
+                exception.Message,
+                stale: true);
+            RefreshVoicePeMenu();
+            _notifyIcon.ShowBalloonTip(
+                5000,
+                "Joydex Voice PE bridge unavailable",
+                exception.Message,
+                ToolTipIcon.Warning);
+            if (retryOwnerStartup && IsTransientOwnerStartupFailure(exception))
+            {
+                ScheduleVoicePeStartupRetry(exception);
+            }
+        }
+        finally
+        {
+            if (unpublishedRuntime is not null)
+            {
+                await unpublishedRuntime.DisposeAsync().ConfigureAwait(true);
+            }
+
+            if (ReferenceEquals(Volatile.Read(ref _voicePeRuntimeStartup), startup))
+            {
+                _ = Interlocked.Exchange(ref _voicePeRuntimeStartup, null);
+            }
+
+            if (_voicePeRuntime is null
+                && cancellation is not null
+                && ReferenceEquals(Volatile.Read(ref _voicePeRuntimeCancellation), cancellation))
+            {
+                _ = Interlocked.Exchange(ref _voicePeRuntimeCancellation, null);
+                cancellation.Dispose();
+            }
+        }
+    }
+
+    private void ScheduleVoicePeStartupRetry(Exception failure)
+    {
+        var cancellation = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(
+                ref _voicePeStartupRetryCancellation,
+                cancellation,
+                null) is not null)
+        {
+            cancellation.Dispose();
+            return;
+        }
+
+        var attempt = Interlocked.Increment(ref _voicePeOwnerRestartAttempt);
+        var delay = TimeSpan.FromSeconds(Math.Min(30, 2 * Math.Pow(2, Math.Min(attempt - 1, 4))));
+        _roomVoiceConversation.SetRuntimeState(
+            VoicePeSessionState.Starting,
+            ownerReady: false,
+            sessionActive: false,
+            $"Room Voice is reconnecting in {delay.TotalSeconds:0} seconds.",
+            failure.Message,
+            stale: true);
+        _log.Write(
+            $"Dedicated Voice Task owner startup will retry after {failure.GetType().Name} "
+            + $"in {delay.TotalSeconds:0} seconds.");
+        _ = RetryVoicePeStartupAsync(cancellation, delay);
+    }
+
+    private async Task RetryVoicePeStartupAsync(
+        CancellationTokenSource cancellation,
+        TimeSpan delay)
+    {
+        var cancellationToken = cancellation.Token;
+        try
+        {
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        _uiContext.Post(
+            _ =>
+            {
+                if (cancellationToken.IsCancellationRequested
+                    || !ReferenceEquals(
+                        Interlocked.CompareExchange(
+                            ref _voicePeStartupRetryCancellation,
+                            null,
+                            cancellation),
+                        cancellation))
+                {
+                    return;
+                }
+
+                cancellation.Dispose();
+                StartVoicePeBridge();
+            },
+            null);
+    }
+
+    private void CancelVoicePeStartupRetry()
+    {
+        var cancellation = Interlocked.Exchange(ref _voicePeStartupRetryCancellation, null);
+        if (cancellation is null)
+        {
+            return;
+        }
+
+        cancellation.Cancel();
+        cancellation.Dispose();
+    }
+
+    internal static bool IsTransientOwnerStartupFailure(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        if (exception.Message.Contains("failed to load configuration", StringComparison.OrdinalIgnoreCase)
+            || exception.Message.Contains("failed to load bootstrap configuration", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return exception switch
+        {
+            CodexDedicatedVoiceCompatibilityException => false,
+            InvalidDataException => false,
+            FileNotFoundException => false,
+            UnauthorizedAccessException => false,
+            ArgumentException => false,
+            _ => true,
+        };
+    }
+
+    private async Task MonitorVoicePeOwnerAsync(
+        VoicePeBridgeRuntime runtime,
+        CancellationToken cancellationToken)
+    {
+        Exception? failure = null;
+        try
+        {
+            await runtime.OwnerCompletion.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+
+        if (cancellationToken.IsCancellationRequested
+            || !ReferenceEquals(Volatile.Read(ref _voicePeRuntime), runtime))
+        {
+            return;
+        }
+
+        var attempt = Interlocked.Increment(ref _voicePeOwnerRestartAttempt);
+        var delay = TimeSpan.FromSeconds(Math.Min(30, 2 * Math.Pow(2, Math.Min(attempt - 1, 4))));
+        _roomVoiceConversation.SetRuntimeState(
+            VoicePeSessionState.Starting,
+            ownerReady: false,
+            sessionActive: false,
+            $"Room Voice is reconnecting in {delay.TotalSeconds:0} seconds.",
+            failure?.Message,
+            stale: true);
+        _log.Write(
+            $"Dedicated Voice Task owner stopped{(failure is null ? "." : $": {failure.Message}")} "
+            + $"Joydex will restart the Voice PE bridge in {delay.TotalSeconds:0} seconds.");
+        try
+        {
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        _uiContext.Post(
+            async _ =>
+            {
+                try
+                {
+                    if (cancellationToken.IsCancellationRequested
+                        || !ReferenceEquals(Volatile.Read(ref _voicePeRuntime), runtime))
+                    {
+                        return;
+                    }
+
+                    await StopVoicePeBridgeAsync().ConfigureAwait(true);
+                    StartVoicePeBridge();
+                }
+                catch (Exception exception)
+                {
+                    _log.Write($"Could not restart the Voice PE bridge: {exception.Message}");
+                    _notifyIcon.ShowBalloonTip(
+                        5000,
+                        "Joydex Voice PE restart failed",
+                        exception.Message,
+                        ToolTipIcon.Warning);
+                }
+            },
+            null);
+    }
+
+    private async Task ResetVoicePeOwnerRestartBackoffAfterStabilityAsync(
+        VoicePeBridgeRuntime runtime,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken).ConfigureAwait(false);
+            if (runtime.OwnerReady
+                && ReferenceEquals(Volatile.Read(ref _voicePeRuntime), runtime))
+            {
+                Interlocked.Exchange(ref _voicePeOwnerRestartAttempt, 0);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
     }
 
     private void StartWirelessPanel(CompanionConfig config)
@@ -1031,12 +1872,35 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _modeItem.Enabled = false;
         _modeItem.ForeColor = Color.DarkRed;
         _testControlsItem.Enabled = false;
-        _testingAdvancedMenu.Text = "Testing / Advanced";
+        _testingAdvancedMenu.Text = "Advanced";
         _notifyIcon.ShowBalloonTip(
             7000,
             "Joydex configuration error",
             exception.Message,
             ToolTipIcon.Error);
+    }
+
+    internal static VoicePePreferences LoadRoomVoicePreferences(
+        string path,
+        Action<string> log,
+        out string? error)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(log);
+        try
+        {
+            error = null;
+            return VoicePePreferencesStore.LoadOrCreate(path);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException
+            or InvalidDataException
+            or System.Text.Json.JsonException)
+        {
+            error = exception.Message;
+            log($"Room Voice settings are unavailable; normal Joydex features will continue: {exception.Message}");
+            return VoicePePreferences.Default;
+        }
     }
 
     private async void OnToggleTaskAlerts(object? sender, EventArgs eventArgs)
@@ -1314,19 +2178,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private ITaskAlertLedOutput CreateLedOutput(
         TaskAlertSnapshot snapshot,
         TaskAlertLedOptions options) => options.Mode switch
-    {
-        TaskAlertLedOutputMode.DirectHid => new DirectVirpilLedService(
-            _virpilTransportFactory,
-            new DirectVirpilConflictDetector(),
-            _log.Write,
-            snapshot,
-            options),
-        _ => new LinkToolLedService(
-            new UdpLinkToolTelemetrySender(),
-            new VpcConflictDetector(),
-            _log.Write,
-            snapshot),
-    };
+        {
+            TaskAlertLedOutputMode.DirectHid => new DirectVirpilLedService(
+                _virpilTransportFactory,
+                new DirectVirpilConflictDetector(),
+                _log.Write,
+                snapshot,
+                options),
+            _ => new LinkToolLedService(
+                new UdpLinkToolTelemetrySender(),
+                new VpcConflictDetector(),
+                _log.Write,
+                snapshot),
+        };
 
     private async Task SetLedOutputAsync(TaskAlertLedOptions options)
     {

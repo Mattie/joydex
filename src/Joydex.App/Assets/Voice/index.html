@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Joydex Voice Audio Bridge</title>
+  <style>
+    :root { font-family: "Segoe UI", system-ui, sans-serif; color-scheme: dark; }
+    body { margin: 0; background: #101318; color: #dce5ef; }
+    #status { padding: 8px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div id="status">Initializing the Joydex audio bridge…</div>
+  <audio id="remote-audio" autoplay></audio>
+  <script>
+    const status = document.getElementById('status');
+    const remoteAudio = document.getElementById('remote-audio');
+    let context;
+    let peer;
+    let microphoneNode;
+    let microphoneDestination;
+    let speakerNode;
+    let dataChannel;
+    let speakerSequence = 0;
+    let outputAudioActive = false;
+    let outputBoundarySequence = 0;
+    let rtcStatsTimer;
+    const realtimeEventCounts = new Map();
+    let stopping = false;
+
+    function post(message) {
+      chrome.webview.postMessage(message);
+    }
+
+    function bytesToBase64(buffer) {
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      const block = 0x4000;
+      for (let offset = 0; offset < bytes.length; offset += block) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + block));
+      }
+      return btoa(binary);
+    }
+
+    function base64ToBuffer(value) {
+      const binary = atob(value);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes.buffer;
+    }
+
+    async function waitForIceGathering(candidatePeer) {
+      if (candidatePeer.iceGatheringState === 'complete') return;
+      await new Promise((resolve) => {
+        const changed = () => {
+          if (candidatePeer.iceGatheringState !== 'complete') return;
+          candidatePeer.removeEventListener('icegatheringstatechange', changed);
+          resolve();
+        };
+        candidatePeer.addEventListener('icegatheringstatechange', changed);
+      });
+    }
+
+    async function start() {
+      if (peer) throw new Error('A Joydex WebRTC session is already active.');
+
+      stopping = false;
+      status.textContent = 'Creating WebRTC media…';
+      context = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+      await context.audioWorklet.addModule('/duplex-processor.js');
+      await context.resume();
+
+      microphoneNode = new AudioWorkletNode(context, 'joydex-microphone-source', {
+        numberOfInputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      microphoneDestination = context.createMediaStreamDestination();
+      microphoneNode.connect(microphoneDestination);
+
+      peer = new RTCPeerConnection();
+      const microphoneTrack = microphoneDestination.stream.getAudioTracks()[0];
+      peer.addTrack(microphoneTrack, microphoneDestination.stream);
+      dataChannel = peer.createDataChannel('oai-events');
+      dataChannel.onopen = () => post({ type: 'data-channel-open' });
+      dataChannel.onerror = () => {
+        if (!stopping) post({ type: 'error', message: 'The Realtime data channel failed.' });
+      };
+      dataChannel.onclose = () => {
+        if (!stopping) post({ type: 'data-channel-closed' });
+      };
+      dataChannel.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          const eventType = typeof message?.type === 'string' ? message.type : 'unknown';
+          const eventRole = typeof message?.turn?.role === 'string'
+            ? message.turn.role
+            : (typeof message?.item?.role === 'string' ? message.item.role : undefined);
+          const eventCount = (realtimeEventCounts.get(eventType) || 0) + 1;
+          realtimeEventCounts.set(eventType, eventCount);
+          if (eventCount <= 5) {
+            // Diagnostic event type/count only. Transcript text has its own in-memory UI path.
+            post({ type: 'realtime-event', eventType, eventRole, eventCount });
+          }
+          switch (message?.type) {
+            case 'output_audio_buffer.started':
+              beginOutput();
+              break;
+            case 'output_audio_buffer.stopped':
+              post({ type: 'output-stopped' });
+              finishOutput('ended');
+              break;
+            case 'output_audio_buffer.cleared':
+              post({ type: 'output-cleared' });
+              finishOutput('cleared');
+              break;
+            case 'turn.created':
+              if (message?.turn?.role === 'assistant') beginOutput();
+              break;
+            case 'input_transcript.added': {
+              const transcript = typeof message?.item?.text === 'string'
+                ? message.item.text
+                : (typeof message?.text === 'string' ? message.text : '');
+              if (transcript) {
+                post({ type: 'user-transcript-added', transcript });
+              }
+              break;
+            }
+            case 'output_transcript.added': {
+              const transcript = typeof message?.item?.text === 'string'
+                ? message.item.text
+                : (typeof message?.text === 'string' ? message.text : '');
+              if (transcript) {
+                post({ type: 'assistant-transcript-added', transcript });
+              }
+              break;
+            }
+            case 'turn.done':
+              if (message?.turn?.role === 'assistant') finishOutput('ended');
+              {
+                const transcript = typeof message?.turn?.transcript === 'string'
+                  ? message.turn.transcript
+                  : '';
+                if (message?.turn?.role === 'assistant') {
+                  post({ type: 'assistant-turn-done', transcript });
+                }
+                if (message?.turn?.role === 'user') {
+                post({ type: 'user-turn-done', transcript });
+                }
+              }
+              break;
+          }
+        } catch (error) {
+          post({ type: 'error', message: `Invalid Realtime data-channel event: ${String(error?.message || error)}` });
+        }
+      };
+      peer.ontrack = (event) => attachRemoteTrack(event).catch((error) =>
+        post({ type: 'error', message: `Remote audio setup failed: ${String(error?.message || error)}` }));
+      peer.onconnectionstatechange = () => {
+        status.textContent = `WebRTC: ${peer?.connectionState ?? 'closed'}`;
+        if (peer?.connectionState === 'connected') {
+          post({ type: 'connected' });
+          startRtcStats();
+        }
+        if (peer?.connectionState === 'failed') post({ type: 'error', message: 'The WebRTC peer connection failed.' });
+      };
+
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      await waitForIceGathering(peer);
+      post({ type: 'offer', sdp: peer.localDescription.sdp });
+    }
+
+    async function attachRemoteTrack(event) {
+        const stream = event.streams[0] || new MediaStream([event.track]);
+        remoteAudio.srcObject = stream;
+        await remoteAudio.play();
+        post({ type: 'remote-audio-playing' });
+
+        const source = context.createMediaStreamSource(stream);
+        speakerNode = new AudioWorkletNode(context, 'joydex-speaker-capture', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+        });
+        speakerNode.port.onmessage = (speakerEvent) => {
+          if (speakerEvent.data instanceof ArrayBuffer) {
+            post({
+              type: 'speaker',
+              sequence: speakerSequence++,
+              pcm: bytesToBase64(speakerEvent.data),
+            });
+            return;
+          }
+          if (speakerEvent.data?.type === 'output-boundary') {
+            post({ type: `playback-${speakerEvent.data.kind}` });
+          }
+        };
+        const sink = context.createGain();
+        sink.gain.value = 0;
+        source.connect(speakerNode);
+        speakerNode.connect(sink);
+        sink.connect(context.destination);
+        post({ type: 'remote-track' });
+    }
+
+    function beginOutput() {
+      if (outputAudioActive) return;
+      outputAudioActive = true;
+      post({ type: 'output-started' });
+    }
+
+    function finishOutput(kind) {
+      if (!outputAudioActive && kind === 'ended') return;
+      outputAudioActive = false;
+      const boundary = ++outputBoundarySequence;
+      if (speakerNode) {
+        speakerNode.port.postMessage({ type: 'output-boundary', kind, boundary });
+      } else {
+        post({ type: `playback-${kind}` });
+      }
+    }
+
+    async function acceptAnswer(sdp) {
+      if (!peer) throw new Error('No WebRTC peer is waiting for an answer.');
+      await peer.setRemoteDescription({ type: 'answer', sdp });
+    }
+
+    function sendMicrophone(message) {
+      if (!microphoneNode) return;
+      const buffer = base64ToBuffer(message.pcm);
+      microphoneNode.port.postMessage({
+        type: 'pcm',
+        sampleRate: message.sampleRate,
+        buffer,
+      }, [buffer]);
+    }
+
+    function startRtcStats() {
+      if (rtcStatsTimer) clearInterval(rtcStatsTimer);
+      rtcStatsTimer = setInterval(async () => {
+        if (!peer || peer.connectionState !== 'connected') return;
+        try {
+          const reports = await peer.getStats();
+          let packetsSent = 0;
+          let bytesSent = 0;
+          let audioLevel = 0;
+          let totalAudioEnergy = 0;
+          let totalSamplesDuration = 0;
+          let packetsReceived = 0;
+          let bytesReceived = 0;
+          let inboundAudioEnergy = 0;
+          let inboundSamplesDuration = 0;
+          reports.forEach((report) => {
+            if (report.kind !== 'audio' && report.mediaType !== 'audio') return;
+            if (report.type === 'outbound-rtp' && !report.isRemote) {
+              packetsSent += Number(report.packetsSent) || 0;
+              bytesSent += Number(report.bytesSent) || 0;
+            }
+            if (report.type === 'inbound-rtp' && !report.isRemote) {
+              packetsReceived += Number(report.packetsReceived) || 0;
+              bytesReceived += Number(report.bytesReceived) || 0;
+              inboundAudioEnergy += Number(report.totalAudioEnergy) || 0;
+              inboundSamplesDuration += Number(report.totalSamplesDuration) || 0;
+            }
+            if (report.type === 'media-source') {
+              audioLevel = Math.max(audioLevel, Number(report.audioLevel) || 0);
+              totalAudioEnergy += Number(report.totalAudioEnergy) || 0;
+              totalSamplesDuration += Number(report.totalSamplesDuration) || 0;
+            }
+          });
+          post({
+            type: 'rtc-stats',
+            packetsSent,
+            bytesSent,
+            audioLevel,
+            totalAudioEnergy,
+            totalSamplesDuration,
+            packetsReceived,
+            bytesReceived,
+            inboundAudioEnergy,
+            inboundSamplesDuration,
+          });
+        } catch (error) {
+          post({ type: 'rtc-stats-error', message: String(error?.message || error) });
+        }
+      }, 5000);
+    }
+
+    async function flushSpeakerCapture() {
+      if (!speakerNode) return;
+      await new Promise((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          speakerNode?.port.removeEventListener('message', flushed);
+          resolve();
+        };
+        const flushed = (event) => {
+          if (event.data?.type === 'capture-flushed') done();
+        };
+        speakerNode.port.addEventListener('message', flushed);
+        speakerNode.port.postMessage({ type: 'flush' });
+        setTimeout(done, 500);
+      });
+    }
+
+    async function stop() {
+      stopping = true;
+      if (rtcStatsTimer) {
+        clearInterval(rtcStatsTimer);
+        rtcStatsTimer = undefined;
+      }
+      await flushSpeakerCapture();
+      if (peer) {
+        peer.getSenders().forEach((sender) => sender.track?.stop());
+        peer.close();
+        peer = undefined;
+      }
+      remoteAudio.pause();
+      remoteAudio.srcObject = null;
+      microphoneNode = undefined;
+      microphoneDestination = undefined;
+      speakerNode = undefined;
+      dataChannel = undefined;
+      speakerSequence = 0;
+      outputAudioActive = false;
+      outputBoundarySequence = 0;
+      realtimeEventCounts.clear();
+      if (context) {
+        await context.close();
+        context = undefined;
+      }
+      status.textContent = 'Ready.';
+      post({ type: 'stopped' });
+    }
+
+    chrome.webview.addEventListener('message', async (event) => {
+      try {
+        const message = event.data;
+        switch (message?.type) {
+          case 'start': await start(); break;
+          case 'answer': await acceptAnswer(message.sdp); break;
+          case 'microphone': sendMicrophone(message); break;
+          case 'stop': await stop(); break;
+        }
+      } catch (error) {
+        post({ type: 'error', message: String(error?.message || error) });
+      }
+    });
+
+    post({ type: 'ready' });
+  </script>
+</body>
+</html>

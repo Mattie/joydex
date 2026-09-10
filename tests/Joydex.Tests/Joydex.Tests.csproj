@@ -27,6 +27,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Joydex.Core\Joydex.Core.csproj" />
     <ProjectReference Include="..\..\src\Joydex.HookRelay\Joydex.HookRelay.csproj" />
+    <ProjectReference Include="..\..\src\Joydex.DesktopBridgeHost\Joydex.DesktopBridgeHost.csproj" />
     <ProjectReference Include="..\..\src\Joydex.Windows\Joydex.Windows.csproj" />
     <ProjectReference Include="..\..\src\Joydex.Virpil\Joydex.Virpil.csproj" />
     <ProjectReference Include="..\..\src\Joydex.App\Joydex.App.csproj" />

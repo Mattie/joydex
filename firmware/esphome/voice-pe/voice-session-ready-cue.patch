@@ -1,0 +1,15 @@
+diff --git a/joydex-voice-pe-audio.yaml b/joydex-voice-pe-audio.yaml
+--- a/joydex-voice-pe-audio.yaml
++++ b/joydex-voice-pe-audio.yaml
+@@ -55,7 +55,10 @@ select:
+       - if:
+           condition:
+-            lambda: return x == "Listening" && id(joydex_audio_bridge).is_session_active();
++            lambda: |-
++              return x == "Listening" && id(joydex_audio_bridge).is_session_active()
++                && id(joydex_voice_ready_cue_pending);
+           then:
++            - lambda: id(joydex_voice_ready_cue_pending) = false;
+             - script.execute:
+                 id: play_sound
+                 priority: true

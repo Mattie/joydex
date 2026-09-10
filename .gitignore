@@ -18,11 +18,24 @@ AGENTS.local.md
 AGENTS.override.md
 
 # Machine-specific configuration
+/.env
 /config/joydex.json
 /config/config.json
+/config/voice-pe.json
+/docs/VOICE_PE_CODEX_VOICE_RESEARCH.md
 /firmware/esphome/secrets.yaml
 /firmware/esphome/.esphome/
 /firmware/esphome/.venv/
+/firmware/esphome/voice-pe/secrets.yaml
+/firmware/esphome/voice-pe/.esphome/
+/firmware/esphome/voice-pe/upload-staged-*.ps1
+/firmware/esphome/voice-pe/rollback-staged-*.ps1
+/firmware/esphome/voice-pe/run-sendspin-lease-regression.ps1
+/firmware/esphome/voice-pe/sounds/*.flac
+!/firmware/esphome/voice-pe/sounds/ReadyBlip.flac
+!/firmware/esphome/voice-pe/sounds/WakeBlip.flac
+!/firmware/esphome/voice-pe/sounds/EndBlip.flac
+/firmware/esphome/voice-pe/sounds/*.mp3
 
 # Local reference material retained outside the public source set
 /Virpil Mongoose T-50CM2+3 Fillable.pdf

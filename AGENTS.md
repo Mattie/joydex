@@ -1,6 +1,8 @@
 # Project instructions
 
-Defer to `%USERPROFILE%\.agents\AGENTS.md`.
+Follow this file when working in the repository. A contributor may also have
+personal agent guidance outside the checkout; treat it as supplemental and do
+not make the public project depend on it.
 
 ## Concepts and architectural decisions
 
@@ -8,12 +10,24 @@ Before changing domain language or architecture, review the applicable `CONCEPTS
 
 ## Codex App compatibility
 
-The Codex command IDs, Windows default bindings, and keybinding precedence behavior in this repository were last validated on 2026-08-05 against:
+The Codex command IDs, Windows default bindings, and keybinding precedence behavior in this repository were last validated on 2026-09-07 against:
 
-- Windows package: `OpenAI.Codex 26.730.8199.0`
-- Bundled app release: `26.730`
-- Codex build: `0.147.0-alpha.1.2`
+- Windows package: `OpenAI.Codex 26.901.6511.0`
+- Bundled app release: `26.901`
+- Codex build: `0.153.4`
 
 Any change to command IDs, default bindings, aliases, or precedence behavior must be revalidated against the installed Codex App for Windows. Update all three version values and the validation date in this file with that change.
 
 Runtime code must never inspect or parse `app.asar`; compatibility is maintained through verified catalogs and tests.
+
+## Windows ESPHome firmware builds
+
+Before compiling Voice PE ESPHome firmware on Windows, prepend `C:\Program Files\Git\usr\bin` to that process's `PATH` and verify that `patch.exe` exists. The pinned `micro-opus` component invokes `patch.exe` by name.
+
+## .NET SDK
+
+This repository pins .NET SDK 8.0.423 in `global.json`. Use a matching SDK for
+restore, build, test, run, and publish commands. A workstation may keep an
+untracked repository-local copy at `.tools\dotnet\dotnet.exe`.
+
+Do not change `global.json` or substitute another SDK version to work around SDK resolution.

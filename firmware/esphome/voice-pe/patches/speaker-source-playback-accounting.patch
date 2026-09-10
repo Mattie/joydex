@@ -1,0 +1,147 @@
+diff --git a/speaker_source/speaker_source_media_player.cpp b/speaker_source/speaker_source_media_player.cpp
+index db84d2a5d..aa504c933 100644
+--- a/speaker_source/speaker_source_media_player.cpp
++++ b/speaker_source/speaker_source_media_player.cpp
+@@ -91,8 +91,9 @@ void SpeakerSourceMediaPlayer::set_playlist_delay_ms(size_t pipeline, uint32_t d
+ void SpeakerSourceMediaPlayer::handle_speaker_playback_callback_(uint32_t frames, int64_t timestamp, size_t pipeline) {
+   // Copy pointer to local variable to avoid TOCTOU race
+   media_source::MediaSource *active_source =
+-      (pipeline == MEDIA_PIPELINE) ? this->media_active_source_ : this->announcement_active_source_;
+-  uint32_t *pending_frames =
++      (pipeline == MEDIA_PIPELINE) ? this->media_active_source_.load(std::memory_order_relaxed)
++                                   : this->announcement_active_source_.load(std::memory_order_relaxed);
++  std::atomic<uint32_t> *pending_frames =
+       (pipeline == MEDIA_PIPELINE) ? &this->media_pending_frames_ : &this->announcement_pending_frames_;
+ 
+   // Check once - if null after this, we've avoided the race
+@@ -100,9 +101,14 @@ void SpeakerSourceMediaPlayer::handle_speaker_playback_callback_(uint32_t frames
+     return;
+   }
+ 
+-  // Calculate how many frames belong to this source
+-  uint32_t source_frames = std::min(frames, *pending_frames);
+-  *pending_frames -= source_frames;
++  // Safely subtract without underflow if a new source resets the counter while
++  // this callback is accounting for the preceding output batch.
++  uint32_t current = pending_frames->load(std::memory_order_relaxed);
++  uint32_t source_frames;
++  do {
++    source_frames = std::min(frames, current);
++  } while (source_frames > 0 && !pending_frames->compare_exchange_weak(
++                                      current, current - source_frames, std::memory_order_relaxed));
+ 
+   if (source_frames > 0) {
+     // Notify the source about the played audio
+@@ -135,7 +141,7 @@ void SpeakerSourceMediaPlayer::handle_play_uri_request_(media_source::MediaSourc
+ 
+ void SpeakerSourceMediaPlayer::handle_media_state_callback_(media_source::MediaSource *source,
+                                                             media_source::MediaSourceState state, size_t pipeline) {
+-  media_source::MediaSource **active_source_ptr =
++  std::atomic<media_source::MediaSource *> *active_source_ptr =
+       (pipeline == MEDIA_PIPELINE) ? &this->media_active_source_ : &this->announcement_active_source_;
+   media_source::MediaSource **last_source_ptr =
+       (pipeline == MEDIA_PIPELINE) ? &this->media_last_source_ : &this->announcement_last_source_;
+@@ -157,9 +163,9 @@ void SpeakerSourceMediaPlayer::handle_media_state_callback_(media_source::MediaS
+     }
+ 
+     // Source went idle - clear it if it's the active source
+-    if (*active_source_ptr == source) {
+-      *last_source_ptr = *active_source_ptr;  // Update last source
+-      *active_source_ptr = nullptr;
++    if (active_source_ptr->load(std::memory_order_relaxed) == source) {
++      *last_source_ptr = source;  // Update last source
++      active_source_ptr->store(nullptr, std::memory_order_relaxed);
+       // Finish the speaker to ensure it's ready for the next playback
+       if (target_speaker != nullptr) {
+         target_speaker->finish();
+@@ -213,8 +219,8 @@ void SpeakerSourceMediaPlayer::handle_media_state_callback_(media_source::MediaS
+   } else if (state == media_source::MediaSourceState::PLAYING) {
+     // Source started playing - make it the active source if no one else is active
+     // (Note: try_execute_play_uri_ ensures old source is stopped before new one plays)
+-    if (*active_source_ptr == nullptr) {
+-      *active_source_ptr = source;
++    media_source::MediaSource *expected = nullptr;
++    if (active_source_ptr->compare_exchange_strong(expected, source, std::memory_order_relaxed)) {
+       *last_source_ptr = nullptr;  // clear the last active source
+     }
+   }
+@@ -224,9 +230,10 @@ size_t SpeakerSourceMediaPlayer::handle_media_output_callback_(media_source::Med
+                                                                size_t length, TickType_t ticks,
+                                                                audio::AudioStreamInfo stream_info, size_t pipeline) {
+   media_source::MediaSource *active_source =
+-      (pipeline == MEDIA_PIPELINE) ? this->media_active_source_ : this->announcement_active_source_;
++      (pipeline == MEDIA_PIPELINE) ? this->media_active_source_.load(std::memory_order_relaxed)
++                                   : this->announcement_active_source_.load(std::memory_order_relaxed);
+   speaker::Speaker *target_speaker = (pipeline == MEDIA_PIPELINE) ? this->media_speaker_ : this->announcement_speaker_;
+-  uint32_t *pending_frames =
++  std::atomic<uint32_t> *pending_frames =
+       (pipeline == MEDIA_PIPELINE) ? &this->media_pending_frames_ : &this->announcement_pending_frames_;
+ 
+   if (target_speaker == nullptr) {
+@@ -244,7 +251,7 @@ size_t SpeakerSourceMediaPlayer::handle_media_output_callback_(media_source::Med
+     size_t bytes_written = target_speaker->play(data, length, ticks);
+     if (bytes_written > 0) {
+       // Track frames sent to speaker for this source
+-      *pending_frames += stream_info.bytes_to_frames(bytes_written);
++      pending_frames->fetch_add(stream_info.bytes_to_frames(bytes_written), std::memory_order_relaxed);
+     }
+     return bytes_written;
+   }
+@@ -451,14 +458,14 @@ bool SpeakerSourceMediaPlayer::try_execute_play_uri_(const std::string &uri, siz
+ 
++  // Reset before play_uri can publish readiness to another core.
++  if (pipeline == MEDIA_PIPELINE) {
++    this->media_pending_frames_.store(0, std::memory_order_relaxed);
++  } else {
++    this->announcement_pending_frames_.store(0, std::memory_order_relaxed);
++  }
++
+   // Speaker is ready, try to play
+   if (!target_source->play_uri(uri, pipeline)) {
+     ESP_LOGE(TAG, "Pipeline %zu: Failed to play URI: %s", pipeline, uri.c_str());
+   }
+ 
+-  // Reset pending frame counter for this pipeline since we're starting a new source
+-  if (pipeline == MEDIA_PIPELINE) {
+-    this->media_pending_frames_ = 0;
+-  } else {
+-    this->announcement_pending_frames_ = 0;
+-  }
+-
+   return true;  // Remove from queue
+diff --git a/speaker_source/speaker_source_media_player.h b/speaker_source/speaker_source_media_player.h
+index 269db2500..dde3f7676 100644
+--- a/speaker_source/speaker_source_media_player.h
++++ b/speaker_source/speaker_source_media_player.h
+@@ -12,6 +12,7 @@
+ #include "esphome/core/component.h"
+ #include "esphome/core/preferences.h"
+ 
++#include <atomic>
+ #include <vector>
+ #include <freertos/FreeRTOS.h>
+ #include <freertos/queue.h>
+@@ -127,10 +128,10 @@ class SpeakerSourceMediaPlayer : public Component, public media_player::MediaPla
+   std::vector<media_source::MediaSource *> media_sources_;
+   speaker::Speaker *media_speaker_{nullptr};
+   speaker::Speaker *announcement_speaker_{nullptr};
+-  media_source::MediaSource *announcement_active_source_{nullptr};
++  std::atomic<media_source::MediaSource *> announcement_active_source_{nullptr};
+   media_source::MediaSource *announcement_last_source_{nullptr};
+   media_source::MediaSource *announcement_stopping_source_{nullptr};  // Source we've asked to stop, awaiting IDLE
+-  media_source::MediaSource *media_active_source_{nullptr};
++  std::atomic<media_source::MediaSource *> media_active_source_{nullptr};
+   media_source::MediaSource *media_last_source_{nullptr};
+   media_source::MediaSource *media_stopping_source_{nullptr};  // Source we've asked to stop, awaiting IDLE
+ 
+@@ -154,8 +155,8 @@ class SpeakerSourceMediaPlayer : public Component, public media_player::MediaPla
+   uint32_t announcement_playlist_delay_ms_{0};
+ 
+   // Track frames sent to speaker per pipeline to correlate with playback callbacks
+-  uint32_t media_pending_frames_{0};
+-  uint32_t announcement_pending_frames_{0};
++  std::atomic<uint32_t> media_pending_frames_{0};
++  std::atomic<uint32_t> announcement_pending_frames_{0};
+ 
+   bool task_stack_in_psram_;
+ 

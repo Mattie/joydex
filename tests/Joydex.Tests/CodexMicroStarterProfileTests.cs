@@ -23,6 +23,7 @@ public sealed class CodexMicroStarterProfileTests
         AssertBinding(profile, button: 73, action: "agent-6");
         AssertBinding(profile, button: 54, action: "scroll-down");
         AssertBinding(profile, button: 55, action: "scroll-up");
+        AssertBinding(profile, button: 47, action: "archive-chat");
         AssertBinding(profile, button: 48, action: "home");
         AssertBinding(profile, button: 49, action: "end");
         AssertBinding(profile, button: 50, action: "fast-mode");

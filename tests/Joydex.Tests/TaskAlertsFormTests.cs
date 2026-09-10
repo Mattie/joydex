@@ -111,7 +111,7 @@ public sealed class TaskAlertsFormTests
             await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
             Assert.True(coordinator.AddSuppression(
                 TaskAlertSuppressionScope.Workspace,
-                @"C:\Users\Mattie\Documents\Codex\realtime-voice-chat"));
+                @"C:\Users\Example\Documents\Codex\realtime-voice-chat"));
             using var form = new IgnoredTaskSourcesForm(coordinator);
 
             var grid = FindControl<DataGridView>(form, "Ignored task status sources");
@@ -119,7 +119,7 @@ public sealed class TaskAlertsFormTests
             var rule = Assert.Single(grid.Rows.Cast<DataGridViewRow>());
             Assert.Equal("WORKSPACE", rule.Cells["Scope"].Value);
             Assert.Equal("realtime-voice-chat", rule.Cells["Source"].Value);
-            Assert.Equal(@"C:\Users\Mattie\Documents\Codex\realtime-voice-chat", rule.Cells["Match"].Value);
+            Assert.Equal(@"C:\Users\Example\Documents\Codex\realtime-voice-chat", rule.Cells["Match"].Value);
             Assert.Empty(grid.SelectedRows.Cast<DataGridViewRow>());
             Assert.False(reenable.Enabled);
         }
