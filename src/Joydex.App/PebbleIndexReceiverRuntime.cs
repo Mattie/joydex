@@ -47,8 +47,8 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         _secret = Encoding.UTF8.GetBytes(secret);
         _store = store;
         _bridge = bridge;
-        _status = status;
-        _log = log;
+        _status = IgnoreCallbackFailures(status);
+        _log = IgnoreCallbackFailures(log);
         _beforeClientRelease = beforeClientRelease;
         _listener = new TcpListener(IPAddress.Loopback, preferences.Port);
     }
@@ -74,12 +74,13 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         var runtime = new PebbleIndexReceiverRuntime(
             normalized, secret, new PebbleIndexDeliveryStore(inboxDirectory), bridge, status, log,
             beforeClientRelease);
+        var message = $"Listening on http://127.0.0.1:{normalized.Port}/pebble-index";
+        var startedStatus = runtime.BuildStatus(true, message);
         runtime._listener.Start(backlog: 16);
         runtime._acceptLoop = runtime.AcceptAsync(runtime._lifetime.Token);
         runtime._deliveryLoop = runtime.DeliverAsync(runtime._lifetime.Token);
-        var message = $"Listening on http://127.0.0.1:{normalized.Port}/pebble-index";
-        status(runtime.BuildStatus(true, message));
-        log("Pebble Index receiver started on loopback.");
+        runtime._status(startedStatus);
+        runtime._log("Pebble Index receiver started on loopback.");
         return Task.FromResult(runtime);
     }
 
@@ -422,6 +423,16 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
     }
 
     private static bool IsTruthy(string? value) => value?.Equals("true", StringComparison.OrdinalIgnoreCase) == true || value == "1";
+
+    private static Action<T> IgnoreCallbackFailures<T>(Action<T> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        return value =>
+        {
+            try { callback(value); }
+            catch { }
+        };
+    }
 
     internal int ActiveClientCount => _clients.Count;
 

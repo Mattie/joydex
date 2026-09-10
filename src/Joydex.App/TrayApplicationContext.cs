@@ -1789,7 +1789,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
 
             if (preferences.DesktopTaskMessagingEnabled)
-                await GetDesktopTaskBrokerAsync(startupToken).ConfigureAwait(true);
+                StartDesktopTaskBroker();
             startup = VoicePeBridgeRuntime.StartAsync(
                 preferences,
                 config.Safety,

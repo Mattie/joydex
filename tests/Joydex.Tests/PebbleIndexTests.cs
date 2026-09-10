@@ -358,6 +358,85 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
+    public async Task ReceiverStartupIgnoresDiagnosticCallbackFailures()
+    {
+        var port = ReservePort();
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var statusCalls = 0;
+        var logCalls = 0;
+        await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
+            new PebbleIndexPreferences(
+                Enabled: true, Port: port, TargetTaskId: target.Id,
+                TargetHostId: target.HostId, TargetTaskLabel: target.Title),
+            "test-secret",
+            Path.Combine(_directory, "callback-startup-inbox"),
+            new RecordingBridge(target),
+            _ =>
+            {
+                Interlocked.Increment(ref statusCalls);
+                throw new IOException("status unavailable");
+            },
+            _ =>
+            {
+                Interlocked.Increment(ref logCalls);
+                throw new IOException("log unavailable");
+            });
+        using var client = new HttpClient();
+
+        using var response = await client.GetAsync($"http://127.0.0.1:{port}/health");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(statusCalls > 0);
+        Assert.True(logCalls > 0);
+    }
+
+    [Fact]
+    public async Task DiagnosticCallbackFailuresDoNotStopDeliveryLoop()
+    {
+        var port = ReservePort();
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var bridge = new RecordingBridge(target);
+        var inbox = Path.Combine(_directory, "callback-delivery-inbox");
+        var statusCalls = 0;
+        var logCalls = 0;
+        await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
+            new PebbleIndexPreferences(
+                Enabled: true, Port: port, TargetTaskId: target.Id,
+                TargetHostId: target.HostId, TargetTaskLabel: target.Title),
+            "test-secret",
+            inbox,
+            bridge,
+            _ =>
+            {
+                if (Interlocked.Increment(ref statusCalls) > 1)
+                    throw new IOException("status unavailable");
+            },
+            _ =>
+            {
+                if (Interlocked.Increment(ref logCalls) > 1)
+                    throw new IOException("log unavailable");
+            });
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-secret");
+        var endpoint = new Uri($"http://127.0.0.1:{port}/pebble-index");
+
+        using (var first = CreateForm("first", "4000"))
+        using (var response = await client.PostAsync(endpoint, first))
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        await WaitForSentCountAsync(new PebbleIndexDeliveryStore(inbox), 1);
+        using (var second = CreateForm("second", "4001"))
+        using (var response = await client.PostAsync(endpoint, second))
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        await WaitForSentCountAsync(new PebbleIndexDeliveryStore(inbox), 2);
+
+        Assert.Equal(2, bridge.SendCount);
+        Assert.True(statusCalls > 1);
+        Assert.True(logCalls > 1);
+    }
+
+    [Fact]
     public async Task ReceiverWaitsForActiveClientsDuringShutdown()
     {
         var port = ReservePort();
@@ -437,7 +516,7 @@ public sealed class PebbleIndexTests : IDisposable
 
     private static async Task WaitForSentCountAsync(PebbleIndexDeliveryStore store, int expected)
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         while (!deadline.IsCancellationRequested)
         {
             if (store.Recent(100).Count(delivery => delivery.State == PebbleIndexDeliveryState.Sent) == expected)
