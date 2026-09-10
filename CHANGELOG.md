@@ -2,6 +2,10 @@
 
 This file records the major capabilities and fixes added since Joydex was first uploaded to GitHub. Entries are grouped by date because the project has not used versioned releases yet. New entries go at the top.
 
+## 2026-09-10
+
+- Changed the CM3 starter mapping for E2 push (button 53) from hold-to-talk dictation to the Voice Chat microphone mute toggle. T4 remains available for hold-to-talk dictation.
+
 ## 2026-09-08
 
 - Added an Archive chat action backed by Codex's `archiveThread` command and mapped CM3 toggle T6 down (button 47) to it in the starter profile.

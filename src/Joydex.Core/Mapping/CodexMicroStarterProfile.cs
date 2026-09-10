@@ -59,8 +59,7 @@ public static class CodexMicroStarterProfile
             AddBank(bindings, CompanionConfig.AlwaysBank, 68, AgentActions, "M4");
         }
 
-        AddBinding(bindings, "Hold-to-talk button", CompanionConfig.AlwaysBank, 53, "push-to-talk");
-        AddBinding(bindings, "Hold-to-talk button release", CompanionConfig.AlwaysBank, 53, "push-to-talk", "release");
+        AddBinding(bindings, "E2 push - Toggle voice mic", CompanionConfig.AlwaysBank, 53, "toggle-voice-mic");
         AddBinding(bindings, "T4 - Hold-to-talk", CompanionConfig.AlwaysBank, 37, "push-to-talk");
         AddBinding(bindings, "T4 - Hold-to-talk release", CompanionConfig.AlwaysBank, 37, "push-to-talk", "release");
         AddBinding(bindings, "E2 right - Scroll down", CompanionConfig.AlwaysBank, 54, "scroll-down");

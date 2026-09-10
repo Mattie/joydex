@@ -243,21 +243,12 @@
       "wheelNotches": 1
     },
     {
-      "name": "Hold-to-talk button",
+      "name": "E2 push - Toggle voice mic",
       "deviceId": "cm3",
       "bank": "always",
       "button": 53,
       "trigger": "press",
-      "action": "push-to-talk",
-      "wheelNotches": 1
-    },
-    {
-      "name": "Hold-to-talk button release",
-      "deviceId": "cm3",
-      "bank": "always",
-      "button": 53,
-      "trigger": "release",
-      "action": "push-to-talk",
+      "action": "toggle-voice-mic",
       "wheelNotches": 1
     },
     {

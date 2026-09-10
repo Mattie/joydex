@@ -29,6 +29,7 @@ public sealed class CodexMicroStarterProfileTests
         AssertBinding(profile, button: 50, action: "fast-mode");
         AssertBinding(profile, button: 51, action: "reasoning-down");
         AssertBinding(profile, button: 52, action: "reasoning-up");
+        AssertBinding(profile, button: 53, action: "toggle-voice-mic");
         var picker = Assert.Single(profile.PromptPickers);
         Assert.Equal(3, picker.Controls.Up.Button);
         Assert.Equal(2, picker.Controls.Down.Button);
@@ -51,14 +52,12 @@ public sealed class CodexMicroStarterProfileTests
             && binding.Action == "reject");
     }
 
-    [Theory]
-    [InlineData(37)]
-    [InlineData(53)]
-    public void HoldToTalkControlsHavePressAndReleaseBindings(int button)
+    [Fact]
+    public void T4HoldToTalkControlHasPressAndReleaseBindings()
     {
         var profile = CodexMicroStarterProfile.Create(Cm3ModeDialProfile.FiveWayShift);
         var microphoneBindings = profile.Bindings
-            .Where(binding => binding.Action == "push-to-talk" && binding.Button == button)
+            .Where(binding => binding.Action == "push-to-talk" && binding.Button == 37)
             .ToArray();
 
         Assert.Collection(
@@ -66,6 +65,20 @@ public sealed class CodexMicroStarterProfileTests
             binding => Assert.Equal("press", binding.Trigger),
             binding => Assert.Equal("release", binding.Trigger));
         Assert.Equal(microphoneBindings[0].Button, microphoneBindings[1].Button);
+    }
+
+    [Theory]
+    [InlineData(Cm3ModeDialProfile.FiveWayShift)]
+    [InlineData(Cm3ModeDialProfile.StandardButtons)]
+    public void E2PushOnlyTogglesTheVoiceChatMicrophone(Cm3ModeDialProfile dialProfile)
+    {
+        var profile = CodexMicroStarterProfile.Create(dialProfile);
+        var binding = Assert.Single(profile.Bindings, binding => binding.Button == 53);
+
+        Assert.Equal("E2 push - Toggle voice mic", binding.Name);
+        Assert.Equal(CompanionConfig.AlwaysBank, binding.Bank);
+        Assert.Equal("press", binding.Trigger);
+        Assert.Equal("toggle-voice-mic", binding.Action);
     }
 
     [Fact]
