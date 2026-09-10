@@ -6,7 +6,9 @@ Why pay for a purpose-built Codex Micro keyboard when you already have a joystic
 Just use Codex to set it up in a couple of hours and save yourself that extra $230. [See the prompt I started with.](docs/CASE_STUDY.md)
 
 ## What is Joydex?
-Joydex is a source example for turning a VIRPIL throttle into a physical control surface for the Codex desktop app. Mechanically, it reads the throttle through DirectInput, resolves the current Codex shortcuts, and injects the corresponding Windows input events. The result is a small Windows tray app.
+Joydex is a source example for using different hardware devices to work with Codex.
+
+It starts with turning a VIRPIL throttle into a physical control surface for the Codex desktop app. Mechanically, it reads the throttle through DirectInput, resolves the current Codex shortcuts, and injects the corresponding Windows input events. The result is a small Windows tray app.
 
 It could be adapted pretty easily to other devices, but I wanted to show how easy it was to get going by using Codex itself to build the handlers. See [the case study](docs/CASE_STUDY.md) for the story of how this came together in just a few hours.
 
