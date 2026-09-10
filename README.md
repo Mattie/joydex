@@ -1,6 +1,6 @@
 # Joydex
 
-## Codex companion for a Joystick/Throttle
+## Codex companion for a Joystick/Throttle (and more!)
 Why pay for a purpose-built Codex Micro keyboard when you already have a joystick, pad, or flight-sim throttle?
 
 Just use Codex to set it up in a couple of hours and save yourself that extra $230. [See the prompt I started with.](docs/CASE_STUDY.md)
