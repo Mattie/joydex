@@ -53,6 +53,8 @@ internal sealed class VoicePeSendspinSpeakerSession : IVoicePeSendspinSpeakerSes
     private readonly VoicePeSendspinPlaybackTimeline _timeline = new();
     private readonly VoicePeSendspinOpusEncoder _opusEncoder = new();
     private readonly byte[] _opusPacket = new byte[VoicePeSendspinProtocol.MaximumOpusPacketBytes];
+    private readonly byte[] _audioChunk =
+        new byte[VoicePeSendspinProtocol.BinaryHeaderBytes + VoicePeSendspinProtocol.MaximumOpusPacketBytes];
     private readonly long _clockOrigin = Stopwatch.GetTimestamp();
 
     private Task? _receiveTask;
@@ -177,10 +179,15 @@ internal sealed class VoicePeSendspinSpeakerSession : IVoicePeSendspinSpeakerSes
             }
 
             var encodedLength = _opusEncoder.Encode(frame.Payload.Span, _opusPacket);
-            var packet = VoicePeSendspinProtocol.CreateAudioChunk(
+            var packetLength = VoicePeSendspinProtocol.WriteAudioChunk(
                 decision.TimestampMicroseconds,
-                _opusPacket.AsSpan(0, encodedLength));
-            await SendAsync(packet, WebSocketMessageType.Binary, cancellationToken).ConfigureAwait(false);
+                _opusPacket.AsSpan(0, encodedLength),
+                _audioChunk);
+            await SendAsync(
+                    _audioChunk.AsMemory(0, packetLength),
+                    WebSocketMessageType.Binary,
+                    cancellationToken)
+                .ConfigureAwait(false);
             Interlocked.Add(ref _payloadBytesSent, encodedLength);
             _maximumPayloadBytes = Math.Max(_maximumPayloadBytes, encodedLength);
             if (Interlocked.Increment(ref _framesSent) == 1)

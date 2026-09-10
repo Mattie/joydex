@@ -36,10 +36,27 @@ internal static class VoicePeSendspinProtocol
     internal static byte[] CreateAudioChunk(long timestampMicroseconds, ReadOnlySpan<byte> audioPayload)
     {
         var message = new byte[BinaryHeaderBytes + audioPayload.Length];
-        message[0] = PlayerAudioMessageType;
-        BinaryPrimitives.WriteInt64BigEndian(message.AsSpan(1, sizeof(long)), timestampMicroseconds);
-        audioPayload.CopyTo(message.AsSpan(BinaryHeaderBytes));
+        WriteAudioChunk(timestampMicroseconds, audioPayload, message);
         return message;
+    }
+
+    internal static int WriteAudioChunk(
+        long timestampMicroseconds,
+        ReadOnlySpan<byte> audioPayload,
+        Span<byte> destination)
+    {
+        var messageLength = checked(BinaryHeaderBytes + audioPayload.Length);
+        if (destination.Length < messageLength)
+        {
+            throw new ArgumentException(
+                $"The Sendspin destination needs {messageLength} bytes.",
+                nameof(destination));
+        }
+
+        destination[0] = PlayerAudioMessageType;
+        BinaryPrimitives.WriteInt64BigEndian(destination.Slice(1, sizeof(long)), timestampMicroseconds);
+        audioPayload.CopyTo(destination[BinaryHeaderBytes..messageLength]);
+        return messageLength;
     }
 
     internal static void ValidateClient(VoicePeSendspinClientHello client)

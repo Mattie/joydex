@@ -27,6 +27,23 @@ public sealed class VoicePeSendspinProtocolTests
     }
 
     [Fact]
+    public void FramesAudioPayloadIntoReusableDestination()
+    {
+        byte[] pcm = [0x11, 0x22, 0x33];
+        var destination = new byte[32];
+
+        var written = VoicePeSendspinProtocol.WriteAudioChunk(
+            0x0102030405060708,
+            pcm,
+            destination);
+
+        Assert.Equal(VoicePeSendspinProtocol.BinaryHeaderBytes + pcm.Length, written);
+        Assert.Equal(VoicePeSendspinProtocol.PlayerAudioMessageType, destination[0]);
+        Assert.Equal(0x0102030405060708, BinaryPrimitives.ReadInt64BigEndian(destination.AsSpan(1, sizeof(long))));
+        Assert.Equal(pcm, destination.AsSpan(VoicePeSendspinProtocol.BinaryHeaderBytes, pcm.Length).ToArray());
+    }
+
+    [Fact]
     public void AcceptsModernPlayerHelloBufferCapacityInCompressedBytes()
     {
         var hello = new VoicePeSendspinClientHello(

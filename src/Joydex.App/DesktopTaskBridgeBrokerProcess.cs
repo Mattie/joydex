@@ -1,9 +1,13 @@
 using System.Diagnostics;
+using System.Text;
 
 namespace Joydex.App;
 
 internal sealed class DesktopTaskBridgeBrokerProcess : IAsyncDisposable
 {
+    private static readonly UTF8Encoding Utf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
     private readonly Process _process;
     private readonly Task _stderr;
     private int _disposed;
@@ -27,17 +31,7 @@ internal sealed class DesktopTaskBridgeBrokerProcess : IAsyncDisposable
             throw new FileNotFoundException("The Desktop Task Bridge host is missing.", fullPath);
         }
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = fullPath,
-            WorkingDirectory = Path.GetDirectoryName(fullPath)!,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        startInfo.ArgumentList.Add("--serve-desktop");
-        startInfo.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        var startInfo = CreateStartInfo(fullPath);
         var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("The Desktop Task Bridge broker worker did not start.");
         var stderr = DrainStandardErrorAsync(process, log);
@@ -65,6 +59,26 @@ internal sealed class DesktopTaskBridgeBrokerProcess : IAsyncDisposable
             await broker.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    internal static ProcessStartInfo CreateStartInfo(string executablePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
+        var fullPath = Path.GetFullPath(executablePath.Trim());
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = fullPath,
+            WorkingDirectory = Path.GetDirectoryName(fullPath)!,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Utf8,
+            StandardErrorEncoding = Utf8,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("--serve-desktop");
+        startInfo.ArgumentList.Add(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        return startInfo;
     }
 
     private static async Task DrainStandardErrorAsync(Process process, Action<string> log)

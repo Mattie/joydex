@@ -134,6 +134,12 @@ public sealed record VoicePePreferences(
         {
             errors.Add("The Voice Agent Workspace path must be fully qualified.");
         }
+        if (Enabled
+            && SessionMode == VoicePeSessionMode.JoydexOwner
+            && string.IsNullOrWhiteSpace(AgentWorkspacePath))
+        {
+            errors.Add("A Voice Agent Workspace path is required in Joydex owner mode.");
+        }
         if (!string.IsNullOrWhiteSpace(AgentProjectId)
             && string.IsNullOrWhiteSpace(AgentWorkspacePath))
         {

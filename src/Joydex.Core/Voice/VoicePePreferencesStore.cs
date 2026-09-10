@@ -181,7 +181,7 @@ public static class VoicePePreferencesStore
 
     private static VoicePePreferences MigrateFromV2(VoicePePreferencesV2 legacy) => new(
         SchemaVersion: VoicePePreferences.CurrentSchemaVersion,
-        Enabled: legacy.Enabled,
+        Enabled: CanPreserveEnabledWithoutWorkspace(legacy.Enabled, legacy.SessionMode),
         DeviceEndpoint: legacy.DeviceEndpoint,
         PinnedTaskId: legacy.PinnedTaskId,
         PinnedTaskLabel: legacy.PinnedTaskLabel,
@@ -192,7 +192,7 @@ public static class VoicePePreferencesStore
 
     private static VoicePePreferences MigrateFromV3(VoicePePreferencesV3 legacy) => new(
         SchemaVersion: VoicePePreferences.CurrentSchemaVersion,
-        Enabled: legacy.Enabled,
+        Enabled: CanPreserveEnabledWithoutWorkspace(legacy.Enabled, legacy.SessionMode),
         DeviceEndpoint: legacy.DeviceEndpoint,
         PinnedTaskId: legacy.PinnedTaskId,
         PinnedTaskLabel: legacy.PinnedTaskLabel,
@@ -206,7 +206,7 @@ public static class VoicePePreferencesStore
 
     private static VoicePePreferences MigrateFromV4(VoicePePreferencesV4 legacy) => new(
         SchemaVersion: VoicePePreferences.CurrentSchemaVersion,
-        Enabled: legacy.Enabled,
+        Enabled: CanPreserveEnabledWithoutWorkspace(legacy.Enabled, legacy.SessionMode),
         DeviceEndpoint: legacy.DeviceEndpoint,
         PinnedTaskId: legacy.PinnedTaskId,
         PinnedTaskLabel: legacy.PinnedTaskLabel,
@@ -223,7 +223,9 @@ public static class VoicePePreferencesStore
 
     private static VoicePePreferences MigrateFromV5(VoicePePreferencesV5 legacy) => new(
         SchemaVersion: VoicePePreferences.CurrentSchemaVersion,
-        Enabled: legacy.Enabled,
+        Enabled: legacy.Enabled
+                 && (legacy.SessionMode != VoicePeSessionMode.JoydexOwner
+                     || !string.IsNullOrWhiteSpace(legacy.AgentWorkspacePath)),
         DeviceEndpoint: legacy.DeviceEndpoint,
         PinnedTaskId: legacy.PinnedTaskId,
         PinnedTaskLabel: legacy.PinnedTaskLabel,
@@ -237,6 +239,9 @@ public static class VoicePePreferencesStore
         RealtimeVoice: legacy.RealtimeVoice,
         ConversationSpeakerGain: legacy.ConversationSpeakerGain,
         PreserveAssistantAudioDiagnostics: legacy.PreserveAssistantAudioDiagnostics);
+
+    private static bool CanPreserveEnabledWithoutWorkspace(bool enabled, VoicePeSessionMode sessionMode) =>
+        enabled && sessionMode != VoicePeSessionMode.JoydexOwner;
 
     private static void PreserveSchemaBackup(string path, int schemaVersion, ReadOnlySpan<byte> documentBytes)
     {

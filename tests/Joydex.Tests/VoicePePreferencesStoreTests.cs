@@ -135,6 +135,7 @@ public sealed class VoicePePreferencesStoreTests : IDisposable
         var preferences = VoicePePreferencesStore.LoadOrCreate(path);
 
         Assert.Equal(VoicePePreferences.CurrentSchemaVersion, preferences.SchemaVersion);
+        Assert.False(preferences.Enabled);
         Assert.Empty(preferences.RealtimeVoice);
         Assert.Equal(VoicePePreferences.DefaultConversationSpeakerGain, preferences.ConversationSpeakerGain);
         Assert.False(preferences.PreserveAssistantAudioDiagnostics);
@@ -196,6 +197,7 @@ public sealed class VoicePePreferencesStoreTests : IDisposable
         var preferences = VoicePePreferencesStore.LoadOrCreate(path);
 
         Assert.Equal(VoicePePreferences.CurrentSchemaVersion, preferences.SchemaVersion);
+        Assert.False(preferences.Enabled);
         Assert.Empty(preferences.AgentWorkspacePath);
         Assert.Empty(preferences.AgentProjectId);
         Assert.Empty(preferences.AgentProjectLabel);
@@ -242,6 +244,41 @@ public sealed class VoicePePreferencesStoreTests : IDisposable
     }
 
     [Fact]
+    public void MigratesEnabledSchemaFiveOwnerWithoutWorkspaceAsDisabled()
+    {
+        var path = Path.Combine(_directory, "voice-pe.json");
+        var taskId = Guid.NewGuid();
+        Directory.CreateDirectory(_directory);
+        var original = $$"""
+            {
+              "schemaVersion": 5,
+              "enabled": true,
+              "deviceEndpoint": "http://voice-pe.local/",
+              "pinnedTaskId": "",
+              "pinnedTaskLabel": "",
+              "sessionMode": "joydexOwner",
+              "dedicatedTaskId": "{{taskId:D}}",
+              "dedicatedTaskLabel": "Old owned task",
+              "codexAppServerPath": "C:\\Codex\\codex.exe",
+              "agentWorkspacePath": "",
+              "agentProjectId": "",
+              "agentProjectLabel": "",
+              "realtimeVoice": "cove",
+              "conversationSpeakerGain": 2,
+              "preserveAssistantAudioDiagnostics": false
+            }
+            """;
+        File.WriteAllText(path, original);
+
+        var preferences = VoicePePreferencesStore.LoadOrCreate(path);
+
+        Assert.False(preferences.Enabled);
+        Assert.Equal(taskId.ToString("D"), preferences.DedicatedTaskId);
+        Assert.Empty(preferences.AgentWorkspacePath);
+        Assert.Equal(original, File.ReadAllText(Path.Combine(_directory, "voice-pe.schema-v5.backup.json")));
+    }
+
+    [Fact]
     public void DesktopMessagingRequiresOwnerModeAndCompleteTargetIdentity()
     {
         var errors = (VoicePePreferences.Default with
@@ -266,6 +303,7 @@ public sealed class VoicePePreferencesStoreTests : IDisposable
             DedicatedTaskId: taskId).Validate();
 
         Assert.Contains(errors, error => error.Contains("App Server", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(errors, error => error.Contains("Workspace", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(errors, error => error.Contains("must be different", StringComparison.OrdinalIgnoreCase));
     }
 
