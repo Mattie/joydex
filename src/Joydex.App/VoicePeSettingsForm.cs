@@ -16,7 +16,11 @@ internal sealed class RoomVoiceSettingsControl : UserControl
     private readonly TextBox _taskLabel = new() { Dock = DockStyle.Fill };
     private readonly TextBox _dedicatedTaskReference = new() { Dock = DockStyle.Fill };
     private readonly TextBox _dedicatedTaskLabel = new() { Dock = DockStyle.Fill };
-    private readonly TextBox _codexAppServerPath = new() { Dock = DockStyle.Fill };
+    private readonly TextBox _codexAppServerPath = new()
+    {
+        Dock = DockStyle.Fill,
+        PlaceholderText = "Automatic — installed Codex Desktop runtime",
+    };
     private readonly ComboBox _agentProject = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly TextBox _agentWorkspacePath = new() { Dock = DockStyle.Fill };
     private readonly Label _workspaceStatus = new()
@@ -140,7 +144,10 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             : CodexTaskReference.BuildDeepLink(initial.DedicatedTaskId);
         _dedicatedTaskReference.ReadOnly = true;
         _dedicatedTaskLabel.Text = initial.DedicatedTaskLabel;
-        _codexAppServerPath.Text = initial.CodexAppServerPath;
+        _codexAppServerPath.Text = CodexAppServerRuntimeResolver.IsManagedRuntimePath(
+            initial.CodexAppServerPath)
+            ? string.Empty
+            : initial.CodexAppServerPath;
         _agentWorkspacePath.Text = string.IsNullOrWhiteSpace(initial.AgentWorkspacePath)
             ? SuggestDefaultWorkspacePath()
             : initial.AgentWorkspacePath;
@@ -394,7 +401,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         advancedFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         AddField(advancedFields, 0, "Session route", _sessionMode);
         AddField(advancedFields, 1, "Dedicated task deep link", _dedicatedTaskReference);
-        AddField(advancedFields, 2, "Pinned App Server executable", _codexAppServerPath);
+        AddField(advancedFields, 2, "App Server executable override", _codexAppServerPath);
         AddField(advancedFields, 3, "LASTVOICE fallback task", _taskReference);
         AddField(advancedFields, 4, "Fallback task label", _taskLabel);
         var advancedCommands = new FlowLayoutPanel
@@ -418,7 +425,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             ForeColor = SystemColors.GrayText,
             MaximumSize = new Size(680, 0),
             Padding = new Padding(8, 0, 8, 8),
-            Text = "Joydex keeps the dedicated task's writer lock. Codex Desktop cannot open that task while Room Voice is running.",
+            Text = "Joydex automatically follows Codex Desktop updates when the executable override is blank. It keeps the dedicated task's writer lock while Room Voice is running.",
         }, 0, 2);
         var advancedGroup = CreateGroup("Advanced", advancedLayout);
 
@@ -472,7 +479,10 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             ?? VoicePeSessionMode.LastVoiceFallback,
         DedicatedTaskId: WorkspaceMatchesProvisioned() ? _dedicatedTaskReference.Text : string.Empty,
         DedicatedTaskLabel: _dedicatedTaskLabel.Text,
-        CodexAppServerPath: _codexAppServerPath.Text,
+        CodexAppServerPath: CodexAppServerRuntimeResolver.IsManagedRuntimePath(
+            _codexAppServerPath.Text)
+            ? string.Empty
+            : _codexAppServerPath.Text,
         AgentWorkspacePath: _agentWorkspacePath.Text,
         AgentProjectId: SelectedProjectId(),
         AgentProjectLabel: SelectedProjectLabel(),
@@ -585,9 +595,9 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         }
     }
 
-    private async Task LoadProjectChoicesAsync()
+    internal async Task LoadProjectChoicesAsync()
     {
-        if (_listProjects is null || string.IsNullOrWhiteSpace(_codexAppServerPath.Text))
+        if (_listProjects is null)
         {
             return;
         }

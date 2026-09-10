@@ -1,6 +1,6 @@
 # ADR 0002: Use Codex App Server Realtime for Dedicated Voice
 
-- Status: Accepted experimentally
+- Status: Accepted experimentally; runtime selection superseded by [ADR 0005](0005-follow-managed-codex-runtime-with-capability-checks.md)
 - Date: 2026-08-25
 
 ## Context
@@ -93,12 +93,12 @@ before speaker gain when assistant-audio diagnostics are enabled. The adopted hy
 route keeps the microphone open with the persisted Barge In switch on; firmware `0.1.19` cannot mark
 Sendspin playback as started on its separate microphone/control lane.
 
-Joydex will pin the tested App Server executable and matching `codex-code-mode-host` hashes, resume
-the exact configured task, call `thread/realtime/listVoices`, require a valid Realtime v2 default
-voice, and fail closed before starting device media when any owner preflight fails. This preserves
-the Dedicated Voice Task's normal interactive tools instead of accepting an incomplete one-file
-runtime. Session activation separately requires the WebRTC data channel, remote audio track, and
-Voice PE LAN transport before readiness is reported.
+Joydex will select and validate the Codex App Server runtime as refined by
+[ADR 0005](0005-follow-managed-codex-runtime-with-capability-checks.md), resume the exact configured
+task, call `thread/realtime/listVoices`, and require a compatible voice catalog before starting
+device media. This preserves the Dedicated Voice Task's normal interactive tools instead of
+accepting an incomplete one-file runtime. Session activation separately requires the WebRTC data
+channel, remote audio track, and Voice PE LAN transport before readiness is reported.
 Runtime code will use generated schemas and protocol responses; it will not inspect or parse
 `app.asar`, emulate first-party attestation, or rewrite private upstream call requests.
 
@@ -161,8 +161,8 @@ leave normal Room Voice operation intact and hold attempted outbound delivery fo
   sessions.
 - App Server process exit is supervised; Joydex rebuilds the complete owner bridge with bounded
   exponential backoff instead of leaving the wake path silently unavailable.
-- Transient owner-start failures retry with the same bounded backoff. Configuration, pinned-binary,
-  and Realtime-capability failures remain terminal and visible until corrected.
+- Transient owner-start failures retry with the same bounded backoff. Configuration, explicit
+  runtime-override, and Realtime-capability failures remain terminal and visible until corrected.
 - Recoverable Voice PE control-stream protocol failures reconnect instead of permanently ending
   wake monitoring.
 - ChatGPT-authenticated full-duplex WebRTC is proven on the host with deterministic audio.
@@ -174,10 +174,12 @@ leave normal Room Voice operation intact and hold attempted outbound delivery fo
 - DESKTOPATTACH remains capability discovery on Windows. Parent-owned Desktop stdio cannot be joined
   by another process through a documented transport.
 - The PC must remain awake, online, and authenticated to ChatGPT.
-- A compatible App Server must be supplied or selected independently of the installed Desktop build
-  when that build is outside the tested range.
-- App Server Realtime is experimental, so every Codex upgrade requires schema and end-to-end media
-  canaries before automatic wake is enabled.
+- Joydex follows the most recently written structurally complete candidate in Codex Desktop's
+  managed runtime folder. A runtime outside that location can still be selected as an explicit
+  override.
+- App Server Realtime is experimental. Schema and end-to-end media canaries remain regression
+  evidence after upstream changes, while ordinary Desktop upgrades no longer wait on a new hash
+  allowlist before automatic wake can resume.
 - The hybrid Voice PE microphone and Sendspin Opus speaker transport passes a three-minute physical
   duplex soak and repeated attended natural sessions. The best restart canary carried multiple
   intelligible exchanges with no speaker-queue overflow and rearmed for a second session. Spoken
@@ -187,14 +189,17 @@ leave normal Room Voice operation intact and hold attempted outbound delivery fo
 ## Evidence
 
 - `tools/Joydex.WebRtcCanary` host-only canary
-- Revalidated on 2026-09-08 against Windows package `OpenAI.Codex 26.901.6511.0`, bundled app
-  release `26.901`, and Codex `0.153.4`
-- Verified Codex `0.153.4` binary SHA-256
-  `e5aa76d19c7c94e2e9ef9b707d590206a73ac0e97c8ddc8382181242494bef75`
-- Verified matching `codex-code-mode-host.exe` SHA-256
-  `3eb2083b58f0982506e5c3cb7a550fb6538d718c29f0a75ca4848852a0aff0c7`
+- Revalidated on 2026-09-10 against Windows package `OpenAI.Codex 26.903.9818.0`, bundled app
+  release `26.903`, and Codex `0.153.4`
+- Historical validation evidence: Codex `0.153.4` binary SHA-256
+  `3d6ca7085c932b62ef4ee4877e92f15b050fb94b2eb8e6c10a346a06248c6004`
+- Historical validation evidence: matching `codex-code-mode-host.exe` SHA-256
+  `5343b7a0f1645b9bfeef1d15e63facfba3c59ffc48e0f22a0dc53ae6a1a3b9c2`
 - Successful `0.153.4` deterministic microphone uplink, remote model-audio track, Windows speaker
-  playback with nonzero audio energy, 273,243-byte WebM capture, and typed requested close
+  playback with nonzero audio energy, valid 74,175-byte 48 kHz mono Opus WebM capture, and typed
+  requested close
+- Successful attended Voice PE wake, two user turns, device-speaker replies, spoken hangup, saved
+  transcript and diagnostic audio, zero speaker overflow or underruns, and return to `Armed`
 - Verified upstream Codex `0.150.0-alpha.9` binary SHA-256
   `5ffd7a27694e1529d717a0247858d7650438273ba10d4d8a4f0a73f5e1414082`
 - Verified matching `codex-code-mode-host.exe` SHA-256

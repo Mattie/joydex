@@ -69,9 +69,12 @@ public sealed class CodexDedicatedVoiceOwner : ICodexRealtimeControl, IAsyncDisp
             dedicatedTaskId,
             async cancellationToken =>
             {
-                var binary = await CodexAppServerBinaryPolicy
-                    .VerifyAsync(appServerPath, cancellationToken)
+                var binary = await CodexAppServerRuntimeResolver
+                    .ResolveAsync(appServerPath, cancellationToken)
                     .ConfigureAwait(false);
+                log?.Invoke(
+                    $"Room Voice selected {(binary.IsManagedRuntime ? "automatic" : "override")} "
+                    + $"Codex App Server runtime '{binary.ExecutablePath}'.");
                 return new CodexAppServerClient(binary, workspacePath, log, voiceTools);
             },
             realtimeVoice,
@@ -131,7 +134,16 @@ public sealed class CodexDedicatedVoiceOwner : ICodexRealtimeControl, IAsyncDisp
             var client = await _createClient(cancellationToken).ConfigureAwait(false);
             try
             {
-                await client.StartAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await client.StartAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (CodexAppServerRpcException exception)
+                {
+                    throw new CodexDedicatedVoiceCompatibilityException(
+                        "Codex App Server rejected the required initialization contract.",
+                        exception);
+                }
                 JsonElement result;
                 try
                 {
@@ -161,11 +173,17 @@ public sealed class CodexDedicatedVoiceOwner : ICodexRealtimeControl, IAsyncDisp
                         $"The Dedicated Voice Task {_threadId} already has an active writer.",
                         exception);
                 }
+                catch (CodexAppServerRpcException exception)
+                {
+                    throw new CodexDedicatedVoiceCompatibilityException(
+                        $"Codex App Server could not resume the configured Dedicated Voice Task {_threadId}.",
+                        exception);
+                }
 
                 var resumedId = ReadThreadId(result);
                 if (!string.Equals(_threadId, resumedId, StringComparison.Ordinal))
                 {
-                    throw new InvalidOperationException(
+                    throw new CodexDedicatedVoiceCompatibilityException(
                         $"Codex App Server resumed task {resumedId} instead of configured Dedicated Voice Task {_threadId}.");
                 }
                 ValidateWorkspace(result, _workspacePath);
@@ -310,7 +328,7 @@ public sealed class CodexDedicatedVoiceOwner : ICodexRealtimeControl, IAsyncDisp
             return id;
         }
 
-        throw new InvalidOperationException("thread/resume returned no task id.");
+        throw new CodexDedicatedVoiceCompatibilityException("thread/resume returned no task id.");
     }
 
     private static void ValidateWorkspace(JsonElement result, string expectedWorkspace)
@@ -325,12 +343,13 @@ public sealed class CodexDedicatedVoiceOwner : ICodexRealtimeControl, IAsyncDisp
             || !thread.TryGetProperty("cwd", out var cwdElement)
             || cwdElement.GetString() is not { Length: > 0 } returnedWorkspace)
         {
-            throw new InvalidOperationException("thread/resume returned no working directory.");
+            throw new CodexDedicatedVoiceCompatibilityException(
+                "thread/resume returned no working directory.");
         }
 
         if (!CodexVoiceWorkspaceService.PathsEqual(expectedWorkspace, returnedWorkspace))
         {
-            throw new InvalidOperationException(
+            throw new CodexDedicatedVoiceCompatibilityException(
                 $"Codex resumed the Dedicated Voice Task in '{returnedWorkspace}' instead of configured workspace '{expectedWorkspace}'.");
         }
     }

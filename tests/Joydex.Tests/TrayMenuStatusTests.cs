@@ -186,6 +186,21 @@ public sealed class TrayMenuStatusTests
             new InvalidOperationException("The App Server connection closed unexpectedly.")));
     }
 
+    [Fact]
+    public void MissingManagedCodexRuntimeRetriesAfterAnUpdateRace()
+    {
+        Assert.True(TrayApplicationContext.IsTransientOwnerStartupFailure(
+            new CodexManagedRuntimeUnavailableException(
+                "The managed runtime is temporarily unavailable.",
+                Path.GetTempPath())));
+        Assert.False(TrayApplicationContext.IsTransientOwnerStartupFailure(
+            new FileNotFoundException("The explicit runtime override is missing.")));
+        Assert.False(TrayApplicationContext.IsTransientOwnerStartupFailure(
+            new DirectoryNotFoundException("The configured workspace is missing.")));
+        Assert.False(TrayApplicationContext.IsTransientOwnerStartupFailure(
+            new CodexDedicatedVoiceCompatibilityException("The App Server protocol is incompatible.")));
+    }
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ShowWindow(IntPtr window, int command);

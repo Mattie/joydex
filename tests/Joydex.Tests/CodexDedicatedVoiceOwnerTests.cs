@@ -60,6 +60,43 @@ public sealed class CodexDedicatedVoiceOwnerTests
     }
 
     [Fact]
+    public async Task RejectsInitializationRpcFailureAsCompatibilityFailure()
+    {
+        var threadId = Guid.NewGuid().ToString("D");
+        var client = new FakeAppServerClient(
+            (_, _, _) => throw new InvalidOperationException("No request was expected."),
+            new CodexAppServerRpcException(-32602, "invalid initialize parameters"));
+        await using var owner = new CodexDedicatedVoiceOwner(
+            threadId,
+            _ => Task.FromResult<ICodexAppServerClient>(client));
+
+        var exception = await Assert.ThrowsAsync<CodexDedicatedVoiceCompatibilityException>(
+            () => owner.StartAsync());
+
+        Assert.Contains("initialization contract", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(client.Disposed);
+    }
+
+    [Fact]
+    public async Task RejectsResumeRpcFailureAsCompatibilityFailure()
+    {
+        var threadId = Guid.NewGuid().ToString("D");
+        var client = new FakeAppServerClient((_, _, _) =>
+            Task.FromException<JsonElement>(new CodexAppServerRpcException(
+                -32602,
+                "invalid resume parameters")));
+        await using var owner = new CodexDedicatedVoiceOwner(
+            threadId,
+            _ => Task.FromResult<ICodexAppServerClient>(client));
+
+        var exception = await Assert.ThrowsAsync<CodexDedicatedVoiceCompatibilityException>(
+            () => owner.StartAsync());
+
+        Assert.Contains("could not resume", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(client.Disposed);
+    }
+
+    [Fact]
     public async Task RejectsResumeThatReturnsAnotherTask()
     {
         var configuredId = Guid.NewGuid().ToString("D");
@@ -70,7 +107,8 @@ public sealed class CodexDedicatedVoiceOwnerTests
             configuredId,
             _ => Task.FromResult<ICodexAppServerClient>(client));
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => owner.StartAsync());
+        var exception = await Assert.ThrowsAsync<CodexDedicatedVoiceCompatibilityException>(
+            () => owner.StartAsync());
 
         Assert.Contains(configuredId, exception.Message, StringComparison.Ordinal);
         Assert.Contains(returnedId, exception.Message, StringComparison.Ordinal);
@@ -252,7 +290,8 @@ public sealed class CodexDedicatedVoiceOwnerTests
                 _ => Task.FromResult<ICodexAppServerClient>(client),
                 workspacePath: configured);
 
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => owner.StartAsync());
+            var exception = await Assert.ThrowsAsync<CodexDedicatedVoiceCompatibilityException>(
+                () => owner.StartAsync());
 
             Assert.Contains(configured, exception.Message, StringComparison.OrdinalIgnoreCase);
             Assert.Contains(returned, exception.Message, StringComparison.OrdinalIgnoreCase);
@@ -277,7 +316,8 @@ public sealed class CodexDedicatedVoiceOwnerTests
     });
 
     private sealed class FakeAppServerClient(
-        Func<string, JsonElement, CancellationToken, Task<JsonElement>> request) : ICodexAppServerClient
+        Func<string, JsonElement, CancellationToken, Task<JsonElement>> request,
+        Exception? startFailure = null) : ICodexAppServerClient
     {
         private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -295,7 +335,8 @@ public sealed class CodexDedicatedVoiceOwnerTests
 
         public List<(string Method, JsonElement Parameters)> Requests { get; } = [];
 
-        public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task StartAsync(CancellationToken cancellationToken = default) =>
+            startFailure is null ? Task.CompletedTask : Task.FromException(startFailure);
 
         public Task<JsonElement> RequestAsync(
             string method,

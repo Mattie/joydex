@@ -292,7 +292,7 @@ public sealed class VoicePePreferencesStoreTests : IDisposable
     }
 
     [Fact]
-    public void JoydexOwnerRequiresDistinctDedicatedTaskAndAppServerPath()
+    public void JoydexOwnerAllowsAutomaticAppServerSelection()
     {
         var taskId = Guid.NewGuid().ToString("D");
         var errors = new VoicePePreferences(
@@ -302,9 +302,22 @@ public sealed class VoicePePreferencesStoreTests : IDisposable
             SessionMode: VoicePeSessionMode.JoydexOwner,
             DedicatedTaskId: taskId).Validate();
 
-        Assert.Contains(errors, error => error.Contains("App Server", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(errors, error => error.Contains("App Server", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(errors, error => error.Contains("Workspace", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(errors, error => error.Contains("must be different", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void RejectsARelativeAppServerOverride()
+    {
+        var errors = VoicePePreferences.Default with
+        {
+            CodexAppServerPath = Path.Combine("relative", "codex.exe"),
+        };
+
+        Assert.Contains(
+            errors.Validate(),
+            error => error.Contains("override must be fully qualified", StringComparison.OrdinalIgnoreCase));
     }
 
     [Theory]
