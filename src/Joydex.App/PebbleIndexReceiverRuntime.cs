@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
@@ -466,27 +467,49 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
             var separator = part.IndexOf("\r\n\r\n", StringComparison.Ordinal);
             if (separator < 0) continue;
             var headers = part[..separator];
-            if (headers.Contains("filename=", StringComparison.OrdinalIgnoreCase)
-                || headers.Contains("filename*=", StringComparison.OrdinalIgnoreCase))
+            if (!TryReadFormDataDisposition(headers, out var name, out var rejectPart))
             {
-                hasFiles = true;
+                hasFiles |= rejectPart;
                 continue;
             }
-            const string nameMarker = "name=";
-            var nameStart = headers.IndexOf(nameMarker, StringComparison.OrdinalIgnoreCase);
-            if (nameStart < 0) continue;
-            nameStart += nameMarker.Length;
-            var quoted = nameStart < headers.Length && headers[nameStart] == '"';
-            if (quoted) nameStart++;
-            var nameEnd = quoted
-                ? headers.IndexOf('"', nameStart)
-                : headers.IndexOfAny([';', '\r', '\n'], nameStart);
-            if (nameEnd < 0) nameEnd = headers.Length;
             var raw = part[(separator + 4)..];
             if (raw.EndsWith("\r\n", StringComparison.Ordinal)) raw = raw[..^2];
-            form[headers[nameStart..nameEnd].Trim()] = StrictUtf8.GetString(Encoding.Latin1.GetBytes(raw));
+            form[name] = StrictUtf8.GetString(Encoding.Latin1.GetBytes(raw));
         }
         return form;
+    }
+
+    private static bool TryReadFormDataDisposition(string headers, out string name, out bool rejectPart)
+    {
+        name = string.Empty;
+        rejectPart = false;
+        var found = false;
+        foreach (var line in headers.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = line.IndexOf(':');
+            if (separator < 0
+                || !line[..separator].Trim().Equals("Content-Disposition", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            if (found)
+            {
+                rejectPart = true;
+                continue;
+            }
+            found = true;
+            if (!ContentDispositionHeaderValue.TryParse(line[(separator + 1)..].Trim(), out var disposition)
+                || !disposition.DispositionType.Equals("form-data", StringComparison.OrdinalIgnoreCase))
+            {
+                rejectPart = true;
+                continue;
+            }
+            name = disposition.Name?.Trim().Trim('"') ?? string.Empty;
+            rejectPart |= disposition.Parameters.Any(parameter =>
+                parameter.Name.Equals("filename", StringComparison.OrdinalIgnoreCase)
+                || parameter.Name.Equals("filename*", StringComparison.OrdinalIgnoreCase));
+        }
+        return found && !rejectPart && name.Length > 0;
     }
 
     private static async Task WriteResponseAsync(NetworkStream stream, int statusCode, object value, CancellationToken cancellationToken)

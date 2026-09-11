@@ -32,8 +32,25 @@ public static class PebbleIndexSecretStore
     private static string ReadExisting(string path)
     {
         var existing = File.ReadAllText(path).Trim();
-        if (existing.Length >= 8 && existing.Length <= 256 && !existing.Any(char.IsWhiteSpace)) return existing;
+        if (existing.Length >= 8 && existing.Length <= 256 && IsBearerToken(existing)) return existing;
         throw new InvalidDataException("The Pebble Index authorization secret is invalid.");
+    }
+
+    private static bool IsBearerToken(string value)
+    {
+        var paddingStart = value.IndexOf('=');
+        var tokenLength = paddingStart < 0 ? value.Length : paddingStart;
+        for (var index = 0; index < tokenLength; index++)
+        {
+            var character = value[index];
+            if (!char.IsAsciiLetterOrDigit(character) && character is not ('-' or '.' or '_' or '~' or '+' or '/'))
+                return false;
+        }
+        for (var index = tokenLength; index < value.Length; index++)
+        {
+            if (value[index] != '=') return false;
+        }
+        return tokenLength > 0;
     }
 
     private static bool TryPublishNew(string path, string secret)

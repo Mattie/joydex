@@ -394,6 +394,16 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
+    public void NonAsciiPrivateTokenIsRejected()
+    {
+        var path = Path.Combine(_directory, "pebble-index.secret");
+        Directory.CreateDirectory(_directory);
+        File.WriteAllText(path, "pässw0rd\n");
+
+        Assert.Throws<InvalidDataException>(() => PebbleIndexSecretStore.LoadOrCreate(path));
+    }
+
+    [Fact]
     public async Task ConcurrentSecretCreationReturnsTheAtomicallyPublishedValue()
     {
         var path = Path.Combine(_directory, "pebble-index.secret");
@@ -515,6 +525,57 @@ public sealed class PebbleIndexTests : IDisposable
         audioField.Add(new StringContent("audio-shaped data"), "audio");
         using var audioFieldResponse = await client.PostAsync(endpoint, audioField);
         Assert.Equal(HttpStatusCode.BadRequest, audioFieldResponse.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("form-data; name = \"attachment\"; filename = \"audio.wav\"")]
+    [InlineData("form-data; name = \"attachment\"; filename* = UTF-8''audio.wav")]
+    [InlineData("form-data; filename = \"audio.wav\"")]
+    [InlineData("attachment; filename = \"audio.wav\"")]
+    [InlineData("form-data; name=\"attachment\"\r\nContent-Disposition: attachment; filename = \"audio.wav\"")]
+    [InlineData("form-data; name=\"attachment\"; filename")]
+    [InlineData("form-data; name=\"attachment\"; filename*")]
+    [InlineData("form-data; name=\"attachment\"; filename; filename=\"audio.wav\"")]
+    [InlineData("form-data; name=\"attachment\"; filename*; filename*=UTF-8''audio.wav")]
+    public async Task ReceiverRejectsUnsupportedFileDispositions(string fileDisposition)
+    {
+        var port = ReservePort();
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var bridge = new RecordingBridge(target);
+        await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
+            new PebbleIndexPreferences(
+                Enabled: true, Port: port, TargetTaskId: target.Id,
+                TargetHostId: target.HostId, TargetTaskLabel: target.Title),
+            "test-secret",
+            Path.Combine(_directory, "spaced-file-disposition-inbox"),
+            bridge,
+            _ => { },
+            _ => { });
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-secret");
+        const string boundary = "spaced-file-boundary";
+        var body = "--" + boundary + "\r\n"
+            + "Content-Disposition: form-data; name=\"transcription\"\r\n\r\n"
+            + "valid transcription\r\n"
+            + "--" + boundary + "\r\n"
+            + "Content-Disposition: form-data; name=\"recordedAt\"\r\n\r\n"
+            + "1000\r\n"
+            + "--" + boundary + "\r\n"
+            + "Content-Disposition: form-data; name=\"client\"\r\n\r\n"
+            + "ring\r\n"
+            + "--" + boundary + "\r\n"
+            + $"Content-Disposition: {fileDisposition}\r\n"
+            + "Content-Type: audio/wav\r\n\r\n"
+            + "file bytes\r\n"
+            + "--" + boundary + "--\r\n";
+        using var content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
+        content.Headers.ContentType = MediaTypeHeaderValue.Parse("multipart/form-data; boundary=" + boundary);
+
+        using var response = await client.PostAsync($"http://127.0.0.1:{port}/pebble-index", content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(0, bridge.SendCount);
     }
 
     [Fact]
