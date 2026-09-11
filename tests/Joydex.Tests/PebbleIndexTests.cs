@@ -454,6 +454,8 @@ public sealed class PebbleIndexTests : IDisposable
         var inbox = Path.Combine(_directory, "receiver-inbox");
         var store = new PebbleIndexDeliveryStore(inbox);
         PebbleIndexDeliveryState? stateAtSend = null;
+        var firstSent = new TaskCompletionSource<PebbleIndexDelivery>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondSent = new TaskCompletionSource<PebbleIndexDelivery>(TaskCreationOptions.RunContinuationsAsynchronously);
         var bridge = new RecordingBridge(
             target,
             beforeSend: () => stateAtSend = store.Recent(1).Single().State);
@@ -461,7 +463,18 @@ public sealed class PebbleIndexTests : IDisposable
             Enabled: true, Port: port, TargetTaskId: target.Id,
             TargetHostId: target.HostId, TargetTaskLabel: target.Title);
         await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
-            preferences, "test-secret", inbox, bridge, _ => { }, _ => { });
+            preferences,
+            "test-secret",
+            inbox,
+            bridge,
+            status =>
+            {
+                var sent = status.Latest;
+                if (sent?.State != PebbleIndexDeliveryState.Sent) return;
+                if (sent.Transcription == "hello") firstSent.TrySetResult(sent);
+                if (sent.Transcription == "next") secondSent.TrySetResult(sent);
+            },
+            _ => { });
         using var client = new HttpClient();
         var endpoint = new Uri($"http://127.0.0.1:{port}/pebble-index");
 
@@ -473,9 +486,9 @@ public sealed class PebbleIndexTests : IDisposable
         using (var first = CreateForm("hello", "1000"))
         using (var response = await client.PostAsync(endpoint, first))
             Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        await bridge.Delivered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var firstDelivery = await firstSent.Task.WaitAsync(TimeSpan.FromSeconds(15));
         Assert.Equal(PebbleIndexDeliveryState.DeliveryUncertain, stateAtSend);
-        await WaitForStateAsync(store, PebbleIndexDeliveryState.Sent);
+        Assert.Equal(PebbleIndexDeliveryState.Sent, firstDelivery.State);
 
         client.DefaultRequestHeaders.Remove("Authorization");
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-secret");
@@ -486,8 +499,12 @@ public sealed class PebbleIndexTests : IDisposable
         using (var next = CreateForm("next", "1001"))
         using (var response = await client.PostAsync(endpoint, next))
             Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        await WaitForSentCountAsync(store, 2);
+        var secondDelivery = await secondSent.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(PebbleIndexDeliveryState.Sent, secondDelivery.State);
         Assert.Equal(2, bridge.SendCount);
+        Assert.Equal(
+            2,
+            store.Recent(100).Count(delivery => delivery.State == PebbleIndexDeliveryState.Sent));
 
         using var withFile = CreateForm("ignored", "2000");
         withFile.Add(new ByteArrayContent([1, 2, 3]), "audio", "audio.wav");
@@ -539,24 +556,36 @@ public sealed class PebbleIndexTests : IDisposable
             Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
         var bridge = new RecordingBridge(target, sendError: new IOException("confirmation lost"));
         var inbox = Path.Combine(_directory, "uncertain-inbox");
+        var uncertainPersisted = new TaskCompletionSource<PebbleIndexDelivery>(TaskCreationOptions.RunContinuationsAsynchronously);
         var preferences = new PebbleIndexPreferences(
             Enabled: true, Port: port, TargetTaskId: target.Id,
             TargetHostId: target.HostId, TargetTaskLabel: target.Title);
         await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
-            preferences, "test-secret", inbox, bridge, _ => { }, _ => { });
+            preferences,
+            "test-secret",
+            inbox,
+            bridge,
+            status =>
+            {
+                if (status.Latest is { State: PebbleIndexDeliveryState.DeliveryUncertain } delivery
+                    && delivery.Detail.Contains("not confirmed", StringComparison.OrdinalIgnoreCase))
+                {
+                    uncertainPersisted.TrySetResult(delivery);
+                }
+            },
+            _ => { });
         using var client = new HttpClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-secret");
 
         using var form = CreateForm("hello", "3000");
         using var response = await client.PostAsync($"http://127.0.0.1:{port}/pebble-index", form);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        await bridge.SendAttempted.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-        var delivery = await WaitForStateAsync(
-            new PebbleIndexDeliveryStore(inbox),
-            PebbleIndexDeliveryState.DeliveryUncertain,
-            detailContains: "not confirmed");
+        var delivery = await uncertainPersisted.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        var stored = Assert.Single(new PebbleIndexDeliveryStore(inbox).Recent());
+        Assert.Equal(PebbleIndexDeliveryState.DeliveryUncertain, stored.State);
         Assert.Contains("not confirmed", delivery.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not confirmed", stored.Detail, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -656,6 +685,7 @@ public sealed class PebbleIndexTests : IDisposable
         var inbox = Path.Combine(_directory, "persistence-recovery-inbox");
         FileStream? lockedDelivery = null;
         var firstResolutionAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondConfirmed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var resolutionCalls = 0;
         var bridge = new RecordingBridge(
             target,
@@ -678,7 +708,13 @@ public sealed class PebbleIndexTests : IDisposable
             inbox,
             bridge,
             _ => { },
-            _ => { });
+            message =>
+            {
+                if (message.Contains("was confirmed", StringComparison.OrdinalIgnoreCase))
+                {
+                    secondConfirmed.TrySetResult();
+                }
+            });
         using var client = new HttpClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-secret");
         var endpoint = new Uri($"http://127.0.0.1:{port}/pebble-index");
@@ -688,15 +724,18 @@ public sealed class PebbleIndexTests : IDisposable
             using (var first = CreateForm("first", "5000"))
             using (var response = await client.PostAsync(endpoint, first))
                 Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-            await firstResolutionAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await firstResolutionAttempted.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
             using (var second = CreateForm("second", "5001"))
             using (var response = await client.PostAsync(endpoint, second))
                 Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-            await WaitForSentCountAsync(new PebbleIndexDeliveryStore(inbox), 1);
+            await secondConfirmed.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            var sent = Assert.Single(new PebbleIndexDeliveryStore(inbox).Recent());
 
             Assert.Equal(2, resolutionCalls);
             Assert.Equal(1, bridge.SendCount);
+            Assert.Equal(PebbleIndexDeliveryState.Sent, sent.State);
+            Assert.Equal("second", sent.Transcription);
         }
         finally
         {
@@ -764,36 +803,6 @@ public sealed class PebbleIndexTests : IDisposable
         return port;
     }
 
-    private async Task<PebbleIndexDelivery> WaitForStateAsync(
-        PebbleIndexDeliveryStore store,
-        PebbleIndexDeliveryState state,
-        string? detailContains = null)
-    {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-        while (!deadline.IsCancellationRequested)
-        {
-            var delivery = store.Recent(1).FirstOrDefault();
-            if (delivery?.State == state
-                && (detailContains is null
-                    || delivery.Detail.Contains(detailContains, StringComparison.OrdinalIgnoreCase)))
-                return delivery;
-            await Task.Delay(20, deadline.Token).ConfigureAwait(false);
-        }
-        throw new TimeoutException($"Pebble Index delivery did not reach {state}.");
-    }
-
-    private static async Task WaitForSentCountAsync(PebbleIndexDeliveryStore store, int expected)
-    {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        while (!deadline.IsCancellationRequested)
-        {
-            if (store.Recent(100).Count(delivery => delivery.State == PebbleIndexDeliveryState.Sent) == expected)
-                return;
-            await Task.Delay(20, deadline.Token).ConfigureAwait(false);
-        }
-        throw new TimeoutException($"Pebble Index did not persist {expected} sent deliveries.");
-    }
-
     private static async Task WaitForActiveClientCountAsync(PebbleIndexReceiverRuntime receiver, int expected)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
@@ -814,7 +823,6 @@ public sealed class PebbleIndexTests : IDisposable
     {
         public int SendCount;
         public TaskCompletionSource Delivered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource SendAttempted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task<bool> IsAvailableAsync(string sourceThreadId, CancellationToken cancellationToken = default) => Task.FromResult(true);
         public Task<DesktopTaskCatalog> ListTasksAsync(string sourceThreadId, string? excludedThreadId = null, CancellationToken cancellationToken = default) =>
             listTasks?.Invoke() ?? Task.FromResult(new DesktopTaskCatalog([target]));
@@ -827,7 +835,6 @@ public sealed class PebbleIndexTests : IDisposable
         {
             Interlocked.Increment(ref SendCount);
             beforeSend?.Invoke();
-            SendAttempted.TrySetResult();
             if (sendError is not null)
             {
                 return Task.FromException<DesktopTaskDeliveryResult>(sendError);
