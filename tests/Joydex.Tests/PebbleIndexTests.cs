@@ -496,6 +496,8 @@ public sealed class PebbleIndexTests : IDisposable
         var inbox = Path.Combine(_directory, "callback-delivery-inbox");
         var statusCalls = 0;
         var logCalls = 0;
+        var firstDeliveryLogged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondDeliveryLogged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
             new PebbleIndexPreferences(
                 Enabled: true, Port: port, TargetTaskId: target.Id,
@@ -510,7 +512,10 @@ public sealed class PebbleIndexTests : IDisposable
             },
             _ =>
             {
-                if (Interlocked.Increment(ref logCalls) > 1)
+                var call = Interlocked.Increment(ref logCalls);
+                if (call == 2) firstDeliveryLogged.TrySetResult();
+                if (call == 3) secondDeliveryLogged.TrySetResult();
+                if (call > 1)
                     throw new IOException("log unavailable");
             });
         using var client = new HttpClient();
@@ -520,15 +525,19 @@ public sealed class PebbleIndexTests : IDisposable
         using (var first = CreateForm("first", "4000"))
         using (var response = await client.PostAsync(endpoint, first))
             Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        await WaitForSentCountAsync(new PebbleIndexDeliveryStore(inbox), 1);
+        await firstDeliveryLogged.Task.WaitAsync(TimeSpan.FromSeconds(15));
         using (var second = CreateForm("second", "4001"))
         using (var response = await client.PostAsync(endpoint, second))
             Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        await WaitForSentCountAsync(new PebbleIndexDeliveryStore(inbox), 2);
+        await secondDeliveryLogged.Task.WaitAsync(TimeSpan.FromSeconds(15));
 
         Assert.Equal(2, bridge.SendCount);
+        Assert.Equal(
+            2,
+            new PebbleIndexDeliveryStore(inbox).Recent(100)
+                .Count(delivery => delivery.State == PebbleIndexDeliveryState.Sent));
         Assert.True(statusCalls > 1);
-        Assert.True(logCalls > 1);
+        Assert.Equal(3, logCalls);
     }
 
     [Fact]
