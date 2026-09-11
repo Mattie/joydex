@@ -768,6 +768,48 @@ public sealed class PebbleIndexTests : IDisposable
         Assert.Equal(0, bridge.SendCount);
     }
 
+    [Theory]
+    [InlineData("keep --embedded-boundary inside the transcription")]
+    [InlineData("keep\r\nprefix --embedded-boundary inside the transcription")]
+    [InlineData("keep\r\n--embedded-boundary-not-a-delimiter\r\ninside the transcription")]
+    public async Task ReceiverPreservesBoundaryLikeTextInsideTranscription(string transcription)
+    {
+        var port = ReservePort();
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var sent = new TaskCompletionSource<PebbleIndexDelivery>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new RecordingBridge(target);
+        await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
+            new PebbleIndexPreferences(
+                Enabled: true, Port: port, TargetTaskId: target.Id,
+                TargetHostId: target.HostId, TargetTaskLabel: target.Title),
+            "test-secret",
+            Path.Combine(_directory, "boundary-like-transcription-inbox"),
+            bridge,
+            status =>
+            {
+                if (status.Latest?.State == PebbleIndexDeliveryState.Sent)
+                {
+                    sent.TrySetResult(status.Latest);
+                }
+            },
+            _ => { });
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-secret");
+        const string boundary = "embedded-boundary";
+        using var form = new MultipartFormDataContent(boundary);
+        form.Add(new StringContent(transcription), "transcription");
+        form.Add(new StringContent("1500"), "recordedAt");
+        form.Add(new StringContent("ring"), "client");
+
+        using var response = await client.PostAsync($"http://127.0.0.1:{port}/pebble-index", form);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        var delivery = await sent.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(transcription, delivery.Transcription);
+        Assert.Equal(1, bridge.SendCount);
+    }
+
     [Fact]
     public async Task ReceiverDeliversToExactSavedTaskWithoutRecentCatalogEntry()
     {

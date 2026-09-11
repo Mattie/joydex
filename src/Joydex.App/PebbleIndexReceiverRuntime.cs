@@ -198,7 +198,11 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
                 }
                 var body = new byte[request.ContentLength];
                 await stream.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
-                var form = ParseMultipart(body, boundary, out var hasFiles);
+                if (!TryParseMultipart(body, boundary, out var form, out var hasFiles))
+                {
+                    await WriteResponseAsync(stream, 400, new { error = "The multipart body was invalid." }, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
                 if (hasFiles || form.ContainsKey("audio"))
                 {
                     await WriteResponseAsync(stream, 400, new { error = "audio and file uploads are disabled" }, cancellationToken).ConfigureAwait(false);
@@ -499,26 +503,148 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         }
     }
 
-    private static Dictionary<string, string> ParseMultipart(byte[] body, string boundary, out bool hasFiles)
+    private static bool TryParseMultipart(
+        byte[] body,
+        string boundary,
+        out Dictionary<string, string> form,
+        out bool hasFiles)
     {
         hasFiles = false;
-        var form = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        form = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var text = Encoding.Latin1.GetString(body);
-        foreach (var part in text.Split("--" + boundary, StringSplitOptions.RemoveEmptyEntries))
+        var delimiter = "--" + boundary;
+        if (!TryFindFirstMultipartDelimiter(text, delimiter, out var position, out var final))
         {
-            var separator = part.IndexOf("\r\n\r\n", StringComparison.Ordinal);
-            if (separator < 0) continue;
-            var headers = part[..separator];
+            return false;
+        }
+
+        while (!final)
+        {
+            var separator = text.IndexOf("\r\n\r\n", position, StringComparison.Ordinal);
+            if (!TryFindNextMultipartDelimiter(
+                    text,
+                    delimiter,
+                    position,
+                    out var contentEnd,
+                    out var nextPosition,
+                    out var nextIsFinal)
+                || separator < 0
+                || separator >= contentEnd)
+            {
+                return false;
+            }
+
+            var headers = text[position..separator];
             if (!TryReadFormDataDisposition(headers, out var name, out var rejectPart))
             {
                 hasFiles |= rejectPart;
-                continue;
             }
-            var raw = part[(separator + 4)..];
-            if (raw.EndsWith("\r\n", StringComparison.Ordinal)) raw = raw[..^2];
-            form[name] = StrictUtf8.GetString(Encoding.Latin1.GetBytes(raw));
+            else
+            {
+                var raw = text[(separator + 4)..contentEnd];
+                form[name] = StrictUtf8.GetString(Encoding.Latin1.GetBytes(raw));
+            }
+
+            position = nextPosition;
+            final = nextIsFinal;
         }
-        return form;
+
+        return true;
+    }
+
+    private static bool TryFindFirstMultipartDelimiter(
+        string text,
+        string delimiter,
+        out int nextPosition,
+        out bool final)
+    {
+        if (TryConsumeMultipartDelimiter(text, delimiter, 0, out nextPosition, out final))
+        {
+            return true;
+        }
+
+        return TryFindNextMultipartDelimiter(
+            text,
+            delimiter,
+            0,
+            out _,
+            out nextPosition,
+            out final);
+    }
+
+    private static bool TryFindNextMultipartDelimiter(
+        string text,
+        string delimiter,
+        int startIndex,
+        out int contentEnd,
+        out int nextPosition,
+        out bool final)
+    {
+        var marker = "\r\n" + delimiter;
+        var searchFrom = startIndex;
+        while (true)
+        {
+            var markerStart = text.IndexOf(marker, searchFrom, StringComparison.Ordinal);
+            if (markerStart < 0)
+            {
+                contentEnd = 0;
+                nextPosition = 0;
+                final = false;
+                return false;
+            }
+
+            if (TryConsumeMultipartDelimiter(
+                text,
+                delimiter,
+                markerStart + 2,
+                out nextPosition,
+                out final))
+            {
+                contentEnd = markerStart;
+                return true;
+            }
+
+            searchFrom = markerStart + marker.Length;
+        }
+    }
+
+    private static bool TryConsumeMultipartDelimiter(
+        string text,
+        string delimiter,
+        int position,
+        out int nextPosition,
+        out bool final)
+    {
+        nextPosition = 0;
+        final = false;
+        if (!text.AsSpan(position).StartsWith(delimiter, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var lineEnd = position + delimiter.Length;
+        if (text.AsSpan(lineEnd).StartsWith("--", StringComparison.Ordinal))
+        {
+            final = true;
+            lineEnd += 2;
+        }
+        while (lineEnd < text.Length && text[lineEnd] is ' ' or '\t')
+        {
+            lineEnd++;
+        }
+
+        if (lineEnd == text.Length)
+        {
+            nextPosition = lineEnd;
+            return final;
+        }
+        if (!text.AsSpan(lineEnd).StartsWith("\r\n", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        nextPosition = lineEnd + 2;
+        return true;
     }
 
     private static bool TryReadFormDataDisposition(string headers, out string name, out bool rejectPart)
