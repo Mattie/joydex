@@ -25,6 +25,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
     private readonly PebbleIndexPreferences _preferences;
     private readonly byte[] _secret;
     private readonly PebbleIndexDeliveryStore _store;
+    private readonly PebbleIndexDeliveryStatusTracker _deliveryStatus;
     private readonly IDesktopTaskBridgeClient _bridge;
     private readonly Action<PebbleIndexReceiverStatus> _status;
     private readonly Action<string> _log;
@@ -46,6 +47,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         _preferences = preferences;
         _secret = Encoding.UTF8.GetBytes(secret);
         _store = store;
+        _deliveryStatus = new PebbleIndexDeliveryStatusTracker(store.GetStatusSnapshot());
         _bridge = bridge;
         _status = IgnoreCallbackFailures(status);
         _log = IgnoreCallbackFailures(log);
@@ -204,12 +206,16 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
                     await WriteResponseAsync(stream, 400, new { error = exception.Message }, cancellationToken).ConfigureAwait(false);
                     return;
                 }
+                if (!accepted.IsDuplicate)
+                {
+                    _deliveryStatus.Apply(accepted.Delivery);
+                }
                 _status(BuildStatus(true,
                     accepted.IsDuplicate ? "Duplicate received; no second delivery was attempted." : "Transcription received.",
                     accepted.Delivery));
                 if (!accepted.IsDuplicate && !_deliveries.Writer.TryWrite(accepted.Delivery))
                 {
-                    var held = _store.Update(
+                    var held = UpdateDelivery(
                         accepted.Delivery.Id,
                         PebbleIndexDeliveryState.Received,
                         "Held before send: the live delivery queue was unavailable.");
@@ -258,16 +264,16 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         DesktopTaskSummary target;
         try
         {
-            var catalog = await _bridge.ListTasksAsync(
-                delivery.TargetTaskId, cancellationToken: cancellationToken).ConfigureAwait(false);
-            target = catalog.Tasks.FirstOrDefault(candidate =>
-                candidate.Id.Equals(delivery.TargetTaskId, StringComparison.OrdinalIgnoreCase)
-                && candidate.HostId.Equals(delivery.TargetHostId, StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException("The selected Desktop task is unavailable.");
+            target = await _bridge.ResolveTaskAsync(
+                    delivery.TargetTaskId,
+                    delivery.TargetTaskId,
+                    delivery.TargetHostId,
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _store.Update(
+            UpdateDelivery(
                 delivery.Id,
                 PebbleIndexDeliveryState.Received,
                 "Held before send: the receiver stopped.");
@@ -275,7 +281,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            var held = _store.Update(delivery.Id, PebbleIndexDeliveryState.Received,
+            var held = UpdateDelivery(delivery.Id, PebbleIndexDeliveryState.Received,
                 "Held before send: " + exception.Message);
             _status(BuildStatus(true, held.Detail, held));
             _log($"Pebble Index delivery {delivery.Id} was held before send: {exception.Message}");
@@ -283,7 +289,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         }
         try
         {
-            var attempting = _store.Update(
+            var attempting = UpdateDelivery(
                 delivery.Id,
                 PebbleIndexDeliveryState.DeliveryUncertain,
                 "Desktop delivery started; confirmation is pending.");
@@ -298,14 +304,14 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         {
             var result = await _bridge.SendMessageAsync(
                 delivery.TargetTaskId, target, delivery.Transcription, cancellationToken).ConfigureAwait(false);
-            var sent = _store.Update(delivery.Id, PebbleIndexDeliveryState.Sent,
+            var sent = UpdateDelivery(delivery.Id, PebbleIndexDeliveryState.Sent,
                 result.Queued ? "Queued to the running task." : "Delivered.");
             _status(BuildStatus(true, sent.Detail, sent));
             _log($"Pebble Index delivery {delivery.Id} was confirmed by Desktop.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _store.Update(
+            UpdateDelivery(
                 delivery.Id,
                 PebbleIndexDeliveryState.DeliveryUncertain,
                 "Desktop delivery may have started before the receiver stopped.");
@@ -313,7 +319,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         }
         catch (Exception exception)
         {
-            var uncertain = _store.Update(delivery.Id, PebbleIndexDeliveryState.DeliveryUncertain,
+            var uncertain = UpdateDelivery(delivery.Id, PebbleIndexDeliveryState.DeliveryUncertain,
                 "Desktop delivery was not confirmed: " + exception.Message);
             _status(BuildStatus(true, uncertain.Detail, uncertain));
             _log($"Pebble Index delivery {delivery.Id} is uncertain: {exception.Message}");
@@ -329,11 +335,21 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         return actual.Length == _secret.Length && CryptographicOperations.FixedTimeEquals(actual, _secret);
     }
 
+    private PebbleIndexDelivery UpdateDelivery(
+        string id,
+        PebbleIndexDeliveryState state,
+        string detail)
+    {
+        var updated = _store.Update(id, state, detail);
+        _deliveryStatus.Apply(updated);
+        return updated;
+    }
+
     private PebbleIndexReceiverStatus BuildStatus(
         bool running,
         string message,
         PebbleIndexDelivery? latest = null) =>
-        BuildStatus(running, message, _store, latest);
+        _deliveryStatus.BuildStatus(running, message, latest);
 
     private static PebbleIndexReceiverStatus BuildStatus(
         bool running,
@@ -341,18 +357,18 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         PebbleIndexDeliveryStore store,
         PebbleIndexDelivery? latest = null)
     {
-        var recovery = store.GetRecoverySummary();
-        var displayMessage = recovery.OutstandingCount switch
+        var snapshot = store.GetStatusSnapshot();
+        var displayMessage = snapshot.Outstanding.Count switch
         {
             0 => message,
             1 => message + " 1 stored delivery needs manual review.",
-            _ => message + $" {recovery.OutstandingCount} stored deliveries need manual review.",
+            _ => message + $" {snapshot.Outstanding.Count} stored deliveries need manual review.",
         };
         return new PebbleIndexReceiverStatus(
             running,
             displayMessage,
-            recovery.LatestOutstanding ?? latest ?? store.Recent(1).FirstOrDefault(),
-            recovery.OutstandingCount);
+            snapshot.LatestOutstanding ?? latest ?? snapshot.Latest,
+            snapshot.Outstanding.Count);
     }
 
     private static async Task<HttpRequest> ReadRequestAsync(NetworkStream stream, CancellationToken cancellationToken)
@@ -478,7 +494,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         {
             try
             {
-                _store.Update(
+                UpdateDelivery(
                     pending.Id,
                     PebbleIndexDeliveryState.Received,
                     "Held before send: the receiver stopped.");
@@ -494,4 +510,95 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
     }
 
     private sealed record HttpRequest(string Method, string Path, Dictionary<string, string> Headers, byte[] Body);
+}
+
+/// <summary>
+/// Keeps the receiver's live status in memory after one startup scan of the durable inbox.
+/// </summary>
+internal sealed class PebbleIndexDeliveryStatusTracker
+{
+    private static readonly IComparer<OutstandingKey> OutstandingComparer =
+        Comparer<OutstandingKey>.Create((left, right) =>
+        {
+            var receivedAt = left.ReceivedAt.CompareTo(right.ReceivedAt);
+            return receivedAt != 0
+                ? receivedAt
+                : StringComparer.Ordinal.Compare(left.Id, right.Id);
+        });
+
+    private readonly object _gate = new();
+    private readonly Dictionary<string, PebbleIndexDelivery> _outstanding = new(StringComparer.Ordinal);
+    private readonly SortedSet<OutstandingKey> _orderedOutstanding = new(OutstandingComparer);
+    private PebbleIndexDelivery? _latest;
+
+    public PebbleIndexDeliveryStatusTracker(PebbleIndexDeliveryStoreSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        _latest = snapshot.Latest;
+        foreach (var delivery in snapshot.Outstanding)
+        {
+            AddOutstanding(delivery);
+        }
+    }
+
+    public void Apply(PebbleIndexDelivery delivery)
+    {
+        ArgumentNullException.ThrowIfNull(delivery);
+        lock (_gate)
+        {
+            if (_outstanding.Remove(delivery.Id, out var previous))
+            {
+                _orderedOutstanding.Remove(Key(previous));
+            }
+            if (delivery.State != PebbleIndexDeliveryState.Sent)
+            {
+                AddOutstanding(delivery);
+            }
+            if (_latest is null
+                || delivery.Id.Equals(_latest.Id, StringComparison.Ordinal)
+                || OutstandingComparer.Compare(Key(delivery), Key(_latest)) > 0)
+            {
+                _latest = delivery;
+            }
+        }
+    }
+
+    public PebbleIndexReceiverStatus BuildStatus(
+        bool running,
+        string message,
+        PebbleIndexDelivery? latest = null)
+    {
+        lock (_gate)
+        {
+            var latestOutstanding = _orderedOutstanding.Count == 0
+                ? null
+                : _outstanding[_orderedOutstanding.Max.Id];
+            var displayMessage = _outstanding.Count switch
+            {
+                0 => message,
+                1 => message + " 1 stored delivery needs manual review.",
+                _ => message + $" {_outstanding.Count} stored deliveries need manual review.",
+            };
+            return new PebbleIndexReceiverStatus(
+                running,
+                displayMessage,
+                latestOutstanding ?? latest ?? _latest,
+                _outstanding.Count);
+        }
+    }
+
+    private void AddOutstanding(PebbleIndexDelivery delivery)
+    {
+        if (_outstanding.Remove(delivery.Id, out var previous))
+        {
+            _orderedOutstanding.Remove(Key(previous));
+        }
+        _outstanding[delivery.Id] = delivery;
+        _orderedOutstanding.Add(Key(delivery));
+    }
+
+    private static OutstandingKey Key(PebbleIndexDelivery delivery) =>
+        new(delivery.ReceivedAt, delivery.Id);
+
+    private readonly record struct OutstandingKey(DateTimeOffset ReceivedAt, string Id);
 }

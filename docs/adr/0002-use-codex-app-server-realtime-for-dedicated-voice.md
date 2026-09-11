@@ -151,7 +151,9 @@ is enabled, and its current-user-only transport uses a randomized per-process pi
 binds only to loopback, authenticates before parsing, rejects audio,
 and maps every accepted transcript to one locally configured Desktop task. It persists an ingress
 record before returning success, suppresses duplicate webhook identities across restarts, and never
-automatically retries an unconfirmed Desktop send. The selected target task is also the legitimate
+automatically retries an unconfirmed Desktop send. Before delivery, it resolves the saved target
+directly by ID through the bridge's read operation, so older unpinned tasks do not depend on the
+bounded recent-task catalog. The selected target task is also the legitimate
 Desktop source identity for the constrained send; the public HTTP surface exposes no task listing,
 selection, reading, or other generic bridge operation.
 

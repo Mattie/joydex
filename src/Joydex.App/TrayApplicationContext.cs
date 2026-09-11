@@ -1254,7 +1254,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     _pebbleIndexInboxDirectory,
                     broker.PipeName,
                     status => _uiContext.Post(_ => _pebbleIndexStatus = status, null),
-                    _log.Write,
+                    WritePebbleIndexLog,
                     cancellationToken).ConfigureAwait(false);
             },
             ReportPebbleIndexUnavailable);
@@ -1268,12 +1268,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 false,
                 "Receiver unavailable: " + exception.Message,
                 _pebbleIndexInboxDirectory);
-            _log.Write(_pebbleIndexStatus.Message);
+            WritePebbleIndexLog(_pebbleIndexStatus.Message);
         }
         catch (Exception statusException)
         {
-            _log.Write($"Pebble Index receiver and recovery status are unavailable: {statusException.Message}");
+            WritePebbleIndexLog($"Pebble Index receiver and recovery status are unavailable: {statusException.Message}");
         }
+    }
+
+    private void WritePebbleIndexLog(string message)
+    {
+        try { _log.Write(message); }
+        catch { }
     }
 
     private void StartWorker(bool showFirstRunNotice)
@@ -1713,7 +1719,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private async Task StopPebbleIndexReceiverAsync()
     {
         await _pebbleIndexCoordinator.StopAsync(exception =>
-            _log.Write($"Could not stop the Pebble Index receiver: {exception.Message}")).ConfigureAwait(false);
+            WritePebbleIndexLog($"Could not stop the Pebble Index receiver: {exception.Message}")).ConfigureAwait(false);
     }
 
     private async Task StopVoicePeBridgeAsync()
@@ -2212,7 +2218,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
             or System.Text.Json.JsonException)
         {
             error = exception.Message;
-            log($"Pebble Index settings are unavailable; normal Joydex features will continue: {exception.Message}");
+            try
+            {
+                log($"Pebble Index settings are unavailable; normal Joydex features will continue: {exception.Message}");
+            }
+            catch
+            {
+            }
             return PebbleIndexPreferences.Default;
         }
     }

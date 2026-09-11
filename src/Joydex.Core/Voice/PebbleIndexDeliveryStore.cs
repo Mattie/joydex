@@ -32,6 +32,14 @@ public sealed record PebbleIndexRecoverySummary(
     int OutstandingCount,
     PebbleIndexDelivery? LatestOutstanding);
 
+/// <summary>
+/// Captures the durable inbox state needed to seed live receiver status without rescanning it.
+/// </summary>
+public sealed record PebbleIndexDeliveryStoreSnapshot(
+    IReadOnlyList<PebbleIndexDelivery> Outstanding,
+    PebbleIndexDelivery? LatestOutstanding,
+    PebbleIndexDelivery? Latest);
+
 public sealed class PebbleIndexDeliveryStore
 {
     public const int MaximumTranscriptLength = 4_000;
@@ -141,22 +149,46 @@ public sealed class PebbleIndexDeliveryStore
 
     public PebbleIndexRecoverySummary GetRecoverySummary()
     {
+        var snapshot = GetStatusSnapshot();
+        return new PebbleIndexRecoverySummary(
+            snapshot.Outstanding.Count,
+            snapshot.LatestOutstanding);
+    }
+
+    /// <summary>
+    /// Reads the outstanding deliveries and latest retained delivery in one inbox scan.
+    /// </summary>
+    public PebbleIndexDeliveryStoreSnapshot GetStatusSnapshot()
+    {
         lock (_gate)
         {
-            if (!Directory.Exists(_directory)) return new PebbleIndexRecoverySummary(0, null);
-            var outstandingCount = 0;
+            if (!Directory.Exists(_directory))
+            {
+                return new PebbleIndexDeliveryStoreSnapshot([], null, null);
+            }
+            var outstanding = new List<PebbleIndexDelivery>();
             PebbleIndexDelivery? latestOutstanding = null;
+            PebbleIndexDelivery? latest = null;
             foreach (var path in Directory.EnumerateFiles(_directory, "*.json"))
             {
                 PebbleIndexDelivery delivery;
                 try { delivery = Read(path); }
                 catch { continue; }
+                if (latest is null || delivery.ReceivedAt > latest.ReceivedAt)
+                {
+                    latest = delivery;
+                }
                 if (delivery.State == PebbleIndexDeliveryState.Sent) continue;
-                outstandingCount++;
+                outstanding.Add(delivery);
                 if (latestOutstanding is null || delivery.ReceivedAt > latestOutstanding.ReceivedAt)
+                {
                     latestOutstanding = delivery;
+                }
             }
-            return new PebbleIndexRecoverySummary(outstandingCount, latestOutstanding);
+            return new PebbleIndexDeliveryStoreSnapshot(
+                outstanding.ToArray(),
+                latestOutstanding,
+                latest);
         }
     }
 
