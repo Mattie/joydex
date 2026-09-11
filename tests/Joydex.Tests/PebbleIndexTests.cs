@@ -29,6 +29,30 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
+    public void NullPreferenceStringsNormalizeToEmpty()
+    {
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "pebble-index.json");
+        File.WriteAllText(path,
+            """
+            {
+              "schemaVersion": 1,
+              "enabled": false,
+              "port": 5187,
+              "targetTaskId": null,
+              "targetHostId": null,
+              "targetTaskLabel": null
+            }
+            """);
+
+        var loaded = PebbleIndexPreferencesStore.LoadOrCreate(path);
+
+        Assert.Equal(string.Empty, loaded.TargetTaskId);
+        Assert.Equal(string.Empty, loaded.TargetHostId);
+        Assert.Equal(string.Empty, loaded.TargetTaskLabel);
+    }
+
+    [Fact]
     public void DuplicateWebhookIsAcceptedOnceAcrossStoreInstances()
     {
         var inbox = Path.Combine(_directory, "inbox");
@@ -437,6 +461,63 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
+    public async Task PersistenceRecoveryFailureDoesNotStopDeliveryLoop()
+    {
+        var port = ReservePort();
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var inbox = Path.Combine(_directory, "persistence-recovery-inbox");
+        FileStream? lockedDelivery = null;
+        var firstCatalogAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var catalogCalls = 0;
+        var bridge = new RecordingBridge(
+            target,
+            listTasks: () =>
+            {
+                if (Interlocked.Increment(ref catalogCalls) == 1)
+                {
+                    var path = Directory.EnumerateFiles(inbox, "*.json").Single();
+                    lockedDelivery = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                    firstCatalogAttempted.TrySetResult();
+                    throw new IOException("catalog unavailable");
+                }
+                return Task.FromResult(new DesktopTaskCatalog([target]));
+            });
+        await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
+            new PebbleIndexPreferences(
+                Enabled: true, Port: port, TargetTaskId: target.Id,
+                TargetHostId: target.HostId, TargetTaskLabel: target.Title),
+            "test-secret",
+            inbox,
+            bridge,
+            _ => { },
+            _ => { });
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-secret");
+        var endpoint = new Uri($"http://127.0.0.1:{port}/pebble-index");
+
+        try
+        {
+            using (var first = CreateForm("first", "5000"))
+            using (var response = await client.PostAsync(endpoint, first))
+                Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            await firstCatalogAttempted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            using (var second = CreateForm("second", "5001"))
+            using (var response = await client.PostAsync(endpoint, second))
+                Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            await WaitForSentCountAsync(new PebbleIndexDeliveryStore(inbox), 1);
+
+            Assert.Equal(2, catalogCalls);
+            Assert.Equal(1, bridge.SendCount);
+        }
+        finally
+        {
+            lockedDelivery?.Dispose();
+        }
+    }
+
+    [Fact]
     public async Task ReceiverWaitsForActiveClientsDuringShutdown()
     {
         var port = ReservePort();
@@ -540,14 +621,15 @@ public sealed class PebbleIndexTests : IDisposable
     private sealed class RecordingBridge(
         DesktopTaskSummary target,
         Exception? sendError = null,
-        Action? beforeSend = null) : IDesktopTaskBridgeClient
+        Action? beforeSend = null,
+        Func<Task<DesktopTaskCatalog>>? listTasks = null) : IDesktopTaskBridgeClient
     {
         public int SendCount;
         public TaskCompletionSource Delivered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource SendAttempted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task<bool> IsAvailableAsync(string sourceThreadId, CancellationToken cancellationToken = default) => Task.FromResult(true);
         public Task<DesktopTaskCatalog> ListTasksAsync(string sourceThreadId, string? excludedThreadId = null, CancellationToken cancellationToken = default) =>
-            Task.FromResult(new DesktopTaskCatalog([target]));
+            listTasks?.Invoke() ?? Task.FromResult(new DesktopTaskCatalog([target]));
         public Task<string> ReadTaskAsync(string sourceThreadId, DesktopTaskSummary selected, CancellationToken cancellationToken = default) =>
             Task.FromResult(string.Empty);
         public Task<DesktopTaskDeliveryResult> SendMessageAsync(

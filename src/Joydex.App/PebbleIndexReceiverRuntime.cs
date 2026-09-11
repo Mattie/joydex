@@ -223,72 +223,88 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         {
             await foreach (var delivery in _deliveries.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-                DesktopTaskSummary target;
                 try
                 {
-                    var catalog = await _bridge.ListTasksAsync(
-                        delivery.TargetTaskId, cancellationToken: cancellationToken).ConfigureAwait(false);
-                    target = catalog.Tasks.FirstOrDefault(candidate =>
-                        candidate.Id.Equals(delivery.TargetTaskId, StringComparison.OrdinalIgnoreCase)
-                        && candidate.HostId.Equals(delivery.TargetHostId, StringComparison.OrdinalIgnoreCase))
-                        ?? throw new InvalidOperationException("The selected Desktop task is unavailable.");
+                    await DeliverOneAsync(delivery, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    _store.Update(
-                        delivery.Id,
-                        PebbleIndexDeliveryState.Received,
-                        "Held before send: the receiver stopped.");
                     throw;
                 }
                 catch (Exception exception)
                 {
-                    var held = _store.Update(delivery.Id, PebbleIndexDeliveryState.Received,
-                        "Held before send: " + exception.Message);
-                    _status(BuildStatus(true, held.Detail, held));
-                    _log($"Pebble Index delivery {delivery.Id} was held before send: {exception.Message}");
-                    continue;
-                }
-                try
-                {
-                    var attempting = _store.Update(
-                        delivery.Id,
-                        PebbleIndexDeliveryState.DeliveryUncertain,
-                        "Desktop delivery started; confirmation is pending.");
-                    _status(BuildStatus(true, attempting.Detail, attempting));
-                }
-                catch (Exception exception)
-                {
-                    _log($"Pebble Index delivery {delivery.Id} was held because its send-attempt state could not be stored: {exception.Message}");
-                    continue;
-                }
-                try
-                {
-                    var result = await _bridge.SendMessageAsync(
-                        delivery.TargetTaskId, target, delivery.Transcription, cancellationToken).ConfigureAwait(false);
-                    var sent = _store.Update(delivery.Id, PebbleIndexDeliveryState.Sent,
-                        result.Queued ? "Queued to the running task." : "Delivered.");
-                    _status(BuildStatus(true, sent.Detail, sent));
-                    _log($"Pebble Index delivery {delivery.Id} was confirmed by Desktop.");
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    _store.Update(
-                        delivery.Id,
-                        PebbleIndexDeliveryState.DeliveryUncertain,
-                        "Desktop delivery may have started before the receiver stopped.");
-                    throw;
-                }
-                catch (Exception exception)
-                {
-                    var uncertain = _store.Update(delivery.Id, PebbleIndexDeliveryState.DeliveryUncertain,
-                        "Desktop delivery was not confirmed: " + exception.Message);
-                    _status(BuildStatus(true, uncertain.Detail, uncertain));
-                    _log($"Pebble Index delivery {delivery.Id} is uncertain: {exception.Message}");
+                    _log($"Pebble Index delivery {delivery.Id} could not finish processing: {exception.Message}");
                 }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+    }
+
+    private async Task DeliverOneAsync(PebbleIndexDelivery delivery, CancellationToken cancellationToken)
+    {
+        DesktopTaskSummary target;
+        try
+        {
+            var catalog = await _bridge.ListTasksAsync(
+                delivery.TargetTaskId, cancellationToken: cancellationToken).ConfigureAwait(false);
+            target = catalog.Tasks.FirstOrDefault(candidate =>
+                candidate.Id.Equals(delivery.TargetTaskId, StringComparison.OrdinalIgnoreCase)
+                && candidate.HostId.Equals(delivery.TargetHostId, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException("The selected Desktop task is unavailable.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _store.Update(
+                delivery.Id,
+                PebbleIndexDeliveryState.Received,
+                "Held before send: the receiver stopped.");
+            throw;
+        }
+        catch (Exception exception)
+        {
+            var held = _store.Update(delivery.Id, PebbleIndexDeliveryState.Received,
+                "Held before send: " + exception.Message);
+            _status(BuildStatus(true, held.Detail, held));
+            _log($"Pebble Index delivery {delivery.Id} was held before send: {exception.Message}");
+            return;
+        }
+        try
+        {
+            var attempting = _store.Update(
+                delivery.Id,
+                PebbleIndexDeliveryState.DeliveryUncertain,
+                "Desktop delivery started; confirmation is pending.");
+            _status(BuildStatus(true, attempting.Detail, attempting));
+        }
+        catch (Exception exception)
+        {
+            _log($"Pebble Index delivery {delivery.Id} was held because its send-attempt state could not be stored: {exception.Message}");
+            return;
+        }
+        try
+        {
+            var result = await _bridge.SendMessageAsync(
+                delivery.TargetTaskId, target, delivery.Transcription, cancellationToken).ConfigureAwait(false);
+            var sent = _store.Update(delivery.Id, PebbleIndexDeliveryState.Sent,
+                result.Queued ? "Queued to the running task." : "Delivered.");
+            _status(BuildStatus(true, sent.Detail, sent));
+            _log($"Pebble Index delivery {delivery.Id} was confirmed by Desktop.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _store.Update(
+                delivery.Id,
+                PebbleIndexDeliveryState.DeliveryUncertain,
+                "Desktop delivery may have started before the receiver stopped.");
+            throw;
+        }
+        catch (Exception exception)
+        {
+            var uncertain = _store.Update(delivery.Id, PebbleIndexDeliveryState.DeliveryUncertain,
+                "Desktop delivery was not confirmed: " + exception.Message);
+            _status(BuildStatus(true, uncertain.Detail, uncertain));
+            _log($"Pebble Index delivery {delivery.Id} is uncertain: {exception.Message}");
+        }
     }
 
     private bool Authorized(string? supplied)

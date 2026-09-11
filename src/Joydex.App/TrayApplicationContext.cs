@@ -395,7 +395,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             try { _desktopTaskBroker ??= await brokerStartup.ConfigureAwait(false); }
             catch (OperationCanceledException) { }
-            catch (Exception exception) { _log.Write($"Desktop Task Bridge broker shutdown observed an error: {exception.Message}"); }
+            catch (Exception exception) { WriteDesktopTaskBrokerLog($"Desktop Task Bridge broker shutdown observed an error: {exception.Message}"); }
         }
         if (_desktopTaskBroker is not null) await _desktopTaskBroker.DisposeAsync().ConfigureAwait(false);
         _desktopTaskBrokerCancellation.Dispose();
@@ -1085,7 +1085,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             startup = DesktopTaskBridgeBrokerProcess.StartAsync(
                 Path.Combine(AppContext.BaseDirectory, "Joydex.DesktopBridgeHost.exe"),
                 _desktopTaskBridgePipeName,
-                _log.Write,
+                WriteDesktopTaskBrokerLog,
                 _desktopTaskBrokerCancellation.Token);
             _desktopTaskBrokerStartup = startup;
             broker = await startup.ConfigureAwait(true);
@@ -1101,7 +1101,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (OperationCanceledException) when (_desktopTaskBrokerCancellation.IsCancellationRequested) { }
         catch (Exception exception)
         {
-            _log.Write($"Desktop Task Bridge broker worker is unavailable: {exception.Message}");
+            WriteDesktopTaskBrokerLog($"Desktop Task Bridge broker worker is unavailable: {exception.Message}");
             ScheduleDesktopTaskBrokerRestart();
         }
         finally
@@ -1133,12 +1133,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             await broker.Completion.ConfigureAwait(false);
             if (!_desktopTaskBrokerCancellation.IsCancellationRequested)
-                _log.Write("Desktop Task Bridge broker worker exited; scheduling a restart.");
+                WriteDesktopTaskBrokerLog("Desktop Task Bridge broker worker exited; scheduling a restart.");
         }
         catch (Exception exception)
         {
             if (!_desktopTaskBrokerCancellation.IsCancellationRequested)
-                _log.Write($"Desktop Task Bridge broker monitor failed: {exception.Message}");
+                WriteDesktopTaskBrokerLog($"Desktop Task Bridge broker monitor failed: {exception.Message}");
         }
         finally
         {
@@ -1194,8 +1194,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (Exception exception)
         {
             _ = Interlocked.CompareExchange(ref _desktopTaskBrokerStartup, null, startup);
-            _log.Write($"Desktop Task Bridge broker stop observed an error: {exception.Message}");
+            WriteDesktopTaskBrokerLog($"Desktop Task Bridge broker stop observed an error: {exception.Message}");
         }
+    }
+
+    private void WriteDesktopTaskBrokerLog(string message)
+    {
+        try { _log.Write(message); }
+        catch { }
     }
 
     private bool DesktopTaskBrokerNeeded => ShouldStartDesktopTaskBroker(

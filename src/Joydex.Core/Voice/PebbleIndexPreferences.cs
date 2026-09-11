@@ -16,14 +16,18 @@ public sealed record PebbleIndexPreferences(
 
     public static PebbleIndexPreferences Default { get; } = new();
 
-    public PebbleIndexPreferences Normalize() => this with
+    public PebbleIndexPreferences Normalize()
     {
-        TargetTaskId = CodexTaskReference.TryParse(TargetTaskId, out var taskId)
-            ? taskId
-            : TargetTaskId.Trim(),
-        TargetHostId = TargetHostId.Trim(),
-        TargetTaskLabel = TargetTaskLabel.Trim(),
-    };
+        var targetTaskId = TargetTaskId ?? string.Empty;
+        return this with
+        {
+            TargetTaskId = CodexTaskReference.TryParse(targetTaskId, out var taskId)
+                ? taskId
+                : targetTaskId.Trim(),
+            TargetHostId = (TargetHostId ?? string.Empty).Trim(),
+            TargetTaskLabel = (TargetTaskLabel ?? string.Empty).Trim(),
+        };
+    }
 
     public IReadOnlyList<string> Validate()
     {
