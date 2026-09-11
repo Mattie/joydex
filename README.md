@@ -99,6 +99,7 @@ The checked-in starter configuration follows the Codex Micro controls for a CM3 
 | Base buttons B1-B6 | M4 | Agents 1-6 |
 | Grip encoder EN (EN3/EN2/EN1) | Any | Prompt 1 up/down; push inserts selected or default prompt |
 | Base encoder E1 | Any | Reasoning up/down; push toggles Fast mode |
+| Base encoder E2 | Any | Scroll up/down; push toggles Voice Chat microphone mute |
 | Five-way hat | Any | Plan, Forward, Sidebar, Back |
 | Toggle T3 | Any | Hold the floating button map open |
 | Toggle T6 down | Any | Archive the current chat |

@@ -202,6 +202,21 @@ public sealed class ConfigValidatorTests
     }
 
     [Fact]
+    public void AcceptsToggleReviewPanelAction()
+    {
+        var config = CreateConfig(
+            new ButtonBinding
+            {
+                Name = "review",
+                Bank = "work",
+                Button = 4,
+                Action = "toggle-review",
+            });
+
+        Assert.Empty(ConfigValidator.Validate(config));
+    }
+
+    [Fact]
     public void AcceptsPressAndReleaseBindingsForTheButtonMap()
     {
         var config = CreateConfig(
