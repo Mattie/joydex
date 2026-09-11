@@ -19,6 +19,7 @@ internal sealed class ConfigurationForm : ThemedForm
     private readonly bool _documentationMode;
     private readonly RoomVoiceSettingsControl? _roomVoiceSettings;
     private readonly PebbleIndexSettingsControl? _pebbleIndexSettings;
+    private readonly Action<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?> _saveConfiguration;
     private readonly ComboBox _deviceCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label _connectionLabel = new() { AutoSize = true, Text = "Looking for controller..." };
     private readonly Label _inputLabel = new() { AutoSize = true, Text = "Held buttons: none" };
@@ -54,7 +55,8 @@ internal sealed class ConfigurationForm : ThemedForm
         IntPtr cooperativeWindowHandle,
         bool documentationMode = false,
         RoomVoiceSettingsControl? roomVoiceSettings = null,
-        PebbleIndexSettingsControl? pebbleIndexSettings = null)
+        PebbleIndexSettingsControl? pebbleIndexSettings = null,
+        Action<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?>? saveConfiguration = null)
     {
         _configPath = configPath;
         _windowStatePath = windowStatePath;
@@ -62,6 +64,7 @@ internal sealed class ConfigurationForm : ThemedForm
         _documentationMode = documentationMode;
         _roomVoiceSettings = roomVoiceSettings;
         _pebbleIndexSettings = pebbleIndexSettings;
+        _saveConfiguration = saveConfiguration ?? ((config, _, _) => ConfigStore.Save(_configPath, config));
         try
         {
             _originalConfig = ConfigStore.LoadOrCreate(configPath);
@@ -1646,7 +1649,7 @@ internal sealed class ConfigurationForm : ThemedForm
 
         try
         {
-            ConfigStore.Save(_configPath, config);
+            _saveConfiguration(config, roomVoicePreferences, pebbleIndexPreferences);
             RoomVoicePreferences = roomVoicePreferences;
             PebbleIndexPreferences = pebbleIndexPreferences;
             DialogResult = DialogResult.OK;

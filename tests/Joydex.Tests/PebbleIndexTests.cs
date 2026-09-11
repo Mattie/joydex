@@ -1,5 +1,6 @@
-using Joydex.Core.Voice;
 using Joydex.App;
+using Joydex.Core.Config;
+using Joydex.Core.Voice;
 using Joydex.Windows.Voice;
 using System.Net;
 using System.Net.Http.Headers;
@@ -366,6 +367,36 @@ public sealed class PebbleIndexTests : IDisposable
 
         Assert.Equal(PebbleIndexPreferences.Default, preferences);
         Assert.False(string.IsNullOrWhiteSpace(error));
+    }
+
+    [Fact]
+    public void PebbleSaveFailureLeavesMainAndRoomVoiceConfigurationUnchanged()
+    {
+        Directory.CreateDirectory(_directory);
+        var configPath = Path.Combine(_directory, "config.json");
+        var voicePath = Path.Combine(_directory, "voice-pe.json");
+        var pebblePath = Path.Combine(_directory, "pebble-index.json");
+        ConfigStore.Save(configPath, CompanionConfig.CreateSafeDefault());
+        VoicePePreferencesStore.Save(voicePath, VoicePePreferences.Default);
+        PebbleIndexPreferencesStore.Save(pebblePath, PebbleIndexPreferences.Default);
+        var originalConfig = File.ReadAllBytes(configPath);
+        var originalVoice = File.ReadAllBytes(voicePath);
+        using var lockedPebble = File.Open(pebblePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+        var exception = Record.Exception(() => TrayApplicationContext.SaveConfigurationFiles(
+            configPath,
+            voicePath,
+            pebblePath,
+            new CompanionConfig { Safety = new SafetyOptions { DryRun = false } },
+            VoicePePreferences.Default with { ConversationSpeakerGain = 3 },
+            PebbleIndexPreferences.Default with { Port = PebbleIndexPreferences.Default.Port + 1 }));
+
+        Assert.True(
+            exception is IOException or UnauthorizedAccessException,
+            exception?.ToString() ?? "The locked Pebble Index settings save unexpectedly succeeded.");
+        Assert.Equal(originalConfig, File.ReadAllBytes(configPath));
+        Assert.Equal(originalVoice, File.ReadAllBytes(voicePath));
+        Assert.Empty(Directory.EnumerateFiles(_directory, "*.tmp"));
     }
 
     [Fact]

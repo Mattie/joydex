@@ -713,7 +713,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _windowStatePath,
                 _cooperativeWindow.Handle,
                 roomVoiceSettings: roomVoiceSettings,
-                pebbleIndexSettings: pebbleIndexSettings);
+                pebbleIndexSettings: pebbleIndexSettings,
+                saveConfiguration: (config, voicePreferences, pebbleIndexPreferences) =>
+                    SaveConfigurationFiles(
+                        _configPath,
+                        _voicePePreferencesPath,
+                        _pebbleIndexPreferencesPath,
+                        config,
+                        voicePreferences,
+                        pebbleIndexPreferences));
             if (initialPage is not null)
             {
                 form.SelectPage(initialPage);
@@ -722,14 +730,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var result = form.ShowDialog();
             if (result == DialogResult.OK && form.RoomVoicePreferences is { } savedVoicePreferences)
             {
-                VoicePePreferencesStore.Save(_voicePePreferencesPath, savedVoicePreferences);
                 _voicePePreferences = savedVoicePreferences;
                 _voicePePreferencesError = null;
                 ConfigureRoomVoiceTaskAlertExclusion(savedVoicePreferences);
             }
             if (result == DialogResult.OK && form.PebbleIndexPreferences is { } savedPebbleIndexPreferences)
             {
-                PebbleIndexPreferencesStore.Save(_pebbleIndexPreferencesPath, savedPebbleIndexPreferences);
                 _pebbleIndexPreferences = savedPebbleIndexPreferences.Normalize();
                 await StopPebbleIndexReceiverAsync().ConfigureAwait(true);
             }
@@ -2228,6 +2234,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
             return PebbleIndexPreferences.Default;
         }
+    }
+
+    internal static void SaveConfigurationFiles(
+        string configPath,
+        string voicePePreferencesPath,
+        string pebbleIndexPreferencesPath,
+        CompanionConfig config,
+        VoicePePreferences? voicePreferences,
+        PebbleIndexPreferences? pebbleIndexPreferences)
+    {
+        // The form closes only after this callback returns, so feature-setting failures stay
+        // visible and correctable before the main configuration is committed.
+        if (pebbleIndexPreferences is not null)
+        {
+            PebbleIndexPreferencesStore.Save(pebbleIndexPreferencesPath, pebbleIndexPreferences);
+        }
+        if (voicePreferences is not null)
+        {
+            VoicePePreferencesStore.Save(voicePePreferencesPath, voicePreferences);
+        }
+        ConfigStore.Save(configPath, config);
     }
 
     internal static string ResolvePebbleIndexSourceTaskId(
