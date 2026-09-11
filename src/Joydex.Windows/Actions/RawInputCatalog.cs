@@ -9,7 +9,6 @@ internal static class RawInputCatalog
         {
             [CodexAction.Home] = Parse("Home"),
             [CodexAction.End] = Parse("End"),
-            [CodexAction.ToggleReviewPanel] = Parse("Ctrl+Alt+B"),
         };
 
     public static bool TryGetKeySequence(CodexAction action, out KeySequence sequence) =>

@@ -31,6 +31,7 @@ public sealed class CodexActionExecutorTests
         { CodexAction.NavigateBack, "navigateBack" },
         { CodexAction.NavigateForward, "navigateForward" },
         { CodexAction.ToggleSidebar, "toggleSidebar" },
+        { CodexAction.ToggleReviewPanel, "toggleSidePanel" },
         { CodexAction.OpenSkills, "openSkills" },
         { CodexAction.StartVoiceChat, "composer.startVoiceMode" },
         { CodexAction.EndVoiceChat, "realtimeVoice.endCall" },
@@ -63,6 +64,7 @@ public sealed class CodexActionExecutorTests
         CodexAction.NavigateBack,
         CodexAction.NavigateForward,
         CodexAction.ToggleSidebar,
+        CodexAction.ToggleReviewPanel,
         CodexAction.OpenSkills,
         CodexAction.StartVoiceChat,
         CodexAction.EndVoiceChat,
@@ -88,7 +90,6 @@ public sealed class CodexActionExecutorTests
             CodexAction.Home,
             CodexAction.End,
             CodexAction.ButtonMap,
-            CodexAction.ToggleReviewPanel,
         };
         var expected = Enum.GetValues<CodexAction>().Where(action => !rawActions.Contains(action)).Order().ToArray();
         var actual = CodexCommandCatalog.All.Select(descriptor => descriptor.Action).Order().ToArray();
@@ -163,7 +164,6 @@ public sealed class CodexActionExecutorTests
     [Theory]
     [InlineData(CodexAction.Home, "Home")]
     [InlineData(CodexAction.End, "End")]
-    [InlineData(CodexAction.ToggleReviewPanel, "Ctrl+Alt+B")]
     public async Task RawNavigationGesturesDoNotUseTheCodexResolver(CodexAction action, string expected)
     {
         var resolver = new RecordingResolver("Ctrl+Q");

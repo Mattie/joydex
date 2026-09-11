@@ -83,6 +83,7 @@ internal static class CodexCommandCatalog
         yield return new(CodexAction.NavigateBack, "navigateBack", ["Ctrl+[", "MouseBack"]);
         yield return new(CodexAction.NavigateForward, "navigateForward", ["Ctrl+]", "MouseForward"]);
         yield return new(CodexAction.ToggleSidebar, "toggleSidebar", ["Ctrl+B"]);
+        yield return new(CodexAction.ToggleReviewPanel, "toggleSidePanel", ["Ctrl+Alt+B"]);
         yield return new(CodexAction.OpenSkills, "openSkills", [], "Ctrl+Alt+Shift+S");
         yield return new(CodexAction.StartVoiceChat, "composer.startVoiceMode", ["Ctrl+Shift+V"]);
         yield return new(CodexAction.EndVoiceChat, "realtimeVoice.endCall", []);

@@ -73,6 +73,19 @@ public sealed class CodexKeybindingServiceTests
     }
 
     [Fact]
+    public async Task ToggleReviewPanelFallsBackToTheVerifiedWindowsDefault()
+    {
+        var fixture = CreateFixture();
+        await using var service = await fixture.StartAsync();
+
+        var resolution = await service.ResolveAsync(CodexAction.ToggleReviewPanel, CancellationToken.None);
+
+        Assert.Equal("toggleSidePanel", resolution.CommandId);
+        Assert.Equal("Ctrl+Alt+B", resolution.Sequence!.NormalizedText);
+        Assert.Equal(CodexBindingSource.Default, resolution.Source);
+    }
+
+    [Fact]
     public async Task StartVoiceChatIgnoresTheLegacyRealtimeVoiceBinding()
     {
         var fixture = CreateFixture(
@@ -252,6 +265,18 @@ public sealed class CodexKeybindingServiceTests
 
         Assert.False(resolution.Resolved);
         Assert.Contains("toggleSidebar", resolution.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ToggleReviewPanelDefaultRejectsAnotherCommandsBinding()
+    {
+        var fixture = CreateFixture(Entry("someOtherCommand", "Ctrl+Alt+B"));
+        await using var service = await fixture.StartAsync();
+
+        var resolution = await service.ResolveAsync(CodexAction.ToggleReviewPanel, CancellationToken.None);
+
+        Assert.False(resolution.Resolved);
+        Assert.Contains("someOtherCommand", resolution.Error, StringComparison.Ordinal);
     }
 
     [Fact]
