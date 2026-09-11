@@ -32,7 +32,7 @@ public sealed record PebbleIndexRecoverySummary(
     int OutstandingCount,
     PebbleIndexDelivery? LatestOutstanding);
 
-public sealed class PebbleIndexDeliveryStore(string directory)
+public sealed class PebbleIndexDeliveryStore
 {
     public const int MaximumTranscriptLength = 4_000;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -40,8 +40,20 @@ public sealed class PebbleIndexDeliveryStore(string directory)
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
-    private readonly string _directory = Path.GetFullPath(directory);
+    private readonly string _directory;
     private readonly object _gate = new();
+    private readonly Action _beforePublish;
+
+    public PebbleIndexDeliveryStore(string directory)
+        : this(directory, static () => { })
+    {
+    }
+
+    internal PebbleIndexDeliveryStore(string directory, Action beforePublish)
+    {
+        _directory = Path.GetFullPath(directory);
+        _beforePublish = beforePublish ?? throw new ArgumentNullException(nameof(beforePublish));
+    }
 
     public PebbleIndexAcceptResult Accept(
         string transcription,
@@ -80,23 +92,17 @@ public sealed class PebbleIndexDeliveryStore(string directory)
             Directory.CreateDirectory(_directory);
             if (File.Exists(path))
             {
-                var existing = Read(path);
-                if (providedId is not null
-                    && (!string.Equals(existing.Transcription, transcription, StringComparison.Ordinal)
-                        || !string.Equals(existing.RecordedAt, recordedAt, StringComparison.Ordinal)
-                        || !string.Equals(existing.Client, client, StringComparison.Ordinal)
-                        || !string.Equals(existing.Trigger, trigger, StringComparison.Ordinal)))
-                {
-                    throw new InvalidDataException(
-                        "The delivery ID was already used for a different Pebble Index payload.");
-                }
-                return new PebbleIndexAcceptResult(existing, true);
+                return ReadExisting(path, providedId, transcription, recordedAt, client, trigger);
             }
             var delivery = new PebbleIndexDelivery(
                 id, transcription, recordedAt, client, trigger,
                 targetTaskId, preferences.TargetHostId, preferences.TargetTaskLabel,
                 PebbleIndexDeliveryState.Received, DateTimeOffset.UtcNow);
-            WriteNew(path, delivery);
+            _beforePublish();
+            if (!TryPublishNew(path, delivery))
+            {
+                return ReadExisting(path, providedId, transcription, recordedAt, client, trigger);
+            }
             return new PebbleIndexAcceptResult(delivery, false);
         }
     }
@@ -175,6 +181,49 @@ public sealed class PebbleIndexDeliveryStore(string directory)
     private static PebbleIndexDelivery Read(string path) =>
         JsonSerializer.Deserialize<PebbleIndexDelivery>(File.ReadAllBytes(path), JsonOptions)
         ?? throw new InvalidDataException("The Pebble Index delivery record was empty.");
+
+    private static PebbleIndexAcceptResult ReadExisting(
+        string path,
+        string? providedId,
+        string transcription,
+        string recordedAt,
+        string client,
+        string trigger)
+    {
+        var existing = Read(path);
+        if (providedId is not null
+            && (!string.Equals(existing.Transcription, transcription, StringComparison.Ordinal)
+                || !string.Equals(existing.RecordedAt, recordedAt, StringComparison.Ordinal)
+                || !string.Equals(existing.Client, client, StringComparison.Ordinal)
+                || !string.Equals(existing.Trigger, trigger, StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException(
+                "The delivery ID was already used for a different Pebble Index payload.");
+        }
+        return new PebbleIndexAcceptResult(existing, true);
+    }
+
+    private static bool TryPublishNew(string path, PebbleIndexDelivery value)
+    {
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            WriteNew(temporary, value);
+            try
+            {
+                File.Move(temporary, path, overwrite: false);
+                return true;
+            }
+            catch (IOException) when (File.Exists(path))
+            {
+                return false;
+            }
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
 
     private static void WriteNew(string path, PebbleIndexDelivery value)
     {

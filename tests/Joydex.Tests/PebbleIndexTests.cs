@@ -69,6 +69,41 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
+    public async Task ConcurrentDuplicateWebhookIsPublishedOnceAcrossStoreInstances()
+    {
+        var inbox = Path.Combine(_directory, "concurrent-inbox");
+        var task = Guid.NewGuid().ToString("D");
+        var preferences = new PebbleIndexPreferences(
+            Enabled: true, Port: 5187, TargetTaskId: task, TargetHostId: "local", TargetTaskLabel: "Target");
+        using var readyToPublish = new Barrier(2);
+        Action beforePublish = () =>
+            Assert.True(readyToPublish.SignalAndWait(TimeSpan.FromSeconds(5)));
+        var stores = new[]
+        {
+            new PebbleIndexDeliveryStore(inbox, beforePublish),
+            new PebbleIndexDeliveryStore(inbox, beforePublish),
+        };
+        var attempts = stores
+            .Select(store => Task.Run(() => store.Accept(
+                    "do the thing",
+                    "123",
+                    "ring",
+                    "tap",
+                    "delivery-one",
+                    preferences)))
+            .ToArray();
+
+        var results = await Task.WhenAll(attempts);
+
+        Assert.Single(results, result => !result.IsDuplicate);
+        Assert.Single(results, result => result.IsDuplicate);
+        Assert.Single(results.Select(result => result.Delivery.Id).Distinct(StringComparer.Ordinal));
+        Assert.Single(Directory.EnumerateFiles(inbox, "*.json"));
+        Assert.Empty(Directory.EnumerateFiles(inbox, "*.tmp"));
+        Assert.Single(new PebbleIndexDeliveryStore(inbox).Recent());
+    }
+
+    [Fact]
     public void ReusedProvidedDeliveryIdMustMatchTheOriginalPayload()
     {
         var store = new PebbleIndexDeliveryStore(Path.Combine(_directory, "inbox"));
