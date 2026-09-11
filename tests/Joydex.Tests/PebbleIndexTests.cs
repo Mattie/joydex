@@ -285,6 +285,28 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
+    public void LockedInboxRecordIsReportedAsUnavailableStoredStatus()
+    {
+        var inbox = Path.Combine(_directory, "locked-status-inbox");
+        var store = new PebbleIndexDeliveryStore(inbox);
+        var preferences = new PebbleIndexPreferences(
+            TargetTaskId: Guid.NewGuid().ToString("D"),
+            TargetHostId: "local",
+            TargetTaskLabel: "Target");
+        store.Accept("private transcript", "123", "ring", "tap", null, preferences);
+        var path = Assert.Single(Directory.EnumerateFiles(inbox, "*.json"));
+        using var locked = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        var status = PebbleIndexReceiverRuntime.ReadStoredStatus(false, "Receiver is off.", inbox);
+
+        Assert.False(status.Running);
+        Assert.Contains("Receiver is off.", status.Message, StringComparison.Ordinal);
+        Assert.Contains("stored delivery status is unavailable", status.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, status.OutstandingCount);
+        Assert.Null(status.Latest);
+    }
+
+    [Fact]
     public void DeliveryStatusTrackerMaintainsOutstandingSummaryInMemory()
     {
         var receivedAt = new DateTimeOffset(2026, 9, 10, 0, 0, 0, TimeSpan.Zero);

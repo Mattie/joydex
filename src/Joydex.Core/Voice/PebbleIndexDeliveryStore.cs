@@ -171,9 +171,7 @@ public sealed class PebbleIndexDeliveryStore
             PebbleIndexDelivery? latest = null;
             foreach (var path in Directory.EnumerateFiles(_directory, "*.json"))
             {
-                PebbleIndexDelivery delivery;
-                try { delivery = Read(path); }
-                catch { continue; }
+                var delivery = Read(path);
                 if (latest is null || delivery.ReceivedAt > latest.ReceivedAt)
                 {
                     latest = delivery;

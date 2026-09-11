@@ -104,7 +104,8 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
             return readStatus?.Invoke()
                 ?? BuildStatus(running, message, new PebbleIndexDeliveryStore(inboxDirectory));
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
         {
             return new PebbleIndexReceiverStatus(
                 false,
