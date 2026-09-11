@@ -221,6 +221,23 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
+    public void StoredStatusReadFailureIsContainedAsAnUnavailableStatus()
+    {
+        var status = PebbleIndexReceiverRuntime.ReadStoredStatus(
+            false,
+            "Receiver is off.",
+            Path.Combine(_directory, "unavailable-inbox"),
+            () => throw new DirectoryNotFoundException("The inbox disappeared."));
+
+        Assert.False(status.Running);
+        Assert.Contains("Receiver is off.", status.Message, StringComparison.Ordinal);
+        Assert.Contains("stored delivery status is unavailable", status.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("inbox disappeared", status.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(status.Latest);
+        Assert.Equal(0, status.OutstandingCount);
+    }
+
+    [Fact]
     public void InvalidPreferencesFallBackWithoutBlockingConfigurationRecovery()
     {
         Directory.CreateDirectory(_directory);
@@ -331,6 +348,25 @@ public sealed class PebbleIndexTests : IDisposable
         File.WriteAllText(path, "w00tw00t\n");
 
         Assert.Equal("w00tw00t", PebbleIndexSecretStore.LoadOrCreate(path));
+    }
+
+    [Fact]
+    public async Task ConcurrentSecretCreationReturnsTheAtomicallyPublishedValue()
+    {
+        var path = Path.Combine(_directory, "pebble-index.secret");
+        using var readyToPublish = new Barrier(2);
+        Action beforePublish = () =>
+            Assert.True(readyToPublish.SignalAndWait(TimeSpan.FromSeconds(5)));
+        var attempts = Enumerable.Range(0, 2)
+            .Select(_ => Task.Run(() => PebbleIndexSecretStore.LoadOrCreate(path, beforePublish)))
+            .ToArray();
+
+        var secrets = await Task.WhenAll(attempts);
+
+        Assert.Equal(secrets[0], secrets[1]);
+        Assert.Equal(secrets[0], File.ReadAllText(path).Trim());
+        Assert.Equal(43, secrets[0].Length);
+        Assert.Empty(Directory.EnumerateFiles(_directory, "*.tmp"));
     }
 
     [Fact]

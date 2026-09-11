@@ -87,8 +87,21 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
     internal static PebbleIndexReceiverStatus ReadStoredStatus(
         bool running,
         string message,
-        string inboxDirectory) =>
-        BuildStatus(running, message, new PebbleIndexDeliveryStore(inboxDirectory));
+        string inboxDirectory,
+        Func<PebbleIndexReceiverStatus>? readStatus = null)
+    {
+        try
+        {
+            return readStatus?.Invoke()
+                ?? BuildStatus(running, message, new PebbleIndexDeliveryStore(inboxDirectory));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return new PebbleIndexReceiverStatus(
+                false,
+                message + " Stored delivery status is unavailable: " + exception.Message);
+        }
+    }
 
     private async Task AcceptAsync(CancellationToken cancellationToken)
     {
