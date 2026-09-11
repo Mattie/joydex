@@ -165,6 +165,10 @@ Joydex includes disabled-by-default support for using a dedicated Home Assistant
 
 Configure it under **Configure → Room Voice**. The tray's **Room Voice** item opens a conversation workspace with live transcription, connection state, session controls, and an optional bridge for sending a prompt to a selected Desktop-owned task. This is an experimental trusted-LAN feature whose dedicated task runs with full filesystem access and no approval prompts. Read the [Room Voice setup and security guide](docs/ROOM_VOICE.md) before enabling it; the [Voice PE firmware guide](firmware/esphome/voice-pe/README.md) covers the source-only device build.
 
+## Experimental Pebble Index receiver
+
+Joydex can accept authenticated, transcript-only Pebble Index 01 webhooks and forward them to one selected local Codex task. The receiver is disabled by default and listens only on loopback; the phone-facing HTTPS proxy or tunnel remains an explicit operator responsibility. Read the [Pebble Index setup and security guide](docs/PEBBLE_INDEX.md) before enabling it.
+
 ## Experimental wireless touchscreen
 
 Joydex also includes an experimental ESPHome example for the
@@ -237,7 +241,7 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 | `src/Joydex.Virpil` | Shared VIRPIL device access, LED control, and checks for competing LED writers |
 | `src/Joydex.Windows` | DirectInput, shortcut resolution and injection, safety guards, task links, hooks, and task-alert LED services |
 | `src/Joydex.App` | Tray lifecycle, configuration UI, dry-run inspector, prompt overlays, diagnostics, and button maps |
-| `src/Joydex.DesktopBridgeHost` | Experimental, constrained broker for sending Room Voice prompts through Codex Desktop's task tools |
+| `src/Joydex.DesktopBridgeHost` | Experimental, constrained broker for sending Room Voice and Pebble Index prompts through Codex Desktop's task tools |
 | `src/Joydex.HookRelay` | Native hook command that forwards Codex lifecycle events to Joydex |
 | `src/Joydex.Guardian` | Crash cleanup for active task-status LEDs |
 | `tools/Joydex.Trace` | DirectInput discovery and event tracing |

@@ -61,6 +61,71 @@ public sealed class DesktopTaskBridgeTests : IDisposable
     }
 
     [Fact]
+    public async Task ResolveReadsTheExactTaskOutsideTheRecentCatalog()
+    {
+        var pipe = "Joydex.Tests." + Guid.NewGuid().ToString("N");
+        var source = Guid.NewGuid().ToString("D");
+        var target = Guid.NewGuid().ToString("D");
+        var body = JsonSerializer.Serialize(new
+        {
+            thread = new
+            {
+                id = target,
+                kind = "codex",
+                hostId = "local",
+                title = "Older saved target",
+                status = new { type = "idle" },
+                cwd = @"C:\work",
+                updatedAt = 42,
+            },
+        });
+        var server = ServeOnceAsync(pipe, request =>
+        {
+            Assert.Equal(DesktopTaskBridgeProtocol.ReadTaskMethod, request.Method);
+            Assert.Equal(target, request.Arguments.GetProperty("threadId").GetString());
+            Assert.Equal("local", request.Arguments.GetProperty("hostId").GetString());
+            Assert.Equal(1, request.Arguments.GetProperty("turnLimit").GetInt32());
+            Assert.Equal(1, request.Arguments.GetProperty("maxOutputCharsPerItem").GetInt32());
+            return JsonSerializer.SerializeToElement(new { content = body });
+        });
+
+        var resolved = await new DesktopTaskBridgeClient(pipe).ResolveTaskAsync(source, target, "local");
+        await server;
+
+        Assert.Equal(target, resolved.Id);
+        Assert.Equal("Older saved target", resolved.Title);
+        Assert.Equal("idle", resolved.Status);
+        Assert.Equal(@"C:\work", resolved.WorkingDirectory);
+        Assert.Equal(42, resolved.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task ResolveRejectsAnArchivedTask()
+    {
+        var pipe = "Joydex.Tests." + Guid.NewGuid().ToString("N");
+        var source = Guid.NewGuid().ToString("D");
+        var target = Guid.NewGuid().ToString("D");
+        var body = JsonSerializer.Serialize(new
+        {
+            thread = new
+            {
+                id = target,
+                kind = "codex",
+                hostId = "local",
+                title = "Archived target",
+                status = new { type = "archived" },
+            },
+        });
+        var server = ServeOnceAsync(pipe, _ => JsonSerializer.SerializeToElement(new { content = body }));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new DesktopTaskBridgeClient(pipe).ResolveTaskAsync(source, target, "local"));
+        await server;
+
+        Assert.Contains("archived", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task SendPreservesExactPromptAndNeverRequestsResume()
     {
         var pipe = "Joydex.Tests." + Guid.NewGuid().ToString("N");
@@ -172,17 +237,19 @@ public sealed class DesktopTaskBridgeTests : IDisposable
         var preferences = Path.Combine(_root, "voice-pe.json");
         File.WriteAllText(host, string.Empty);
         var source = Guid.NewGuid().ToString("D");
+        const string pipe = "Joydex.DesktopTasks.test-capability";
 
         var start = CodexAppServerClient.CreateStartInfo(
             @"C:\runtime\codex.exe",
             _root,
-            new CodexVoiceToolConfiguration(host, preferences, source));
+            new CodexVoiceToolConfiguration(host, preferences, source, pipe));
         var arguments = start.ArgumentList.ToArray();
 
         Assert.Contains(arguments, value => value.StartsWith("mcp_servers.joydex_voice.command=", StringComparison.Ordinal));
         Assert.Contains(arguments, value => value.StartsWith("mcp_servers.joydex_voice.args=", StringComparison.Ordinal));
         Assert.DoesNotContain(arguments, value => value.Contains("thread/resume", StringComparison.Ordinal));
         Assert.DoesNotContain(arguments, value => value.Contains("send_message_to_thread", StringComparison.Ordinal));
+        Assert.Contains(arguments, value => value.Contains(pipe, StringComparison.Ordinal));
     }
 
     [Fact]

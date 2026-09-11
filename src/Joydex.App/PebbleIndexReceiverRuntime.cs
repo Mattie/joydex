@@ -1,0 +1,849 @@
+using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Threading.Channels;
+using Joydex.Core.Voice;
+using Joydex.Windows.Voice;
+
+namespace Joydex.App;
+
+internal sealed record PebbleIndexReceiverStatus(
+    bool Running,
+    string Message,
+    PebbleIndexDelivery? Latest = null,
+    int OutstandingCount = 0);
+
+internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
+{
+    private const int MaximumHeaderBytes = 16 * 1024;
+    private const int MaximumRequestBytes = 64 * 1024;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+    private readonly PebbleIndexPreferences _preferences;
+    private readonly byte[] _secret;
+    private readonly PebbleIndexDeliveryStore _store;
+    private readonly PebbleIndexDeliveryStatusTracker _deliveryStatus;
+    private readonly IDesktopTaskBridgeClient _bridge;
+    private readonly Action<PebbleIndexReceiverStatus> _status;
+    private readonly Action<string> _log;
+    private readonly object _statusGate = new();
+    private readonly Func<Task>? _beforeClientRelease;
+    private readonly Func<CancellationToken, ValueTask<TcpClient>> _acceptClient;
+    private readonly Channel<PebbleIndexDelivery> _deliveries = Channel.CreateBounded<PebbleIndexDelivery>(
+        new BoundedChannelOptions(32) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly SemaphoreSlim _connections = new(8, 8);
+    private readonly ConcurrentDictionary<Task, byte> _clients = new();
+    private readonly TcpListener _listener;
+    private bool _terminated;
+    private string? _terminalMessage;
+    private Task? _acceptLoop;
+    private Task? _deliveryLoop;
+
+    private PebbleIndexReceiverRuntime(
+        PebbleIndexPreferences preferences, string secret, PebbleIndexDeliveryStore store,
+        IDesktopTaskBridgeClient bridge, Action<PebbleIndexReceiverStatus> status, Action<string> log,
+        Func<Task>? beforeClientRelease,
+        Func<CancellationToken, ValueTask<TcpClient>>? acceptClient)
+    {
+        _preferences = preferences;
+        _secret = Encoding.UTF8.GetBytes(secret);
+        _store = store;
+        _deliveryStatus = new PebbleIndexDeliveryStatusTracker(store.GetStatusSnapshot());
+        _bridge = bridge;
+        _status = IgnoreCallbackFailures(status);
+        _log = IgnoreCallbackFailures(log);
+        _beforeClientRelease = beforeClientRelease;
+        _listener = new TcpListener(IPAddress.Loopback, preferences.Port);
+        _acceptClient = acceptClient ?? _listener.AcceptTcpClientAsync;
+    }
+
+    public static Task<PebbleIndexReceiverRuntime> StartAsync(
+        PebbleIndexPreferences preferences, string secretPath, string inboxDirectory,
+        string desktopTaskBridgePipeName,
+        Action<PebbleIndexReceiverStatus> status, Action<string> log,
+        CancellationToken cancellationToken = default) =>
+        StartAsync(preferences, PebbleIndexSecretStore.LoadOrCreate(secretPath), inboxDirectory,
+            new DesktopTaskBridgeClient(desktopTaskBridgePipeName), status, log, cancellationToken);
+
+    internal static Task<PebbleIndexReceiverRuntime> StartAsync(
+        PebbleIndexPreferences preferences, string secret, string inboxDirectory,
+        IDesktopTaskBridgeClient bridge, Action<PebbleIndexReceiverStatus> status, Action<string> log,
+        CancellationToken cancellationToken = default,
+        Func<Task>? beforeClientRelease = null,
+        Func<CancellationToken, ValueTask<TcpClient>>? acceptClient = null)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var normalized = preferences.Normalize();
+        var errors = normalized.Validate();
+        if (errors.Count > 0) throw new InvalidDataException(string.Join(Environment.NewLine, errors));
+        var runtime = new PebbleIndexReceiverRuntime(
+            normalized, secret, new PebbleIndexDeliveryStore(inboxDirectory), bridge, status, log,
+            beforeClientRelease, acceptClient);
+        var message = $"Listening on http://127.0.0.1:{normalized.Port}/pebble-index";
+        var startedStatus = runtime.BuildStatus(true, message);
+        runtime._listener.Start(backlog: 16);
+        runtime._acceptLoop = runtime.AcceptAsync(runtime._lifetime.Token);
+        runtime._deliveryLoop = runtime.DeliverAsync(runtime._lifetime.Token);
+        runtime.PublishStarted(startedStatus);
+        return Task.FromResult(runtime);
+    }
+
+    internal static PebbleIndexReceiverStatus ReadStoredStatus(
+        bool running,
+        string message,
+        string inboxDirectory,
+        Func<PebbleIndexReceiverStatus>? readStatus = null)
+    {
+        try
+        {
+            return readStatus?.Invoke()
+                ?? BuildStatus(running, message, new PebbleIndexDeliveryStore(inboxDirectory));
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        {
+            return new PebbleIndexReceiverStatus(
+                false,
+                message + " Stored delivery status is unavailable: " + exception.Message);
+        }
+    }
+
+    private async Task AcceptAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var client = await _acceptClient(cancellationToken).ConfigureAwait(false);
+                if (!_connections.Wait(0))
+                {
+                    client.Dispose();
+                    continue;
+                }
+                var handling = HandleOwnedClientAsync(client, cancellationToken);
+                _clients.TryAdd(handling, 0);
+                _ = handling.ContinueWith(
+                    completed => _clients.TryRemove(completed, out _),
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            var message = "Receiver stopped accepting connections: " + exception.Message;
+            PublishTerminalStatus(message);
+            _log("Pebble Index receiver stopped accepting connections: " + exception.Message);
+            _lifetime.Cancel();
+            _listener.Stop();
+        }
+    }
+
+    private async Task HandleOwnedClientAsync(TcpClient client, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(15));
+            await HandleClientAsync(client, deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) { _log("Pebble Index request timed out."); }
+        catch (Exception exception) { _log("Pebble Index request failed: " + exception.Message); }
+        finally
+        {
+            try
+            {
+                if (_beforeClientRelease is not null)
+                    await _beforeClientRelease().ConfigureAwait(false);
+            }
+            finally { _connections.Release(); }
+        }
+    }
+
+    private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
+    {
+        using (client)
+        {
+            try
+            {
+                await using var stream = client.GetStream();
+                var request = await ReadRequestHeadersAsync(stream, cancellationToken).ConfigureAwait(false);
+                if (request.Method == "GET" && request.Path == "/health")
+                {
+                    await WriteResponseAsync(stream, 200, new { status = "ready" }, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                if (request.Method != "POST" || request.Path != "/pebble-index")
+                {
+                    await WriteResponseAsync(stream, 404, new { error = "not found" }, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                if (!Authorized(request.Headers.GetValueOrDefault("Authorization")))
+                {
+                    await WriteResponseAsync(stream, 401, new { error = "unauthorized" }, cancellationToken).ConfigureAwait(false);
+                    await DrainRejectedBodyAsync(stream, request.ContentLength, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                if (!TryReadBoundary(request.Headers.GetValueOrDefault("Content-Type"), out var boundary))
+                {
+                    await WriteResponseAsync(stream, 400, new { error = "multipart/form-data is required" }, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                var body = new byte[request.ContentLength];
+                await stream.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
+                if (!TryParseMultipart(body, boundary, out var form, out var hasUnsupportedParts))
+                {
+                    await WriteResponseAsync(stream, 400, new { error = "The multipart body was invalid." }, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                if (hasUnsupportedParts || form.ContainsKey("audio"))
+                {
+                    await WriteResponseAsync(stream, 400, new { error = "audio and file uploads are disabled" }, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                if (IsTruthy(form.GetValueOrDefault("test")) || IsTruthy(request.Headers.GetValueOrDefault("X-Index-Test")))
+                {
+                    await WriteResponseAsync(stream, 200, new { status = "test-received" }, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                PebbleIndexAcceptResult accepted;
+                try
+                {
+                    accepted = _store.Accept(
+                        form.GetValueOrDefault("transcription") ?? string.Empty,
+                        form.GetValueOrDefault("recordedAt") ?? string.Empty,
+                        form.GetValueOrDefault("client") ?? string.Empty,
+                        request.Headers.GetValueOrDefault("X-Index-Trigger") ?? string.Empty,
+                        request.Headers.GetValueOrDefault("X-Index-Delivery-Id"), _preferences);
+                }
+                catch (InvalidDataException exception)
+                {
+                    await WriteResponseAsync(stream, 400, new { error = exception.Message }, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                if (!accepted.IsDuplicate)
+                {
+                    _deliveryStatus.Apply(accepted.Delivery);
+                }
+                PublishStatus(BuildStatus(true,
+                    accepted.IsDuplicate ? "Duplicate received; no second delivery was attempted." : "Transcription received.",
+                    accepted.Delivery));
+                if (!accepted.IsDuplicate && !_deliveries.Writer.TryWrite(accepted.Delivery))
+                {
+                    var held = UpdateDelivery(
+                        accepted.Delivery.Id,
+                        PebbleIndexDeliveryState.Received,
+                        "Held before send: the live delivery queue was unavailable.");
+                    PublishStatus(BuildStatus(true, held.Detail, held));
+                    _log($"Pebble Index delivery {accepted.Delivery.Id} was stored but the live queue was unavailable.");
+                }
+                await WriteResponseAsync(stream, 202, new
+                {
+                    status = accepted.IsDuplicate ? accepted.Delivery.State.ToString().ToLowerInvariant() : "received",
+                    id = accepted.Delivery.Id,
+                    duplicate = accepted.IsDuplicate,
+                }, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or SocketException)
+            {
+                _log("Pebble Index request was rejected: " + exception.Message);
+            }
+        }
+    }
+
+    private async Task DeliverAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var delivery in _deliveries.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    await DeliverOneAsync(delivery, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    _log($"Pebble Index delivery {delivery.Id} could not finish processing: {exception.Message}");
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+    }
+
+    private async Task DeliverOneAsync(PebbleIndexDelivery delivery, CancellationToken cancellationToken)
+    {
+        DesktopTaskSummary target;
+        try
+        {
+            target = await _bridge.ResolveTaskAsync(
+                    delivery.TargetTaskId,
+                    delivery.TargetTaskId,
+                    delivery.TargetHostId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            UpdateDelivery(
+                delivery.Id,
+                PebbleIndexDeliveryState.Received,
+                "Held before send: the receiver stopped.");
+            throw;
+        }
+        catch (Exception exception)
+        {
+            var held = UpdateDelivery(delivery.Id, PebbleIndexDeliveryState.Received,
+                "Held before send: " + exception.Message);
+            PublishStatus(BuildStatus(true, held.Detail, held));
+            _log($"Pebble Index delivery {delivery.Id} was held before send: {exception.Message}");
+            return;
+        }
+        try
+        {
+            var attempting = UpdateDelivery(
+                delivery.Id,
+                PebbleIndexDeliveryState.DeliveryUncertain,
+                "Desktop delivery started; confirmation is pending.");
+            PublishStatus(BuildStatus(true, attempting.Detail, attempting));
+        }
+        catch (Exception exception)
+        {
+            _log($"Pebble Index delivery {delivery.Id} was held because its send-attempt state could not be stored: {exception.Message}");
+            return;
+        }
+        try
+        {
+            var result = await _bridge.SendMessageAsync(
+                delivery.TargetTaskId, target, delivery.Transcription, cancellationToken).ConfigureAwait(false);
+            var sent = UpdateDelivery(delivery.Id, PebbleIndexDeliveryState.Sent,
+                result.Queued ? "Queued to the running task." : "Delivered.");
+            PublishStatus(BuildStatus(true, sent.Detail, sent));
+            _log($"Pebble Index delivery {delivery.Id} was confirmed by Desktop.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            UpdateDelivery(
+                delivery.Id,
+                PebbleIndexDeliveryState.DeliveryUncertain,
+                "Desktop delivery may have started before the receiver stopped.");
+            throw;
+        }
+        catch (Exception exception)
+        {
+            var uncertain = UpdateDelivery(delivery.Id, PebbleIndexDeliveryState.DeliveryUncertain,
+                "Desktop delivery was not confirmed: " + exception.Message);
+            PublishStatus(BuildStatus(true, uncertain.Detail, uncertain));
+            _log($"Pebble Index delivery {delivery.Id} is uncertain: {exception.Message}");
+        }
+    }
+
+    private bool Authorized(string? supplied)
+    {
+        var value = supplied?.Trim() ?? string.Empty;
+        while (value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            value = value[7..].TrimStart();
+        var actual = Encoding.UTF8.GetBytes(value);
+        return actual.Length == _secret.Length && CryptographicOperations.FixedTimeEquals(actual, _secret);
+    }
+
+    private PebbleIndexDelivery UpdateDelivery(
+        string id,
+        PebbleIndexDeliveryState state,
+        string detail)
+    {
+        var updated = _store.Update(id, state, detail);
+        _deliveryStatus.Apply(updated);
+        return updated;
+    }
+
+    private PebbleIndexReceiverStatus BuildStatus(
+        bool running,
+        string message,
+        PebbleIndexDelivery? latest = null) =>
+        _deliveryStatus.BuildStatus(running, message, latest);
+
+    private void PublishStatus(PebbleIndexReceiverStatus status)
+    {
+        lock (_statusGate)
+        {
+            if (!_terminated || !status.Running) _status(status);
+        }
+    }
+
+    private void PublishStarted(PebbleIndexReceiverStatus status)
+    {
+        lock (_statusGate)
+        {
+            if (_terminated) return;
+            _status(status);
+            _log("Pebble Index receiver started on loopback.");
+        }
+    }
+
+    private void PublishTerminalStatus(string message)
+    {
+        lock (_statusGate)
+        {
+            _terminalMessage ??= message;
+            _terminated = true;
+            _status(BuildStatus(false, _terminalMessage));
+        }
+    }
+
+    private static PebbleIndexReceiverStatus BuildStatus(
+        bool running,
+        string message,
+        PebbleIndexDeliveryStore store,
+        PebbleIndexDelivery? latest = null)
+    {
+        var snapshot = store.GetStatusSnapshot();
+        var displayMessage = snapshot.Outstanding.Count switch
+        {
+            0 => message,
+            1 => message + " 1 stored delivery needs manual review.",
+            _ => message + $" {snapshot.Outstanding.Count} stored deliveries need manual review.",
+        };
+        return new PebbleIndexReceiverStatus(
+            running,
+            displayMessage,
+            snapshot.LatestOutstanding ?? latest ?? snapshot.Latest,
+            snapshot.Outstanding.Count);
+    }
+
+    private static async Task<HttpRequestHeaders> ReadRequestHeadersAsync(
+        NetworkStream stream,
+        CancellationToken cancellationToken)
+    {
+        var header = new List<byte>(1024);
+        var state = 0;
+        while (header.Count < MaximumHeaderBytes)
+        {
+            var one = new byte[1];
+            if (await stream.ReadAsync(one, cancellationToken).ConfigureAwait(false) == 0)
+                throw new InvalidDataException("The HTTP request ended before its headers.");
+            header.Add(one[0]);
+            state = (state, one[0]) switch
+            {
+                (0, 13) => 1, (1, 10) => 2, (2, 13) => 3, (3, 10) => 4, (_, 13) => 1, _ => 0,
+            };
+            if (state == 4) break;
+        }
+        if (state != 4) throw new InvalidDataException("The HTTP headers were too large.");
+        var lines = Encoding.ASCII.GetString(header.ToArray()).Split("\r\n", StringSplitOptions.None);
+        var requestLine = lines[0].Split(' ', 3);
+        if (requestLine.Length != 3) throw new InvalidDataException("The HTTP request line was invalid.");
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in lines.Skip(1).Where(line => line.Length > 0))
+        {
+            var separator = line.IndexOf(':');
+            if (separator <= 0) throw new InvalidDataException("An HTTP header was invalid.");
+            headers[line[..separator].Trim()] = line[(separator + 1)..].Trim();
+        }
+        var length = 0;
+        if (headers.TryGetValue("Content-Length", out var value)
+            && (!int.TryParse(value, out length) || length < 0 || length > MaximumRequestBytes))
+            throw new InvalidDataException("The HTTP request body was too large.");
+        return new HttpRequestHeaders(requestLine[0].ToUpperInvariant(), requestLine[1], headers, length);
+    }
+
+    private static bool TryReadBoundary(string? contentType, out string boundary)
+    {
+        boundary = string.Empty;
+        if (contentType is null || !contentType.StartsWith("multipart/form-data", StringComparison.OrdinalIgnoreCase)) return false;
+        foreach (var part in contentType.Split(';').Skip(1))
+        {
+            var pair = part.Trim().Split('=', 2);
+            if (pair.Length == 2 && pair[0].Equals("boundary", StringComparison.OrdinalIgnoreCase))
+            {
+                boundary = pair[1].Trim().Trim('"');
+                return boundary.Length is > 0 and <= 200;
+            }
+        }
+        return false;
+    }
+
+    private static async Task DrainRejectedBodyAsync(
+        NetworkStream stream,
+        int contentLength,
+        CancellationToken cancellationToken)
+    {
+        if (contentLength == 0) return;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromMilliseconds(100));
+        var buffer = new byte[Math.Min(contentLength, 4096)];
+        var remaining = contentLength;
+        try
+        {
+            while (remaining > 0)
+            {
+                var read = await stream.ReadAsync(
+                        buffer.AsMemory(0, Math.Min(buffer.Length, remaining)),
+                        deadline.Token)
+                    .ConfigureAwait(false);
+                if (read == 0) return;
+                remaining -= read;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (IOException)
+        {
+        }
+    }
+
+    private static bool TryParseMultipart(
+        byte[] body,
+        string boundary,
+        out Dictionary<string, string> form,
+        out bool hasUnsupportedParts)
+    {
+        hasUnsupportedParts = false;
+        form = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var text = Encoding.Latin1.GetString(body);
+        var delimiter = "--" + boundary;
+        if (!TryFindFirstMultipartDelimiter(text, delimiter, out var position, out var final))
+        {
+            return false;
+        }
+
+        while (!final)
+        {
+            var separator = text.IndexOf("\r\n\r\n", position, StringComparison.Ordinal);
+            if (!TryFindNextMultipartDelimiter(
+                    text,
+                    delimiter,
+                    position,
+                    out var contentEnd,
+                    out var nextPosition,
+                    out var nextIsFinal)
+                || separator < 0
+                || separator >= contentEnd)
+            {
+                return false;
+            }
+
+            var headers = text[position..separator];
+            if (!TryReadTextFormDataPart(headers, out var name, out var rejectPart))
+            {
+                hasUnsupportedParts |= rejectPart;
+            }
+            else
+            {
+                var raw = text[(separator + 4)..contentEnd];
+                form[name] = StrictUtf8.GetString(Encoding.Latin1.GetBytes(raw));
+            }
+
+            position = nextPosition;
+            final = nextIsFinal;
+        }
+
+        return true;
+    }
+
+    private static bool TryFindFirstMultipartDelimiter(
+        string text,
+        string delimiter,
+        out int nextPosition,
+        out bool final)
+    {
+        if (TryConsumeMultipartDelimiter(text, delimiter, 0, out nextPosition, out final))
+        {
+            return true;
+        }
+
+        return TryFindNextMultipartDelimiter(
+            text,
+            delimiter,
+            0,
+            out _,
+            out nextPosition,
+            out final);
+    }
+
+    private static bool TryFindNextMultipartDelimiter(
+        string text,
+        string delimiter,
+        int startIndex,
+        out int contentEnd,
+        out int nextPosition,
+        out bool final)
+    {
+        var marker = "\r\n" + delimiter;
+        var searchFrom = startIndex;
+        while (true)
+        {
+            var markerStart = text.IndexOf(marker, searchFrom, StringComparison.Ordinal);
+            if (markerStart < 0)
+            {
+                contentEnd = 0;
+                nextPosition = 0;
+                final = false;
+                return false;
+            }
+
+            if (TryConsumeMultipartDelimiter(
+                text,
+                delimiter,
+                markerStart + 2,
+                out nextPosition,
+                out final))
+            {
+                contentEnd = markerStart;
+                return true;
+            }
+
+            searchFrom = markerStart + marker.Length;
+        }
+    }
+
+    private static bool TryConsumeMultipartDelimiter(
+        string text,
+        string delimiter,
+        int position,
+        out int nextPosition,
+        out bool final)
+    {
+        nextPosition = 0;
+        final = false;
+        if (!text.AsSpan(position).StartsWith(delimiter, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var lineEnd = position + delimiter.Length;
+        if (text.AsSpan(lineEnd).StartsWith("--", StringComparison.Ordinal))
+        {
+            final = true;
+            lineEnd += 2;
+        }
+        while (lineEnd < text.Length && text[lineEnd] is ' ' or '\t')
+        {
+            lineEnd++;
+        }
+
+        if (lineEnd == text.Length)
+        {
+            nextPosition = lineEnd;
+            return final;
+        }
+        if (!text.AsSpan(lineEnd).StartsWith("\r\n", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        nextPosition = lineEnd + 2;
+        return true;
+    }
+
+    private static bool TryReadTextFormDataPart(string headers, out string name, out bool rejectPart)
+    {
+        name = string.Empty;
+        rejectPart = false;
+        var foundDisposition = false;
+        var foundContentType = false;
+        foreach (var line in headers.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = line.IndexOf(':');
+            if (separator < 0)
+            {
+                rejectPart = true;
+                continue;
+            }
+            var headerName = line[..separator].Trim();
+            var headerValue = line[(separator + 1)..].Trim();
+            if (headerName.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
+            {
+                if (foundContentType
+                    || !MediaTypeHeaderValue.TryParse(headerValue, out var contentType)
+                    || !string.Equals(contentType.MediaType, "text/plain", StringComparison.OrdinalIgnoreCase))
+                {
+                    rejectPart = true;
+                }
+                foundContentType = true;
+                continue;
+            }
+            if (!headerName.Equals("Content-Disposition", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            if (foundDisposition
+                || !ContentDispositionHeaderValue.TryParse(headerValue, out var disposition)
+                || !disposition.DispositionType.Equals("form-data", StringComparison.OrdinalIgnoreCase))
+            {
+                rejectPart = true;
+                continue;
+            }
+            foundDisposition = true;
+            name = disposition.Name?.Trim().Trim('"') ?? string.Empty;
+            rejectPart |= disposition.Parameters.Any(parameter =>
+                parameter.Name.Equals("filename", StringComparison.OrdinalIgnoreCase)
+                || parameter.Name.Equals("filename*", StringComparison.OrdinalIgnoreCase));
+        }
+        return foundDisposition && !rejectPart && name.Length > 0;
+    }
+
+    private static async Task WriteResponseAsync(NetworkStream stream, int statusCode, object value, CancellationToken cancellationToken)
+    {
+        var body = JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
+        var reason = statusCode switch { 200 => "OK", 202 => "Accepted", 400 => "Bad Request", 401 => "Unauthorized", _ => "Not Found" };
+        var header = Encoding.ASCII.GetBytes(
+            $"HTTP/1.1 {statusCode} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+        await stream.WriteAsync(header, cancellationToken).ConfigureAwait(false);
+        await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool IsTruthy(string? value) => value?.Equals("true", StringComparison.OrdinalIgnoreCase) == true || value == "1";
+
+    private static Action<T> IgnoreCallbackFailures<T>(Action<T> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        return value =>
+        {
+            try { callback(value); }
+            catch { }
+        };
+    }
+
+    internal int ActiveClientCount => _clients.Count;
+    internal Task Completion => _acceptLoop ?? Task.CompletedTask;
+
+    public async ValueTask DisposeAsync()
+    {
+        PublishTerminalStatus("Receiver stopped.");
+        _deliveries.Writer.TryComplete();
+        _lifetime.Cancel();
+        _listener.Stop();
+        if (_acceptLoop is not null) await _acceptLoop.ConfigureAwait(false);
+        var clients = _clients.Keys.ToArray();
+        if (clients.Length > 0) await Task.WhenAll(clients).ConfigureAwait(false);
+        if (_deliveryLoop is not null) await _deliveryLoop.ConfigureAwait(false);
+        while (_deliveries.Reader.TryRead(out var pending))
+        {
+            try
+            {
+                UpdateDelivery(
+                    pending.Id,
+                    PebbleIndexDeliveryState.Received,
+                    "Held before send: the receiver stopped.");
+            }
+            catch (Exception exception)
+            {
+                _log($"Could not mark Pebble Index delivery {pending.Id} as held: {exception.Message}");
+            }
+        }
+        _connections.Dispose();
+        _lifetime.Dispose();
+        PublishTerminalStatus("Receiver stopped.");
+    }
+
+    private sealed record HttpRequestHeaders(
+        string Method,
+        string Path,
+        Dictionary<string, string> Headers,
+        int ContentLength);
+}
+
+/// <summary>
+/// Keeps the receiver's live status in memory after one startup scan of the durable inbox.
+/// </summary>
+internal sealed class PebbleIndexDeliveryStatusTracker
+{
+    private static readonly IComparer<OutstandingKey> OutstandingComparer =
+        Comparer<OutstandingKey>.Create((left, right) =>
+        {
+            var receivedAt = left.ReceivedAt.CompareTo(right.ReceivedAt);
+            return receivedAt != 0
+                ? receivedAt
+                : StringComparer.Ordinal.Compare(left.Id, right.Id);
+        });
+
+    private readonly object _gate = new();
+    private readonly Dictionary<string, PebbleIndexDelivery> _outstanding = new(StringComparer.Ordinal);
+    private readonly SortedSet<OutstandingKey> _orderedOutstanding = new(OutstandingComparer);
+    private PebbleIndexDelivery? _latest;
+
+    public PebbleIndexDeliveryStatusTracker(PebbleIndexDeliveryStoreSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        _latest = snapshot.Latest;
+        foreach (var delivery in snapshot.Outstanding)
+        {
+            AddOutstanding(delivery);
+        }
+    }
+
+    public void Apply(PebbleIndexDelivery delivery)
+    {
+        ArgumentNullException.ThrowIfNull(delivery);
+        lock (_gate)
+        {
+            if (_outstanding.Remove(delivery.Id, out var previous))
+            {
+                _orderedOutstanding.Remove(Key(previous));
+            }
+            if (delivery.State != PebbleIndexDeliveryState.Sent)
+            {
+                AddOutstanding(delivery);
+            }
+            if (_latest is null
+                || delivery.Id.Equals(_latest.Id, StringComparison.Ordinal)
+                || OutstandingComparer.Compare(Key(delivery), Key(_latest)) > 0)
+            {
+                _latest = delivery;
+            }
+        }
+    }
+
+    public PebbleIndexReceiverStatus BuildStatus(
+        bool running,
+        string message,
+        PebbleIndexDelivery? latest = null)
+    {
+        lock (_gate)
+        {
+            var latestOutstanding = _orderedOutstanding.Count == 0
+                ? null
+                : _outstanding[_orderedOutstanding.Max.Id];
+            var displayMessage = _outstanding.Count switch
+            {
+                0 => message,
+                1 => message + " 1 stored delivery needs manual review.",
+                _ => message + $" {_outstanding.Count} stored deliveries need manual review.",
+            };
+            return new PebbleIndexReceiverStatus(
+                running,
+                displayMessage,
+                latestOutstanding ?? latest ?? _latest,
+                _outstanding.Count);
+        }
+    }
+
+    private void AddOutstanding(PebbleIndexDelivery delivery)
+    {
+        if (_outstanding.Remove(delivery.Id, out var previous))
+        {
+            _orderedOutstanding.Remove(Key(previous));
+        }
+        _outstanding[delivery.Id] = delivery;
+        _orderedOutstanding.Add(Key(delivery));
+    }
+
+    private static OutstandingKey Key(PebbleIndexDelivery delivery) =>
+        new(delivery.ReceivedAt, delivery.Id);
+
+    private readonly record struct OutstandingKey(DateTimeOffset ReceivedAt, string Id);
+}

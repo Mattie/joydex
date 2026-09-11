@@ -14,7 +14,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
     private readonly CodexVoiceSessionObserver? _fallbackObserver;
     private readonly DedicatedVoiceCoordinator? _dedicatedCoordinator;
     private readonly CodexDedicatedVoiceOwner? _owner;
-    private readonly DesktopTaskBridgeBrokerProcess? _desktopTaskBroker;
     private readonly VoiceSessionArchiveState? _sessionArchiveState;
     private readonly RoomVoiceConversationModel _conversation;
     private readonly Action<string> _log;
@@ -25,7 +24,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         CodexVoiceSessionObserver? fallbackObserver,
         DedicatedVoiceCoordinator? dedicatedCoordinator,
         CodexDedicatedVoiceOwner? owner,
-        DesktopTaskBridgeBrokerProcess? desktopTaskBroker,
         VoiceSessionArchiveState? sessionArchiveState,
         RoomVoiceConversationModel conversation,
         Action<string> log)
@@ -34,7 +32,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         _fallbackObserver = fallbackObserver;
         _dedicatedCoordinator = dedicatedCoordinator;
         _owner = owner;
-        _desktopTaskBroker = desktopTaskBroker;
         _sessionArchiveState = sessionArchiveState;
         _conversation = conversation;
         _log = log;
@@ -62,6 +59,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         Action<string> log,
         string preferencesPath,
         string voiceToolHostPath,
+        string desktopTaskBridgePipeName,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(preferences);
@@ -110,6 +108,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                     log,
                     preferencesPath,
                     voiceToolHostPath,
+                    desktopTaskBridgePipeName,
                     cancellationToken)
                 .ConfigureAwait(false),
             _ => throw new InvalidDataException($"Unsupported Voice PE session mode {normalized.SessionMode}."),
@@ -167,18 +166,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
             catch (Exception exception)
             {
                 _log($"Could not release the Dedicated Voice Task owner: {exception.Message}");
-            }
-        }
-
-        if (_desktopTaskBroker is not null)
-        {
-            try
-            {
-                await _desktopTaskBroker.DisposeAsync().ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                _log($"Could not stop the Desktop Task Bridge broker worker: {exception.Message}");
             }
         }
 
@@ -243,7 +230,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         }
 
         log($"Voice PE native LASTVOICE fallback started for {endpoint.Host}:{endpoint.Port}.");
-        return new VoicePeBridgeRuntime(adapter, observer, null, null, null, null, conversation, log);
+        return new VoicePeBridgeRuntime(adapter, observer, null, null, null, conversation, log);
     }
 
     private static async Task<VoicePeBridgeRuntime> StartOwnerAsync(
@@ -257,6 +244,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         Action<string> log,
         string preferencesPath,
         string voiceToolHostPath,
+        string desktopTaskBridgePipeName,
         CancellationToken cancellationToken)
     {
         if (safety.DryRun)
@@ -283,24 +271,9 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
             ? new CodexVoiceToolConfiguration(
                 voiceToolHostPath,
                 preferencesPath,
-                preferences.DedicatedTaskId)
+                preferences.DedicatedTaskId,
+                desktopTaskBridgePipeName)
             : null;
-        DesktopTaskBridgeBrokerProcess? desktopTaskBroker = null;
-        if (preferences.DesktopTaskMessagingEnabled)
-        {
-            try
-            {
-                desktopTaskBroker = await DesktopTaskBridgeBrokerProcess.StartAsync(
-                        voiceToolHostPath,
-                        log,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                log($"Desktop Task Bridge broker worker is unavailable: {exception.Message}");
-            }
-        }
         var owner = new CodexDedicatedVoiceOwner(
             preferences.DedicatedTaskId,
             preferences.CodexAppServerPath,
@@ -448,7 +421,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 null,
                 coordinator,
                 owner,
-                desktopTaskBroker,
                 sessionArchiveState,
                 conversation,
                 log);
@@ -456,10 +428,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         catch
         {
             await owner.DisposeAsync().ConfigureAwait(false);
-            if (desktopTaskBroker is not null)
-            {
-                await desktopTaskBroker.DisposeAsync().ConfigureAwait(false);
-            }
             throw;
         }
     }
