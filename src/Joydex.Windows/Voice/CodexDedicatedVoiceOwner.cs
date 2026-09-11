@@ -138,7 +138,7 @@ public sealed class CodexDedicatedVoiceOwner : ICodexRealtimeControl, IAsyncDisp
                 {
                     await client.StartAsync(cancellationToken).ConfigureAwait(false);
                 }
-                catch (CodexAppServerRpcException exception)
+                catch (CodexAppServerRpcException exception) when (IsCompatibilityRpcFailure(exception))
                 {
                     throw new CodexDedicatedVoiceCompatibilityException(
                         "Codex App Server rejected the required initialization contract.",
@@ -173,7 +173,7 @@ public sealed class CodexDedicatedVoiceOwner : ICodexRealtimeControl, IAsyncDisp
                         $"The Dedicated Voice Task {_threadId} already has an active writer.",
                         exception);
                 }
-                catch (CodexAppServerRpcException exception)
+                catch (CodexAppServerRpcException exception) when (IsCompatibilityRpcFailure(exception))
                 {
                     throw new CodexDedicatedVoiceCompatibilityException(
                         $"Codex App Server could not resume the configured Dedicated Voice Task {_threadId}.",
@@ -202,7 +202,7 @@ public sealed class CodexDedicatedVoiceOwner : ICodexRealtimeControl, IAsyncDisp
                         TimeSpan.FromSeconds(30),
                         cancellationToken).ConfigureAwait(false);
                 }
-                catch (CodexAppServerRpcException exception)
+                catch (CodexAppServerRpcException exception) when (IsCompatibilityRpcFailure(exception))
                 {
                     throw new CodexDedicatedVoiceCompatibilityException(
                         "Codex App Server does not expose the required Realtime voice-list method.",
@@ -372,7 +372,7 @@ public sealed class CodexDedicatedVoiceOwner : ICodexRealtimeControl, IAsyncDisp
                     cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (CodexAppServerRpcException exception)
+        catch (CodexAppServerRpcException exception) when (IsCompatibilityRpcFailure(exception))
         {
             throw new CodexDedicatedVoiceCompatibilityException(
                 "Codex App Server could not inspect the Joydex voice task tool.",
@@ -408,6 +408,9 @@ public sealed class CodexDedicatedVoiceOwner : ICodexRealtimeControl, IAsyncDisp
 
         return Path.TrimEndingDirectorySeparator(Path.GetFullPath(workspacePath.Trim()));
     }
+
+    private static bool IsCompatibilityRpcFailure(CodexAppServerRpcException exception) =>
+        exception.Code is -32600 or -32601 or -32602;
 
     private static void ValidateRealtimeVoices(JsonElement result, string requestedVoice)
     {

@@ -201,6 +201,13 @@ public sealed class TrayMenuStatusTests
             new CodexDedicatedVoiceCompatibilityException("The App Server protocol is incompatible.")));
     }
 
+    [Fact]
+    public void InternalAppServerRpcFailureRetriesRoomVoiceStartup()
+    {
+        Assert.True(TrayApplicationContext.IsTransientOwnerStartupFailure(
+            new CodexAppServerRpcException(-32603, "temporary server failure")));
+    }
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ShowWindow(IntPtr window, int command);
