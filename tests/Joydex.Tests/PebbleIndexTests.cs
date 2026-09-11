@@ -768,6 +768,39 @@ public sealed class PebbleIndexTests : IDisposable
         Assert.Equal(0, bridge.SendCount);
     }
 
+    [Fact]
+    public async Task ReceiverRejectsAudioContentTypeWithoutFilename()
+    {
+        var port = ReservePort();
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var inbox = Path.Combine(_directory, "filename-free-audio-inbox");
+        var bridge = new RecordingBridge(target);
+        await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
+            new PebbleIndexPreferences(
+                Enabled: true, Port: port, TargetTaskId: target.Id,
+                TargetHostId: target.HostId, TargetTaskLabel: target.Title),
+            "test-secret",
+            inbox,
+            bridge,
+            _ => { },
+            _ => { });
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-secret");
+        using var form = new MultipartFormDataContent();
+        using var audio = new ByteArrayContent(Encoding.UTF8.GetBytes("audio-shaped data"));
+        audio.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+        form.Add(audio, "transcription");
+        form.Add(new StringContent("1500"), "recordedAt");
+        form.Add(new StringContent("ring"), "client");
+
+        using var response = await client.PostAsync($"http://127.0.0.1:{port}/pebble-index", form);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(0, bridge.SendCount);
+        Assert.Empty(new PebbleIndexDeliveryStore(inbox).Recent(1));
+    }
+
     [Theory]
     [InlineData("keep --embedded-boundary inside the transcription")]
     [InlineData("keep\r\nprefix --embedded-boundary inside the transcription")]

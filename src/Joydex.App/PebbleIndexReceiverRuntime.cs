@@ -198,12 +198,12 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
                 }
                 var body = new byte[request.ContentLength];
                 await stream.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
-                if (!TryParseMultipart(body, boundary, out var form, out var hasFiles))
+                if (!TryParseMultipart(body, boundary, out var form, out var hasUnsupportedParts))
                 {
                     await WriteResponseAsync(stream, 400, new { error = "The multipart body was invalid." }, cancellationToken).ConfigureAwait(false);
                     return;
                 }
-                if (hasFiles || form.ContainsKey("audio"))
+                if (hasUnsupportedParts || form.ContainsKey("audio"))
                 {
                     await WriteResponseAsync(stream, 400, new { error = "audio and file uploads are disabled" }, cancellationToken).ConfigureAwait(false);
                     return;
@@ -507,9 +507,9 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         byte[] body,
         string boundary,
         out Dictionary<string, string> form,
-        out bool hasFiles)
+        out bool hasUnsupportedParts)
     {
-        hasFiles = false;
+        hasUnsupportedParts = false;
         form = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var text = Encoding.Latin1.GetString(body);
         var delimiter = "--" + boundary;
@@ -535,9 +535,9 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
             }
 
             var headers = text[position..separator];
-            if (!TryReadFormDataDisposition(headers, out var name, out var rejectPart))
+            if (!TryReadTextFormDataPart(headers, out var name, out var rejectPart))
             {
-                hasFiles |= rejectPart;
+                hasUnsupportedParts |= rejectPart;
             }
             else
             {
@@ -647,37 +647,51 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         return true;
     }
 
-    private static bool TryReadFormDataDisposition(string headers, out string name, out bool rejectPart)
+    private static bool TryReadTextFormDataPart(string headers, out string name, out bool rejectPart)
     {
         name = string.Empty;
         rejectPart = false;
-        var found = false;
+        var foundDisposition = false;
+        var foundContentType = false;
         foreach (var line in headers.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
         {
             var separator = line.IndexOf(':');
-            if (separator < 0
-                || !line[..separator].Trim().Equals("Content-Disposition", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-            if (found)
+            if (separator < 0)
             {
                 rejectPart = true;
                 continue;
             }
-            found = true;
-            if (!ContentDispositionHeaderValue.TryParse(line[(separator + 1)..].Trim(), out var disposition)
+            var headerName = line[..separator].Trim();
+            var headerValue = line[(separator + 1)..].Trim();
+            if (headerName.Equals("Content-Type", StringComparison.OrdinalIgnoreCase))
+            {
+                if (foundContentType
+                    || !MediaTypeHeaderValue.TryParse(headerValue, out var contentType)
+                    || !string.Equals(contentType.MediaType, "text/plain", StringComparison.OrdinalIgnoreCase))
+                {
+                    rejectPart = true;
+                }
+                foundContentType = true;
+                continue;
+            }
+            if (!headerName.Equals("Content-Disposition", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            if (foundDisposition
+                || !ContentDispositionHeaderValue.TryParse(headerValue, out var disposition)
                 || !disposition.DispositionType.Equals("form-data", StringComparison.OrdinalIgnoreCase))
             {
                 rejectPart = true;
                 continue;
             }
+            foundDisposition = true;
             name = disposition.Name?.Trim().Trim('"') ?? string.Empty;
             rejectPart |= disposition.Parameters.Any(parameter =>
                 parameter.Name.Equals("filename", StringComparison.OrdinalIgnoreCase)
                 || parameter.Name.Equals("filename*", StringComparison.OrdinalIgnoreCase));
         }
-        return found && !rejectPart && name.Length > 0;
+        return foundDisposition && !rejectPart && name.Length > 0;
     }
 
     private static async Task WriteResponseAsync(NetworkStream stream, int statusCode, object value, CancellationToken cancellationToken)
