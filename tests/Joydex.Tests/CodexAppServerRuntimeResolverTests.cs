@@ -162,6 +162,24 @@ public sealed class CodexAppServerRuntimeResolverTests : IDisposable
     }
 
     [Fact]
+    public async Task ManagedDirectoryLossDuringMetadataProbeIsRetryable()
+    {
+        var managedRoot = Path.Combine(_directory, "managed");
+        _ = CreateCompleteRuntime(Path.Combine(managedRoot, "current"));
+        var directoryLoss = new DirectoryNotFoundException("The selected runtime directory disappeared.");
+
+        var exception = await Assert.ThrowsAsync<CodexManagedRuntimeUnavailableException>(
+            () => CodexAppServerRuntimeResolver.ResolveAsync(
+                string.Empty,
+                managedRoot,
+                createRuntime: (_, _) => throw directoryLoss));
+
+        Assert.Same(directoryLoss, exception.InnerException);
+        Assert.Equal(Path.GetFullPath(managedRoot), exception.ManagedRuntimeRoot);
+        Assert.Contains("retry", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task DoesNotTreatLooseFilesAtTheManagedRootAsAnInstalledBuild()
     {
         var managedRoot = Path.Combine(_directory, "managed");

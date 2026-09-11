@@ -40,10 +40,12 @@ public static class CodexAppServerRuntimeResolver
     internal static Task<CodexAppServerBinary> ResolveAsync(
         string? executablePath,
         string managedRuntimeRoot,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<string, bool, CodexAppServerBinary>? createRuntime = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentException.ThrowIfNullOrWhiteSpace(managedRuntimeRoot);
+        createRuntime ??= CreateRuntime;
 
         var fullManagedRoot = Path.TrimEndingDirectorySeparator(
             Path.GetFullPath(managedRuntimeRoot));
@@ -76,10 +78,11 @@ public static class CodexAppServerRuntimeResolver
 
             try
             {
-                return Task.FromResult(CreateRuntime(managedRuntime, isManagedRuntime: true));
+                return Task.FromResult(createRuntime(managedRuntime, true));
             }
             catch (Exception exception) when (exception is
                 FileNotFoundException
+                or DirectoryNotFoundException
                 or InvalidDataException
                 or UnauthorizedAccessException)
             {
@@ -91,7 +94,7 @@ public static class CodexAppServerRuntimeResolver
             }
         }
 
-        return Task.FromResult(CreateRuntime(configuredPath, isManagedRuntime: false));
+        return Task.FromResult(createRuntime(configuredPath, false));
     }
 
     private static string DefaultManagedRuntimeRoot() => Path.Combine(
