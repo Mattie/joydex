@@ -30,20 +30,25 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
     private readonly IDesktopTaskBridgeClient _bridge;
     private readonly Action<PebbleIndexReceiverStatus> _status;
     private readonly Action<string> _log;
+    private readonly object _statusGate = new();
     private readonly Func<Task>? _beforeClientRelease;
+    private readonly Func<CancellationToken, ValueTask<TcpClient>> _acceptClient;
     private readonly Channel<PebbleIndexDelivery> _deliveries = Channel.CreateBounded<PebbleIndexDelivery>(
         new BoundedChannelOptions(32) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _connections = new(8, 8);
     private readonly ConcurrentDictionary<Task, byte> _clients = new();
     private readonly TcpListener _listener;
+    private bool _terminated;
+    private string? _terminalMessage;
     private Task? _acceptLoop;
     private Task? _deliveryLoop;
 
     private PebbleIndexReceiverRuntime(
         PebbleIndexPreferences preferences, string secret, PebbleIndexDeliveryStore store,
         IDesktopTaskBridgeClient bridge, Action<PebbleIndexReceiverStatus> status, Action<string> log,
-        Func<Task>? beforeClientRelease)
+        Func<Task>? beforeClientRelease,
+        Func<CancellationToken, ValueTask<TcpClient>>? acceptClient)
     {
         _preferences = preferences;
         _secret = Encoding.UTF8.GetBytes(secret);
@@ -54,6 +59,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         _log = IgnoreCallbackFailures(log);
         _beforeClientRelease = beforeClientRelease;
         _listener = new TcpListener(IPAddress.Loopback, preferences.Port);
+        _acceptClient = acceptClient ?? _listener.AcceptTcpClientAsync;
     }
 
     public static Task<PebbleIndexReceiverRuntime> StartAsync(
@@ -68,7 +74,8 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         PebbleIndexPreferences preferences, string secret, string inboxDirectory,
         IDesktopTaskBridgeClient bridge, Action<PebbleIndexReceiverStatus> status, Action<string> log,
         CancellationToken cancellationToken = default,
-        Func<Task>? beforeClientRelease = null)
+        Func<Task>? beforeClientRelease = null,
+        Func<CancellationToken, ValueTask<TcpClient>>? acceptClient = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var normalized = preferences.Normalize();
@@ -76,14 +83,13 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         if (errors.Count > 0) throw new InvalidDataException(string.Join(Environment.NewLine, errors));
         var runtime = new PebbleIndexReceiverRuntime(
             normalized, secret, new PebbleIndexDeliveryStore(inboxDirectory), bridge, status, log,
-            beforeClientRelease);
+            beforeClientRelease, acceptClient);
         var message = $"Listening on http://127.0.0.1:{normalized.Port}/pebble-index";
         var startedStatus = runtime.BuildStatus(true, message);
         runtime._listener.Start(backlog: 16);
         runtime._acceptLoop = runtime.AcceptAsync(runtime._lifetime.Token);
         runtime._deliveryLoop = runtime.DeliverAsync(runtime._lifetime.Token);
-        runtime._status(startedStatus);
-        runtime._log("Pebble Index receiver started on loopback.");
+        runtime.PublishStarted(startedStatus);
         return Task.FromResult(runtime);
     }
 
@@ -112,7 +118,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var client = await _listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                var client = await _acceptClient(cancellationToken).ConfigureAwait(false);
                 if (!_connections.Wait(0))
                 {
                     client.Dispose();
@@ -129,6 +135,14 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            var message = "Receiver stopped accepting connections: " + exception.Message;
+            PublishTerminalStatus(message);
+            _log("Pebble Index receiver stopped accepting connections: " + exception.Message);
+            _lifetime.Cancel();
+            _listener.Stop();
+        }
     }
 
     private async Task HandleOwnedClientAsync(TcpClient client, CancellationToken cancellationToken)
@@ -214,7 +228,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
                 {
                     _deliveryStatus.Apply(accepted.Delivery);
                 }
-                _status(BuildStatus(true,
+                PublishStatus(BuildStatus(true,
                     accepted.IsDuplicate ? "Duplicate received; no second delivery was attempted." : "Transcription received.",
                     accepted.Delivery));
                 if (!accepted.IsDuplicate && !_deliveries.Writer.TryWrite(accepted.Delivery))
@@ -223,7 +237,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
                         accepted.Delivery.Id,
                         PebbleIndexDeliveryState.Received,
                         "Held before send: the live delivery queue was unavailable.");
-                    _status(BuildStatus(true, held.Detail, held));
+                    PublishStatus(BuildStatus(true, held.Detail, held));
                     _log($"Pebble Index delivery {accepted.Delivery.Id} was stored but the live queue was unavailable.");
                 }
                 await WriteResponseAsync(stream, 202, new
@@ -287,7 +301,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         {
             var held = UpdateDelivery(delivery.Id, PebbleIndexDeliveryState.Received,
                 "Held before send: " + exception.Message);
-            _status(BuildStatus(true, held.Detail, held));
+            PublishStatus(BuildStatus(true, held.Detail, held));
             _log($"Pebble Index delivery {delivery.Id} was held before send: {exception.Message}");
             return;
         }
@@ -297,7 +311,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
                 delivery.Id,
                 PebbleIndexDeliveryState.DeliveryUncertain,
                 "Desktop delivery started; confirmation is pending.");
-            _status(BuildStatus(true, attempting.Detail, attempting));
+            PublishStatus(BuildStatus(true, attempting.Detail, attempting));
         }
         catch (Exception exception)
         {
@@ -310,7 +324,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
                 delivery.TargetTaskId, target, delivery.Transcription, cancellationToken).ConfigureAwait(false);
             var sent = UpdateDelivery(delivery.Id, PebbleIndexDeliveryState.Sent,
                 result.Queued ? "Queued to the running task." : "Delivered.");
-            _status(BuildStatus(true, sent.Detail, sent));
+            PublishStatus(BuildStatus(true, sent.Detail, sent));
             _log($"Pebble Index delivery {delivery.Id} was confirmed by Desktop.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -325,7 +339,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         {
             var uncertain = UpdateDelivery(delivery.Id, PebbleIndexDeliveryState.DeliveryUncertain,
                 "Desktop delivery was not confirmed: " + exception.Message);
-            _status(BuildStatus(true, uncertain.Detail, uncertain));
+            PublishStatus(BuildStatus(true, uncertain.Detail, uncertain));
             _log($"Pebble Index delivery {delivery.Id} is uncertain: {exception.Message}");
         }
     }
@@ -354,6 +368,34 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         string message,
         PebbleIndexDelivery? latest = null) =>
         _deliveryStatus.BuildStatus(running, message, latest);
+
+    private void PublishStatus(PebbleIndexReceiverStatus status)
+    {
+        lock (_statusGate)
+        {
+            if (!_terminated || !status.Running) _status(status);
+        }
+    }
+
+    private void PublishStarted(PebbleIndexReceiverStatus status)
+    {
+        lock (_statusGate)
+        {
+            if (_terminated) return;
+            _status(status);
+            _log("Pebble Index receiver started on loopback.");
+        }
+    }
+
+    private void PublishTerminalStatus(string message)
+    {
+        lock (_statusGate)
+        {
+            _terminalMessage ??= message;
+            _terminated = true;
+            _status(BuildStatus(false, _terminalMessage));
+        }
+    }
 
     private static PebbleIndexReceiverStatus BuildStatus(
         bool running,
@@ -536,9 +578,11 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
     }
 
     internal int ActiveClientCount => _clients.Count;
+    internal Task Completion => _acceptLoop ?? Task.CompletedTask;
 
     public async ValueTask DisposeAsync()
     {
+        PublishTerminalStatus("Receiver stopped.");
         _deliveries.Writer.TryComplete();
         _lifetime.Cancel();
         _listener.Stop();
@@ -562,7 +606,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         }
         _connections.Dispose();
         _lifetime.Dispose();
-        _status(BuildStatus(false, "Receiver stopped."));
+        PublishTerminalStatus("Receiver stopped.");
     }
 
     private sealed record HttpRequestHeaders(

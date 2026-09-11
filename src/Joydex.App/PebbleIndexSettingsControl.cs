@@ -25,6 +25,7 @@ internal sealed class PebbleIndexSettingsControl : UserControl
         Name = "PebbleIndexStatus",
     };
     private readonly Func<string?, CancellationToken, Task<DesktopTaskCatalog>> _listTasks;
+    private readonly Action<string> _copyText;
     private readonly string _secretPath;
     private readonly string _inboxDirectory;
     private readonly CancellationTokenSource _lifetime = new();
@@ -34,11 +35,13 @@ internal sealed class PebbleIndexSettingsControl : UserControl
         string secretPath,
         string inboxDirectory,
         Func<string?, CancellationToken, Task<DesktopTaskCatalog>> listTasks,
-        PebbleIndexReceiverStatus status)
+        PebbleIndexReceiverStatus status,
+        Action<string>? copyText = null)
     {
         _secretPath = secretPath;
         _inboxDirectory = Path.GetFullPath(inboxDirectory);
         _listTasks = listTasks;
+        _copyText = copyText ?? Clipboard.SetText;
         AutoScroll = true;
         Dock = DockStyle.Fill;
         _enabled.Checked = initial.Enabled;
@@ -60,10 +63,16 @@ internal sealed class PebbleIndexSettingsControl : UserControl
         var commands = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, Padding = new Padding(8), WrapContents = true };
         var refresh = new RoundedButton { AutoSize = true, Text = "Refresh tasks", Name = "PebbleIndexRefreshTasks" };
         refresh.Click += async (_, _) => await RefreshTasksAsync(refresh);
-        var copyEndpoint = new RoundedButton { AutoSize = true, Text = "Copy local endpoint" };
-        copyEndpoint.Click += (_, _) => Clipboard.SetText($"http://127.0.0.1:{(int)_port.Value}/pebble-index");
-        var copyAuthorization = new RoundedButton { AutoSize = true, Text = "Copy Authorization header" };
-        copyAuthorization.Click += (_, _) => Clipboard.SetText("Bearer " + PebbleIndexSecretStore.LoadOrCreate(_secretPath));
+        var copyEndpoint = new RoundedButton
+            { AutoSize = true, Text = "Copy local endpoint", Name = "PebbleIndexCopyEndpoint" };
+        copyEndpoint.Click += (_, _) => CopySetupValue(
+            "local endpoint",
+            () => $"http://127.0.0.1:{(int)_port.Value}/pebble-index");
+        var copyAuthorization = new RoundedButton
+            { AutoSize = true, Text = "Copy Authorization header", Name = "PebbleIndexCopyAuthorization" };
+        copyAuthorization.Click += (_, _) => CopySetupValue(
+            "Authorization header",
+            () => "Bearer " + PebbleIndexSecretStore.LoadOrCreate(_secretPath));
         var openInbox = new RoundedButton { AutoSize = true, Text = "Open inbox", Name = "PebbleIndexOpenInbox" };
         openInbox.Click += (_, _) => OpenInbox();
         commands.Controls.Add(refresh);
@@ -151,6 +160,18 @@ internal sealed class PebbleIndexSettingsControl : UserControl
         catch (Exception exception)
         {
             _status.Text = "Could not open the Pebble Index inbox: " + exception.Message;
+        }
+    }
+
+    private void CopySetupValue(string label, Func<string> readValue)
+    {
+        try
+        {
+            _copyText(readValue());
+        }
+        catch (Exception exception)
+        {
+            _status.Text = $"Could not copy the Pebble Index {label}: {exception.Message}";
         }
     }
 

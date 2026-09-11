@@ -1257,7 +1257,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     WritePebbleIndexLog,
                     cancellationToken).ConfigureAwait(false);
             },
-            ReportPebbleIndexUnavailable);
+            ReportPebbleIndexUnavailable,
+            runtime => runtime.Completion);
     }
 
     private void ReportPebbleIndexUnavailable(Exception exception)

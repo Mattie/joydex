@@ -220,6 +220,53 @@ public sealed class PebbleIndexTests : IDisposable
         Assert.Single(control.Controls.Find("PebbleIndexOpenInbox", searchAllChildren: true));
     }
 
+    [Theory]
+    [InlineData("PebbleIndexCopyEndpoint")]
+    [InlineData("PebbleIndexCopyAuthorization")]
+    public void SettingsCopyFailuresAreShownAsRecoverableStatus(string buttonName)
+    {
+        using var control = new PebbleIndexSettingsControl(
+            PebbleIndexPreferences.Default,
+            Path.Combine(_directory, "secret"),
+            Path.Combine(_directory, "inbox"),
+            (_, _) => Task.FromResult(new DesktopTaskCatalog([])),
+            new PebbleIndexReceiverStatus(false, "off"),
+            _ => throw new InvalidOperationException("clipboard unavailable"));
+        var button = Assert.IsType<RoundedButton>(
+            Assert.Single(control.Controls.Find(buttonName, searchAllChildren: true)));
+
+        button.PerformClick();
+
+        var status = Assert.IsType<Label>(
+            Assert.Single(control.Controls.Find("PebbleIndexStatus", searchAllChildren: true)));
+        Assert.Contains("Could not copy", status.Text, StringComparison.Ordinal);
+        Assert.Contains("clipboard unavailable", status.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void InvalidAuthorizationSecretIsShownAsRecoverableCopyStatus()
+    {
+        var secretPath = Path.Combine(_directory, "secret");
+        Directory.CreateDirectory(_directory);
+        File.WriteAllText(secretPath, "pässw0rd\n");
+        using var control = new PebbleIndexSettingsControl(
+            PebbleIndexPreferences.Default,
+            secretPath,
+            Path.Combine(_directory, "inbox"),
+            (_, _) => Task.FromResult(new DesktopTaskCatalog([])),
+            new PebbleIndexReceiverStatus(false, "off"),
+            _ => throw new InvalidOperationException("copy should not be reached"));
+        var button = Assert.IsType<RoundedButton>(Assert.Single(
+            control.Controls.Find("PebbleIndexCopyAuthorization", searchAllChildren: true)));
+
+        button.PerformClick();
+
+        var status = Assert.IsType<Label>(
+            Assert.Single(control.Controls.Find("PebbleIndexStatus", searchAllChildren: true)));
+        Assert.Contains("Could not copy the Pebble Index Authorization header", status.Text, StringComparison.Ordinal);
+        Assert.Contains("authorization secret is invalid", status.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void StoredStatusReadFailureIsContainedAsAnUnavailableStatus()
     {
@@ -365,6 +412,40 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
+    public async Task RuntimeCoordinatorCanRetryAfterCancellationCallbackFailure()
+    {
+        var coordinator = new CancellableRuntimeCoordinator<RecordingRuntime>();
+        var startupEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStartup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failures = new List<Exception>();
+        var startup = coordinator.Start(
+            async cancellationToken =>
+            {
+                using var registration = cancellationToken.Register(
+                    () => throw new InvalidOperationException("cancellation callback failed"));
+                startupEntered.TrySetResult();
+                await releaseStartup.Task.ConfigureAwait(false);
+                return new RecordingRuntime();
+            },
+            failures.Add);
+        await startupEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var stopping = coordinator.StopAsync(failures.Add);
+        releaseStartup.TrySetResult();
+        await stopping.WaitAsync(TimeSpan.FromSeconds(2));
+        await startup.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(coordinator.IsRunning);
+        Assert.Contains(failures, exception =>
+            exception.ToString().Contains("cancellation callback failed", StringComparison.Ordinal));
+        var recovered = new RecordingRuntime();
+        await coordinator.Start(_ => Task.FromResult(recovered), failures.Add);
+        Assert.True(coordinator.IsRunning);
+        await coordinator.StopAsync(failures.Add);
+        Assert.True(recovered.Disposed);
+    }
+
+    [Fact]
     public async Task RuntimeCoordinatorCanRetryAfterStartupFailure()
     {
         var coordinator = new CancellableRuntimeCoordinator<RecordingRuntime>();
@@ -381,6 +462,115 @@ public sealed class PebbleIndexTests : IDisposable
         Assert.True(coordinator.IsRunning);
         await coordinator.StopAsync(failures.Add);
         Assert.True(recovered.Disposed);
+    }
+
+    [Fact]
+    public async Task RuntimeCoordinatorRetiresCompletedRuntimeAndCanRestart()
+    {
+        var coordinator = new CancellableRuntimeCoordinator<RecordingRuntime>();
+        var failures = new List<Exception>();
+        var stopped = new RecordingRuntime();
+        await coordinator.Start(
+            _ => Task.FromResult(stopped),
+            failures.Add,
+            runtime => runtime.Completion);
+        Assert.True(coordinator.IsRunning);
+
+        stopped.Complete();
+        await stopped.Disposal.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(coordinator.IsRunning);
+        var recovered = new RecordingRuntime();
+        await coordinator.Start(
+            _ => Task.FromResult(recovered),
+            failures.Add,
+            runtime => runtime.Completion);
+        Assert.True(coordinator.IsRunning);
+
+        await coordinator.StopAsync(failures.Add);
+        Assert.True(recovered.Disposed);
+        Assert.Empty(failures);
+    }
+
+    [Fact]
+    public async Task ConcurrentCoordinatorStopsShareCleanupAndBlockRestart()
+    {
+        var coordinator = new CancellableRuntimeCoordinator<RecordingRuntime>();
+        var allowDispose = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var running = new RecordingRuntime(allowDispose.Task);
+        var failures = new List<Exception>();
+        await coordinator.Start(_ => Task.FromResult(running), failures.Add);
+
+        var firstStop = coordinator.StopAsync(failures.Add);
+        await running.DisposalStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var secondStop = coordinator.StopAsync(failures.Add);
+        var replacementStarted = false;
+        var blockedStart = coordinator.Start(
+            _ =>
+            {
+                replacementStarted = true;
+                return Task.FromResult(new RecordingRuntime());
+            },
+            failures.Add);
+
+        Assert.Same(firstStop, secondStop);
+        Assert.Same(firstStop, blockedStart);
+        Assert.False(secondStop.IsCompleted);
+        Assert.False(replacementStarted);
+        allowDispose.TrySetResult();
+        await Task.WhenAll(firstStop, secondStop).WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(coordinator.IsRunning);
+        var recovered = new RecordingRuntime();
+        await coordinator.Start(_ => Task.FromResult(recovered), failures.Add);
+        Assert.True(coordinator.IsRunning);
+        await coordinator.StopAsync(failures.Add);
+        Assert.True(recovered.Disposed);
+        Assert.Empty(failures);
+    }
+
+    [Fact]
+    public async Task CoordinatorStartDuringStoppingStartupAwaitsFullCleanup()
+    {
+        var coordinator = new CancellableRuntimeCoordinator<RecordingRuntime>();
+        var allowDispose = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var running = new RecordingRuntime(allowDispose.Task);
+        var observerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseObserver = new ManualResetEventSlim(false);
+        var failures = new List<Exception>();
+        var startup = coordinator.Start(
+            _ => Task.FromResult(running),
+            failures.Add,
+            runtime =>
+            {
+                observerEntered.TrySetResult();
+                releaseObserver.Wait();
+                return runtime.Completion;
+            });
+        await observerEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(coordinator.IsRunning);
+
+        var stop = coordinator.StopAsync(failures.Add);
+        var replacementStarted = false;
+        var blockedStart = coordinator.Start(
+            _ =>
+            {
+                replacementStarted = true;
+                return Task.FromResult(new RecordingRuntime());
+            },
+            failures.Add);
+
+        Assert.Same(stop, blockedStart);
+        Assert.False(replacementStarted);
+        releaseObserver.Set();
+        await running.DisposalStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(startup.IsCompleted);
+        Assert.False(stop.IsCompleted);
+        allowDispose.TrySetResult();
+        await stop.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(coordinator.IsRunning);
+        Assert.Empty(failures);
     }
 
     [Fact]
@@ -846,6 +1036,43 @@ public sealed class PebbleIndexTests : IDisposable
         Assert.Equal(0, receiver.ActiveClientCount);
     }
 
+    [Fact]
+    public async Task ImmediateListenerFailureLeavesTerminalUnavailableStatus()
+    {
+        var port = ReservePort();
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var statuses = new List<PebbleIndexReceiverStatus>();
+        var statusGate = new object();
+        var logs = new List<string>();
+        await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
+            new PebbleIndexPreferences(
+                Enabled: true, Port: port, TargetTaskId: target.Id,
+                TargetHostId: target.HostId, TargetTaskLabel: target.Title),
+            "test-secret",
+            Path.Combine(_directory, "listener-failure-inbox"),
+            new RecordingBridge(target),
+            status =>
+            {
+                lock (statusGate) statuses.Add(status);
+            },
+            logs.Add,
+            acceptClient: _ => ValueTask.FromException<TcpClient>(
+                new SocketException((int)SocketError.NoBufferSpaceAvailable)));
+
+        await receiver.Completion.WaitAsync(TimeSpan.FromSeconds(2));
+        PebbleIndexReceiverStatus[] snapshot;
+        lock (statusGate) snapshot = [.. statuses];
+        var stoppedAt = Array.FindIndex(snapshot, status => !status.Running);
+
+        Assert.True(stoppedAt >= 0);
+        Assert.DoesNotContain(snapshot.Skip(stoppedAt + 1), status => status.Running);
+        Assert.False(snapshot[^1].Running);
+        Assert.Contains("stopped accepting connections", snapshot[^1].Message, StringComparison.OrdinalIgnoreCase);
+        Assert.NotEmpty(logs);
+        Assert.Contains("stopped accepting", logs[^1], StringComparison.OrdinalIgnoreCase);
+    }
+
     private static MultipartFormDataContent CreateForm(string transcript, string recordedAt)
     {
         var form = new MultipartFormDataContent();
@@ -907,12 +1134,28 @@ public sealed class PebbleIndexTests : IDisposable
 
     private sealed class RecordingRuntime : IAsyncDisposable
     {
-        public bool Disposed { get; private set; }
+        private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Task? _allowDispose;
 
-        public ValueTask DisposeAsync()
+        public RecordingRuntime(Task? allowDispose = null)
+        {
+            _allowDispose = allowDispose;
+        }
+
+        public bool Disposed { get; private set; }
+        public Task Completion => _completion.Task;
+        public TaskCompletionSource Disposal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource DisposalStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Complete() => _completion.TrySetResult();
+
+        public async ValueTask DisposeAsync()
         {
             Disposed = true;
-            return ValueTask.CompletedTask;
+            DisposalStarted.TrySetResult();
+            if (_allowDispose is not null) await _allowDispose.ConfigureAwait(false);
+            _completion.TrySetResult();
+            Disposal.TrySetResult();
         }
     }
 
