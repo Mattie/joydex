@@ -369,8 +369,11 @@ public sealed class PebbleIndexTests : IDisposable
         Assert.False(string.IsNullOrWhiteSpace(error));
     }
 
-    [Fact]
-    public void PebbleSaveFailureLeavesMainAndRoomVoiceConfigurationUnchanged()
+    [Theory]
+    [InlineData("pebble-index.json")]
+    [InlineData("voice-pe.json")]
+    [InlineData("config.json")]
+    public void ConfigurationSaveFailureRollsBackEveryFile(string lockedFileName)
     {
         Directory.CreateDirectory(_directory);
         var configPath = Path.Combine(_directory, "config.json");
@@ -381,7 +384,12 @@ public sealed class PebbleIndexTests : IDisposable
         PebbleIndexPreferencesStore.Save(pebblePath, PebbleIndexPreferences.Default);
         var originalConfig = File.ReadAllBytes(configPath);
         var originalVoice = File.ReadAllBytes(voicePath);
-        using var lockedPebble = File.Open(pebblePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var originalPebble = File.ReadAllBytes(pebblePath);
+        using var lockedFile = File.Open(
+            Path.Combine(_directory, lockedFileName),
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read);
 
         var exception = Record.Exception(() => TrayApplicationContext.SaveConfigurationFiles(
             configPath,
@@ -396,6 +404,7 @@ public sealed class PebbleIndexTests : IDisposable
             exception?.ToString() ?? "The locked Pebble Index settings save unexpectedly succeeded.");
         Assert.Equal(originalConfig, File.ReadAllBytes(configPath));
         Assert.Equal(originalVoice, File.ReadAllBytes(voicePath));
+        Assert.Equal(originalPebble, File.ReadAllBytes(pebblePath));
         Assert.Empty(Directory.EnumerateFiles(_directory, "*.tmp"));
     }
 

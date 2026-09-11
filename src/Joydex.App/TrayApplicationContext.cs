@@ -2244,17 +2244,103 @@ internal sealed class TrayApplicationContext : ApplicationContext
         VoicePePreferences? voicePreferences,
         PebbleIndexPreferences? pebbleIndexPreferences)
     {
-        // The form closes only after this callback returns, so feature-setting failures stay
-        // visible and correctable before the main configuration is committed.
-        if (pebbleIndexPreferences is not null)
+        var normalizedConfigPath = Path.GetFullPath(configPath);
+        var normalizedVoicePath = Path.GetFullPath(voicePePreferencesPath);
+        var normalizedPebblePath = Path.GetFullPath(pebbleIndexPreferencesPath);
+        var paths = new[] { normalizedConfigPath, normalizedVoicePath, normalizedPebblePath };
+        // The form closes only after this method succeeds. Keep exact prior bytes so a later-file
+        // failure cannot leave earlier settings active if the user cancels instead of retrying.
+        var originalContents = paths.ToDictionary(
+            path => path,
+            path => File.Exists(path) ? File.ReadAllBytes(path) : null,
+            StringComparer.OrdinalIgnoreCase);
+        var attemptedPaths = new List<string>();
+
+        try
         {
-            PebbleIndexPreferencesStore.Save(pebbleIndexPreferencesPath, pebbleIndexPreferences);
+            if (pebbleIndexPreferences is not null)
+            {
+                attemptedPaths.Add(normalizedPebblePath);
+                PebbleIndexPreferencesStore.Save(normalizedPebblePath, pebbleIndexPreferences);
+            }
+            if (voicePreferences is not null)
+            {
+                attemptedPaths.Add(normalizedVoicePath);
+                VoicePePreferencesStore.Save(normalizedVoicePath, voicePreferences);
+            }
+            attemptedPaths.Add(normalizedConfigPath);
+            ConfigStore.Save(normalizedConfigPath, config);
         }
-        if (voicePreferences is not null)
+        catch (Exception saveException)
         {
-            VoicePePreferencesStore.Save(voicePePreferencesPath, voicePreferences);
+            var rollbackExceptions = new List<Exception>();
+            foreach (var path in attemptedPaths.AsEnumerable().Reverse().Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    RestoreConfigurationFile(path, originalContents[path]);
+                }
+                catch (Exception rollbackException)
+                {
+                    rollbackExceptions.Add(new IOException(
+                        $"Could not restore {Path.GetFileName(path)} after the configuration save failed.",
+                        rollbackException));
+                }
+            }
+            if (rollbackExceptions.Count > 0)
+            {
+                throw new AggregateException(
+                    "The configuration save failed and one or more files could not be restored.",
+                    new[] { saveException }.Concat(rollbackExceptions));
+            }
+            throw;
         }
-        ConfigStore.Save(configPath, config);
+    }
+
+    private static void RestoreConfigurationFile(string path, byte[]? originalContents)
+    {
+        if (originalContents is null)
+        {
+            File.Delete(path);
+            return;
+        }
+        try
+        {
+            if (File.Exists(path) && File.ReadAllBytes(path).AsSpan().SequenceEqual(originalContents))
+            {
+                return;
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        var directory = Path.GetDirectoryName(path)
+            ?? throw new InvalidOperationException("The configuration path has no parent directory.");
+        Directory.CreateDirectory(directory);
+        var temporaryPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.rollback.tmp");
+        try
+        {
+            using (var stream = new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       4096,
+                       FileOptions.WriteThrough))
+            {
+                stream.Write(originalContents);
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temporaryPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+        }
     }
 
     internal static string ResolvePebbleIndexSourceTaskId(
