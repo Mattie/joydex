@@ -1669,6 +1669,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             CodexDedicatedVoiceCompatibilityException => false,
             InvalidDataException => false,
             FileNotFoundException => false,
+            DirectoryNotFoundException => false,
             UnauthorizedAccessException => false,
             ArgumentException => false,
             _ => true,

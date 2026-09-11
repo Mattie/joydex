@@ -16,9 +16,11 @@ _Avoid_: Pinned task, workspace
 The one Codex App Server with the Dedicated Voice Task loaded under its local writer lock. Joydex must keep its owning control connection alive and the task loaded before it can start explicit-task Realtime; Codex Desktop may already own it.
 _Avoid_: Selected task, foreground task
 
-Owner readiness means the pinned Codex executable and its interactive-tool helper hashes passed,
-the exact configured task resumed, and the App Server returned a compatible Realtime v2 voice
-list. WebRTC and room-endpoint media readiness are checked separately.
+Owner readiness means Joydex found a structurally complete Codex App Server runtime, the exact configured task
+resumed, the required interactive tool inventory loaded, and the App Server returned a compatible
+Realtime voice list. WebRTC and room-endpoint media readiness are checked separately. Codex
+Desktop's managed runtime is followed across updates; an executable outside that managed folder is
+an explicit override.
 
 **Voice Agent Workspace**:
 The local filesystem root that supplies the Joydex-owned App Server process directory, Dedicated

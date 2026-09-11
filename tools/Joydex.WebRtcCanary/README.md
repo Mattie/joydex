@@ -95,18 +95,28 @@ The successful receiver reported 1,281,120 decoded samples and nonzero audio ene
 
 The installed Codex Desktop App Server later held the configured Voice Task's local writer lock. A separately launched App Server then failed closed with `thread ... already has an active writer`. Joydex therefore needs an explicit task-ownership design: either the Joydex App Server owns the Dedicated Voice Task for its lifetime, or Joydex reaches the already-running Desktop App Server through a supported transport. Spawning a second App Server on demand cannot be assumed to coexist with Desktop ownership.
 
-## Installed-runtime revalidation — 2026-09-08
+## Installed-runtime revalidation — 2026-09-10
 
-Codex `0.153.4` from Windows package `OpenAI.Codex 26.901.6511.0` was revalidated after the Desktop
+Codex `0.153.4` from Windows package `OpenAI.Codex 26.903.9818.0` was revalidated after the Desktop
 upgrade. The generated experimental schema retained `thread/realtime/start`, `stop`, `listVoices`,
 `started`, `sdp`, and `closed`, including the `realtimeStartInstructions` field used by Joydex.
 
 The deterministic ephemeral-task WebRTC canary then completed SDP negotiation, microphone-fixture
 uplink, remote model-audio reception, playback through the Windows speaker path with nonzero energy,
-a 273,243-byte WebM capture, and typed closure with reason `requested`. The verified executable
-SHA-256 was `e5aa76d19c7c94e2e9ef9b707d590206a73ac0e97c8ddc8382181242494bef75`; the matching
+a valid 74,175-byte 48 kHz mono Opus WebM capture, and typed closure with reason `requested`. The
+verified executable SHA-256 was
+`3d6ca7085c932b62ef4ee4877e92f15b050fb94b2eb8e6c10a346a06248c6004`; the matching
 `codex-code-mode-host.exe` SHA-256 was
-`3eb2083b58f0982506e5c3cb7a550fb6538d718c29f0a75ca4848852a0aff0c7`.
+`5343b7a0f1645b9bfeef1d15e63facfba3c59ffc48e0f22a0dc53ae6a1a3b9c2`.
+
+The production build using that validated runtime then reacquired its owned task and completed an attended Voice PE
+session from wake through spoken hangup. Two user turns produced device-speaker replies, the
+continuous speaker lane reported 588 frames with zero overflow and zero underruns, the transcript
+and diagnostic WAV files were written, and the device returned to `Armed` with wake inference on.
+
+These hashes preserve the exact revalidation evidence. Production runtime selection now follows the
+most recently written structurally complete Codex Desktop candidate and uses live App Server capability
+checks; the hashes are not an admission list.
 
 ## Installed-build baseline — 2026-08-25
 

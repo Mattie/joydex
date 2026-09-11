@@ -11,9 +11,10 @@ and speaker audio travel over the local network.
 Room Voice is a reusable example rather than a turnkey consumer feature.
 [`AGENTS.md`](../AGENTS.md) records the Codex Desktop build used to verify
 Joydex's ordinary command bindings. Room Voice has a separate compatibility
-boundary: the runtime verifies the exact Codex App Server executable and
-companion code-mode host pinned in
-[`CodexAppServerBinaryPolicy.cs`](../src/Joydex.Windows/Voice/CodexAppServerBinaryPolicy.cs).
+boundary: it follows the most recently written structurally complete Codex Desktop App Server runtime and
+checks the required live capabilities before device media starts. The resolver
+is implemented in
+[`CodexAppServerRuntimeResolver.cs`](../src/Joydex.Windows/Voice/CodexAppServerRuntimeResolver.cs).
 Joydex does not distribute those Codex binaries.
 
 The dedicated task runs with `approvalPolicy: never` and a full-access sandbox.
@@ -70,10 +71,12 @@ includes `Joydex.DesktopBridgeHost.exe`, the WebView2 native loader, and the
 required attribution files; keep those files together. An IDE or `dotnet run`
 session does not assemble that flat package for the optional Desktop bridge.
 
-Room Voice needs the exact compatible Codex App Server runtime named in the
-current source policy. In Joydex, browse to that `codex.exe` under **Pinned App
-Server executable**. Joydex rejects a different version or hash instead of
-silently running against an untested protocol.
+Leave **App Server executable override** blank to follow the runtime installed
+by Codex Desktop automatically. Joydex skips incomplete update folders, starts
+the most recently written structurally complete candidate, and verifies App Server initialization, task
+ownership, workspace, tool inventory, and Realtime voices before it arms Room
+Voice. A path outside Codex Desktop's managed runtime folder is treated as an
+exact developer or canary override.
 
 ## 3. Provision the dedicated task
 
@@ -141,7 +144,7 @@ updates.
 ## Troubleshooting
 
 - A red ring after wake usually means Joydex rejected startup, lost the LAN
-  session, or could not start the pinned App Server. Check the Room Voice status
+  session, or could not start a compatible App Server. Check the Room Voice status
   and Joydex log before changing firmware.
 - If wake detection feels weak, use **Load from device** before changing gain,
   wake cutoff, sliding window, or VAD cutoff. Those settings persist remotely

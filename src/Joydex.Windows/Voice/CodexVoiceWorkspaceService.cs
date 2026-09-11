@@ -37,15 +37,17 @@ public sealed class CodexVoiceWorkspaceService
     private readonly Func<string?, CancellationToken, Task<ICodexAppServerClient>> _createClient;
     private readonly Action<string>? _log;
 
-    public CodexVoiceWorkspaceService(string appServerPath, Action<string>? log = null)
+    public CodexVoiceWorkspaceService(string? appServerPath, Action<string>? log = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(appServerPath);
         _log = log;
         _createClient = async (workingDirectory, cancellationToken) =>
         {
-            var binary = await CodexAppServerBinaryPolicy
-                .VerifyAsync(appServerPath, cancellationToken)
+            var binary = await CodexAppServerRuntimeResolver
+                .ResolveAsync(appServerPath, cancellationToken)
                 .ConfigureAwait(false);
+            log?.Invoke(
+                $"Room Voice selected {(binary.IsManagedRuntime ? "automatic" : "override")} "
+                + $"Codex App Server runtime '{binary.ExecutablePath}'.");
             return new CodexAppServerClient(binary, workingDirectory, log);
         };
     }

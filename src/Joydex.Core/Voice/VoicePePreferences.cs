@@ -113,20 +113,17 @@ public sealed record VoicePePreferences(
 
             if (SessionMode == VoicePeSessionMode.JoydexOwner)
             {
-                if (string.IsNullOrWhiteSpace(CodexAppServerPath))
+                if (!string.IsNullOrWhiteSpace(CodexAppServerPath)
+                    && !IsFullyQualifiedPath(CodexAppServerPath))
                 {
-                    errors.Add("A Codex App Server executable path is required in Joydex owner mode.");
-                }
-                else if (!IsFullyQualifiedPath(CodexAppServerPath))
-                {
-                    errors.Add("The Codex App Server executable path must be fully qualified.");
+                    errors.Add("The Codex App Server executable override must be fully qualified.");
                 }
             }
         }
         else if (!string.IsNullOrWhiteSpace(CodexAppServerPath)
                  && !IsFullyQualifiedPath(CodexAppServerPath))
         {
-            errors.Add("The Codex App Server executable path must be fully qualified.");
+            errors.Add("The Codex App Server executable override must be fully qualified.");
         }
 
         if (!string.IsNullOrWhiteSpace(AgentWorkspacePath)

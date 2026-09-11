@@ -1,5 +1,6 @@
 using Joydex.App;
 using Joydex.Core.Voice;
+using Joydex.Windows.Voice;
 
 namespace Joydex.Tests;
 
@@ -66,5 +67,51 @@ public sealed class RoomVoiceSettingsControlTests
         control.Dispose();
 
         await load.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task AutomaticRuntimeSelectionStillLoadsCodexProjects()
+    {
+        string? receivedRuntimeOverride = null;
+        using var control = new RoomVoiceSettingsControl(
+            VoicePePreferences.Default with
+            {
+                SessionMode = VoicePeSessionMode.JoydexOwner,
+                CodexAppServerPath = string.Empty,
+            },
+            _ => Task.FromResult(true),
+            (_, _) => Task.FromResult(VoicePeWakeTuning.Default),
+            (_, tuning, _) => Task.FromResult(tuning),
+            (runtimeOverride, _) =>
+            {
+                receivedRuntimeOverride = runtimeOverride;
+                return Task.FromResult(new CodexProjectCatalog([]));
+            });
+
+        await control.LoadProjectChoicesAsync();
+
+        Assert.Equal(string.Empty, receivedRuntimeOverride);
+    }
+
+    [Fact]
+    public void ExistingManagedRuntimePathIsPresentedAsAutomaticSelection()
+    {
+        var managedRuntimePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "OpenAI",
+            "Codex",
+            "bin",
+            "old-build",
+            "codex.exe");
+        using var control = new RoomVoiceSettingsControl(
+            VoicePePreferences.Default with
+            {
+                CodexAppServerPath = managedRuntimePath,
+            },
+            _ => Task.FromResult(true),
+            (_, _) => Task.FromResult(VoicePeWakeTuning.Default),
+            (_, tuning, _) => Task.FromResult(tuning));
+
+        Assert.Empty(control.ReadPreferences().CodexAppServerPath);
     }
 }
