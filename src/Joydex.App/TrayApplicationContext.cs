@@ -433,6 +433,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _promptPicker?.Dismiss();
             _recentActivity.Clear();
             await StopWorkersAsync();
+            await StopPebbleIndexReceiverAsync().ConfigureAwait(true);
 
             StartWorker(showFirstRunNotice: false);
             if (_activeConfig?.Safety.DryRun == true)
