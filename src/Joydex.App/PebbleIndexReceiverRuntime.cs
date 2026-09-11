@@ -159,7 +159,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
             try
             {
                 await using var stream = client.GetStream();
-                var request = await ReadRequestAsync(stream, cancellationToken).ConfigureAwait(false);
+                var request = await ReadRequestHeadersAsync(stream, cancellationToken).ConfigureAwait(false);
                 if (request.Method == "GET" && request.Path == "/health")
                 {
                     await WriteResponseAsync(stream, 200, new { status = "ready" }, cancellationToken).ConfigureAwait(false);
@@ -173,6 +173,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
                 if (!Authorized(request.Headers.GetValueOrDefault("Authorization")))
                 {
                     await WriteResponseAsync(stream, 401, new { error = "unauthorized" }, cancellationToken).ConfigureAwait(false);
+                    await DrainRejectedBodyAsync(stream, request.ContentLength, cancellationToken).ConfigureAwait(false);
                     return;
                 }
                 if (!TryReadBoundary(request.Headers.GetValueOrDefault("Content-Type"), out var boundary))
@@ -180,7 +181,9 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
                     await WriteResponseAsync(stream, 400, new { error = "multipart/form-data is required" }, cancellationToken).ConfigureAwait(false);
                     return;
                 }
-                var form = ParseMultipart(request.Body, boundary, out var hasFiles);
+                var body = new byte[request.ContentLength];
+                await stream.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
+                var form = ParseMultipart(body, boundary, out var hasFiles);
                 if (hasFiles || form.ContainsKey("audio"))
                 {
                     await WriteResponseAsync(stream, 400, new { error = "audio and file uploads are disabled" }, cancellationToken).ConfigureAwait(false);
@@ -371,7 +374,9 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
             snapshot.Outstanding.Count);
     }
 
-    private static async Task<HttpRequest> ReadRequestAsync(NetworkStream stream, CancellationToken cancellationToken)
+    private static async Task<HttpRequestHeaders> ReadRequestHeadersAsync(
+        NetworkStream stream,
+        CancellationToken cancellationToken)
     {
         var header = new List<byte>(1024);
         var state = 0;
@@ -402,9 +407,7 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         if (headers.TryGetValue("Content-Length", out var value)
             && (!int.TryParse(value, out length) || length < 0 || length > MaximumRequestBytes))
             throw new InvalidDataException("The HTTP request body was too large.");
-        var body = new byte[length];
-        await stream.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
-        return new HttpRequest(requestLine[0].ToUpperInvariant(), requestLine[1], headers, body);
+        return new HttpRequestHeaders(requestLine[0].ToUpperInvariant(), requestLine[1], headers, length);
     }
 
     private static bool TryReadBoundary(string? contentType, out string boundary)
@@ -421,6 +424,36 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
             }
         }
         return false;
+    }
+
+    private static async Task DrainRejectedBodyAsync(
+        NetworkStream stream,
+        int contentLength,
+        CancellationToken cancellationToken)
+    {
+        if (contentLength == 0) return;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromMilliseconds(100));
+        var buffer = new byte[Math.Min(contentLength, 4096)];
+        var remaining = contentLength;
+        try
+        {
+            while (remaining > 0)
+            {
+                var read = await stream.ReadAsync(
+                        buffer.AsMemory(0, Math.Min(buffer.Length, remaining)),
+                        deadline.Token)
+                    .ConfigureAwait(false);
+                if (read == 0) return;
+                remaining -= read;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (IOException)
+        {
+        }
     }
 
     private static Dictionary<string, string> ParseMultipart(byte[] body, string boundary, out bool hasFiles)
@@ -509,7 +542,11 @@ internal sealed class PebbleIndexReceiverRuntime : IAsyncDisposable
         _status(BuildStatus(false, "Receiver stopped."));
     }
 
-    private sealed record HttpRequest(string Method, string Path, Dictionary<string, string> Headers, byte[] Body);
+    private sealed record HttpRequestHeaders(
+        string Method,
+        string Path,
+        Dictionary<string, string> Headers,
+        int ContentLength);
 }
 
 /// <summary>

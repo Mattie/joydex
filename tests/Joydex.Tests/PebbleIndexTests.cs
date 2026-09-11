@@ -413,6 +413,39 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
+    public async Task UnauthorizedRequestIsRejectedBeforeItsDeclaredBodyArrives()
+    {
+        var port = ReservePort();
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
+            new PebbleIndexPreferences(
+                Enabled: true, Port: port, TargetTaskId: target.Id,
+                TargetHostId: target.HostId, TargetTaskLabel: target.Title),
+            "test-secret",
+            Path.Combine(_directory, "authenticate-before-body-inbox"),
+            new RecordingBridge(target),
+            _ => { },
+            _ => { });
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, port);
+        await using var stream = client.GetStream();
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(
+            "POST /pebble-index HTTP/1.1\r\n"
+            + "Host: localhost\r\n"
+            + "Authorization: Bearer wrong-secret\r\n"
+            + "Content-Type: multipart/form-data; boundary=test\r\n"
+            + "Content-Length: 100\r\n"
+            + "Connection: close\r\n\r\n"));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
+
+        var response = await reader.ReadToEndAsync(deadline.Token);
+
+        Assert.StartsWith("HTTP/1.1 401 Unauthorized", response, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ReceiverAuthenticatesDeliversOnceAndRejectsFiles()
     {
         var port = ReservePort();
