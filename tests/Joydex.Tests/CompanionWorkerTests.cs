@@ -106,6 +106,34 @@ public sealed class CompanionWorkerTests
         Assert.Equal(3, lifecycle.ReleaseCalls);
     }
 
+    [Fact]
+    public async Task WorkerShutdownRetriesIncompleteCleanupBeforeCompleting()
+    {
+        var logs = new List<string>();
+        var callOrder = new List<string>();
+        var source = new DisconnectedJoystickSource(callOrder);
+        var lifecycle = new RecordingKeyStateLifecycle(callOrder);
+        lifecycle.ReleaseResults.Enqueue(false);
+        var executor = new CodexActionExecutor(
+            new SafetyOptions { DryRun = true },
+            logs.Add,
+            new UnusedResolver(),
+            new OpenWorkingDirectoryOptions());
+        await using var worker = new CompanionWorker(
+            new CompanionConfig(),
+            source,
+            executor,
+            logs.Add,
+            lifecycle);
+
+        worker.Start();
+        await source.ConnectAttempted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await worker.StopAsync();
+
+        Assert.Equal(2, lifecycle.ReleaseCalls);
+        Assert.Equal(["clear", "connect", "release", "release"], callOrder);
+    }
+
     private sealed class RecordingKeyStateLifecycle(List<string> callOrder) : IInjectedKeyStateLifecycle
     {
         public Exception? ClearFailure { get; init; }

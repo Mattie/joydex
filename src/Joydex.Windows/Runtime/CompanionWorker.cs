@@ -21,6 +21,8 @@ public sealed class CompanionWorker(
     Func<PromptPickerRequest, CancellationToken, Task>? promptPickerHandler = null,
     Action<ButtonMapVisibilityRequest>? buttonMapHandler = null) : IAsyncDisposable
 {
+    private const int ShutdownCleanupAttempts = 3;
+    private const int ShutdownCleanupRetryDelayMs = 100;
     private readonly CompanionEngine _engine = new(config, taskAlertInputInterceptor, deviceId);
     private readonly DeviceSelector _deviceSelector = CompanionConfigNormalizer.Normalize(config).Devices
         .First(device => string.Equals(
@@ -110,7 +112,7 @@ public sealed class CompanionWorker(
         }
         finally
         {
-            _heldInputCleanupPending = !TryReleaseHeldKeys("worker shutdown");
+            await ReleaseHeldKeysBeforeShutdownAsync().ConfigureAwait(false);
         }
     }
 
@@ -267,6 +269,24 @@ public sealed class CompanionWorker(
             }
 
             return false;
+        }
+    }
+
+    private async Task ReleaseHeldKeysBeforeShutdownAsync()
+    {
+        for (var attempt = 1; attempt <= ShutdownCleanupAttempts; attempt++)
+        {
+            var context = attempt == 1 ? "worker shutdown" : "worker shutdown retry";
+            _heldInputCleanupPending = !TryReleaseHeldKeys(context);
+            if (!_heldInputCleanupPending)
+            {
+                return;
+            }
+
+            if (attempt < ShutdownCleanupAttempts)
+            {
+                await Task.Delay(ShutdownCleanupRetryDelayMs).ConfigureAwait(false);
+            }
         }
     }
 
