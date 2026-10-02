@@ -4,7 +4,7 @@ This file records the major capabilities and fixes added since Joydex was first 
 
 ## 2026-10-02
 
-- Kept T4 in-app hold-to-talk working after Codex removed `composer.startDictation`. Joydex now uses the composer's accessible Dictate and stop/cancel buttons and remembers the originating Codex window through release.
+- Kept T4 in-app hold-to-talk working after Codex removed `composer.startDictation`. Joydex now uses the composer's accessible Dictate and stop/cancel buttons, remembers the originating Codex window through release, and migrates the exact legacy T4 starter pair while preserving custom global mappings.
 
 ## 2026-10-01
 

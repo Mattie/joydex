@@ -36,6 +36,10 @@ check and invokes the stop or startup-cancel state in the recorded window. Held-
 the same recorded target. The existing global `push-to-talk` key-hold path is
 unchanged.
 
+On load, Joydex also migrates the exact legacy T4 starter press/release pair from `push-to-talk` to
+`in-app-push-to-talk`. The migration requires both original starter names and controls, so custom
+global push-to-talk mappings remain unchanged.
+
 The older `dictation` action also starts through the accessible composer button instead of resolving
 the removed command. Product code does not inspect or parse `app.asar`; the archive was used only for
 this exact-build compatibility research.
@@ -43,8 +47,8 @@ this exact-build compatibility research.
 ## Evidence
 
 - The focused dictation-control, executor, keybinding, starter-profile, validation, binding-engine,
-  and worker suite passed 159 tests with no failures or skips, including immediate-release startup
-  settling and retained-owner retry coverage.
+  and worker suite passed 161 tests with no failures or skips, including immediate-release startup
+  settling, retained-owner retry, and legacy T4 migration coverage.
 - A live smoke check invoked `Dictate` through the new production control, observed the button change,
   and invoked `Stop dictation` in the same recorded window successfully.
 - The starter profile and public examples map CM3 button 37 press and release to

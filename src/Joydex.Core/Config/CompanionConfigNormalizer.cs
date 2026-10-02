@@ -4,6 +4,10 @@ namespace Joydex.Core.Config;
 public static class CompanionConfigNormalizer
 {
     public const string PrimaryDeviceId = "cm3";
+    private const string LegacyT4PressName = "T4 - Hold-to-talk";
+    private const string LegacyT4ReleaseName = "T4 - Hold-to-talk release";
+    private const string LegacyPushToTalkAction = "push-to-talk";
+    private const string InAppPushToTalkAction = "in-app-push-to-talk";
 
     public static readonly string[] DefaultPrompts =
     [
@@ -33,6 +37,7 @@ public static class CompanionConfigNormalizer
             ];
 
         var primaryId = devices[0].Id;
+        var migrateLegacyT4 = HasLegacyT4Pair(config.Bindings, primaryId);
         var seedDefaultPicker = config.PromptPickers.Count == 0
             && string.Equals(devices[0].ButtonMapTemplate, "cm3", StringComparison.OrdinalIgnoreCase);
         var pickers = seedDefaultPicker
@@ -42,16 +47,7 @@ public static class CompanionConfigNormalizer
         var bindings = config.Bindings
             .Where(binding => legacyMapHold is null
                 || !string.Equals(binding.Action, "button-map", StringComparison.OrdinalIgnoreCase))
-            .Select(binding => new ButtonBinding
-            {
-                Name = binding.Name,
-                DeviceId = string.IsNullOrWhiteSpace(binding.DeviceId) ? primaryId : binding.DeviceId,
-                Bank = binding.Bank,
-                Button = binding.Button,
-                Trigger = binding.Trigger,
-                Action = binding.Action,
-                WheelNotches = binding.WheelNotches,
-            })
+            .Select(binding => CloneBinding(binding, primaryId, migrateLegacyT4))
             .ToList();
 
         return new CompanionConfig
@@ -133,6 +129,48 @@ public static class CompanionConfigNormalizer
                 ? Control(device.Id, button)
                 : null,
     };
+
+    private static ButtonBinding CloneBinding(
+        ButtonBinding binding,
+        string primaryDeviceId,
+        bool migrateLegacyT4)
+    {
+        var migrate = migrateLegacyT4 && IsLegacyT4Binding(binding, primaryDeviceId);
+        var release = string.Equals(binding.Trigger, "release", StringComparison.OrdinalIgnoreCase);
+        return new ButtonBinding
+        {
+            Name = migrate
+                ? release ? "T4 - In-app hold-to-talk release" : "T4 - In-app hold-to-talk"
+                : binding.Name,
+            DeviceId = string.IsNullOrWhiteSpace(binding.DeviceId) ? primaryDeviceId : binding.DeviceId,
+            Bank = binding.Bank,
+            Button = binding.Button,
+            Trigger = binding.Trigger,
+            Action = migrate ? InAppPushToTalkAction : binding.Action,
+            WheelNotches = binding.WheelNotches,
+        };
+    }
+
+    private static bool HasLegacyT4Pair(IEnumerable<ButtonBinding> bindings, string primaryDeviceId) =>
+        bindings.Any(binding => IsLegacyT4Binding(binding, primaryDeviceId, "press", LegacyT4PressName))
+        && bindings.Any(binding => IsLegacyT4Binding(binding, primaryDeviceId, "release", LegacyT4ReleaseName));
+
+    private static bool IsLegacyT4Binding(ButtonBinding binding, string primaryDeviceId) =>
+        IsLegacyT4Binding(binding, primaryDeviceId, "press", LegacyT4PressName)
+        || IsLegacyT4Binding(binding, primaryDeviceId, "release", LegacyT4ReleaseName);
+
+    private static bool IsLegacyT4Binding(
+        ButtonBinding binding,
+        string primaryDeviceId,
+        string trigger,
+        string name) =>
+        (string.IsNullOrWhiteSpace(binding.DeviceId)
+            || string.Equals(binding.DeviceId, primaryDeviceId, StringComparison.OrdinalIgnoreCase))
+        && string.Equals(binding.Bank, CompanionConfig.AlwaysBank, StringComparison.OrdinalIgnoreCase)
+        && binding.Button == 37
+        && string.Equals(binding.Trigger, trigger, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(binding.Action, LegacyPushToTalkAction, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(binding.Name, name, StringComparison.OrdinalIgnoreCase);
 
     private static PromptPickerConfig ClonePicker(PromptPickerConfig picker) => new()
     {
