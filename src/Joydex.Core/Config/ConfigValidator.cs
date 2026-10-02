@@ -179,6 +179,7 @@ public static class ConfigValidator
             else if (string.Equals(binding.Trigger, "release", StringComparison.OrdinalIgnoreCase)
                 && action is not (
                     CodexAction.PushToTalk
+                    or CodexAction.InAppPushToTalk
                     or CodexAction.ButtonMap
                     or CodexAction.EndVoiceChat))
             {

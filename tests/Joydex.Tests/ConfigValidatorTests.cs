@@ -265,6 +265,30 @@ public sealed class ConfigValidatorTests
     }
 
     [Fact]
+    public void AcceptsInAppPushToTalkPressAndReleaseBindings()
+    {
+        var config = CreateConfig(
+            new ButtonBinding
+            {
+                Name = "dictation-on",
+                Bank = "work",
+                Button = 4,
+                Trigger = "press",
+                Action = "in-app-push-to-talk",
+            },
+            new ButtonBinding
+            {
+                Name = "dictation-off",
+                Bank = "work",
+                Button = 4,
+                Trigger = "release",
+                Action = "in-app-push-to-talk",
+            });
+
+        Assert.Empty(ConfigValidator.Validate(config));
+    }
+
+    [Fact]
     public void RejectsReleaseBindingForStartingVoiceChat()
     {
         var config = CreateConfig(

@@ -252,21 +252,21 @@
       "wheelNotches": 1
     },
     {
-      "name": "T4 - Hold-to-talk",
+      "name": "T4 - In-app hold-to-talk",
       "deviceId": "cm3",
       "bank": "always",
       "button": 37,
       "trigger": "press",
-      "action": "push-to-talk",
+      "action": "in-app-push-to-talk",
       "wheelNotches": 1
     },
     {
-      "name": "T4 - Hold-to-talk release",
+      "name": "T4 - In-app hold-to-talk release",
       "deviceId": "cm3",
       "bank": "always",
       "button": 37,
       "trigger": "release",
-      "action": "push-to-talk",
+      "action": "in-app-push-to-talk",
       "wheelNotches": 1
     },
     {

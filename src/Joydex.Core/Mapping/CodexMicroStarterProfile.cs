@@ -60,8 +60,8 @@ public static class CodexMicroStarterProfile
         }
 
         AddBinding(bindings, "E2 push - Toggle voice mic", CompanionConfig.AlwaysBank, 53, "toggle-voice-mic");
-        AddBinding(bindings, "T4 - Hold-to-talk", CompanionConfig.AlwaysBank, 37, "push-to-talk");
-        AddBinding(bindings, "T4 - Hold-to-talk release", CompanionConfig.AlwaysBank, 37, "push-to-talk", "release");
+        AddBinding(bindings, "T4 - In-app hold-to-talk", CompanionConfig.AlwaysBank, 37, "in-app-push-to-talk");
+        AddBinding(bindings, "T4 - In-app hold-to-talk release", CompanionConfig.AlwaysBank, 37, "in-app-push-to-talk", "release");
         AddBinding(bindings, "E2 right - Scroll down", CompanionConfig.AlwaysBank, 54, "scroll-down");
         AddBinding(bindings, "E2 left - Scroll up", CompanionConfig.AlwaysBank, 55, "scroll-up");
         AddBinding(bindings, "E1 push - Fast mode", CompanionConfig.AlwaysBank, 50, "fast-mode");
@@ -97,7 +97,7 @@ public static class CodexMicroStarterProfile
                 : $"{labelPrefix} B{index + 1} - {action}";
             AddBinding(bindings, label, bank, firstButton + index, action);
 
-            if (action == "push-to-talk")
+            if (action is "push-to-talk" or "in-app-push-to-talk")
             {
                 AddBinding(
                     bindings,

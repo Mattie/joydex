@@ -57,7 +57,7 @@ public sealed class CodexMicroStarterProfileTests
     {
         var profile = CodexMicroStarterProfile.Create(Cm3ModeDialProfile.FiveWayShift);
         var microphoneBindings = profile.Bindings
-            .Where(binding => binding.Action == "push-to-talk" && binding.Button == 37)
+            .Where(binding => binding.Action == "in-app-push-to-talk" && binding.Button == 37)
             .ToArray();
 
         Assert.Collection(

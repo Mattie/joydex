@@ -796,6 +796,7 @@ internal sealed class ButtonMapCanvas : Control
         "reject" => "Reject",
         "fork-task" => "Fork task",
         "push-to-talk" => "Hold to talk",
+        "in-app-push-to-talk" => "In-app hold to talk",
         "submit" => "Submit",
         "plan-mode" => "Plan",
         "reasoning-up" => "Reasoning +",

@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Joydex.Core\Joydex.Core.csproj" />
     <ProjectReference Include="..\Joydex.Virpil\Joydex.Virpil.csproj" />
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
   </ItemGroup>
 
   <ItemGroup>

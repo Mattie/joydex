@@ -2,6 +2,14 @@
 
 This file records the major capabilities and fixes added since Joydex was first uploaded to GitHub. Entries are grouped by date because the project has not used versioned releases yet. New entries go at the top.
 
+## 2026-10-02
+
+- Kept T4 in-app hold-to-talk working after Codex removed `composer.startDictation`. Joydex now uses the composer's accessible Dictate and stop/cancel buttons and remembers the originating Codex window through release.
+
+## 2026-10-01
+
+- Added an in-app hold-to-talk action for Codex dictation and made it the T4 starter mapping so maintained throttle switches keep working when Codex disables its global dictation shortcuts.
+
 ## 2026-09-10
 
 - Changed the CM3 starter mapping for E2 push (button 53) from hold-to-talk dictation to the Voice Chat microphone mute toggle. T4 remains available for hold-to-talk dictation.
