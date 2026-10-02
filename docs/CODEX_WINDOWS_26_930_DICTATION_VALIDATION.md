@@ -41,8 +41,10 @@ On load, Joydex also migrates the exact legacy T4 starter press/release pair fro
 global push-to-talk mappings remain unchanged.
 
 If the controller disconnects while a hold is active, the worker now stops recorded in-app
-dictation before reconnecting. Device and bank names use the same case-insensitive identity rules
-for press and release that the binding engine uses.
+dictation before reconnecting and retries incomplete cleanup on the reconnect cadence. Device and
+bank names use the same case-insensitive identity rules for press and release that the binding engine
+uses. If a bank selector moves during a hold, the release stays associated with the bank that handled
+the press.
 
 The older `dictation` action also starts through the accessible composer button instead of resolving
 the removed command. Product code does not inspect or parse `app.asar`; the archive was used only for
@@ -51,9 +53,9 @@ this exact-build compatibility research.
 ## Evidence
 
 - The focused dictation-control, executor, keybinding, starter-profile, validation, binding-engine,
-  and worker suite passed 163 tests with no failures or skips, including immediate-release startup
-  settling, retained-owner retry, controller-disconnect cleanup, mixed-case ownership, and legacy T4
-  migration coverage.
+  and worker suite passed 166 tests with no failures or skips, including immediate-release startup
+  settling, retained-owner retry, controller-disconnect cleanup and retry, mixed-case ownership,
+  bank-switch release routing, and legacy T4 migration coverage.
 - A live smoke check invoked `Dictate` through the new production control, observed the button change,
   and invoked `Stop dictation` in the same recorded window successfully.
 - The starter profile and public examples map CM3 button 37 press and release to

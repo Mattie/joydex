@@ -289,9 +289,30 @@ public sealed class CodexActionExecutorTests
             Request(CodexAction.InAppPushToTalk, deviceId: "t4"),
             CancellationToken.None);
 
-        executor.ReleaseHeldKeys();
+        var completed = executor.ReleaseHeldKeys();
 
+        Assert.True(completed);
         Assert.Equal([dictation.WindowHandle], dictation.StopWindows);
+    }
+
+    [Fact]
+    public async Task FailedDictationCleanupReportsIncompleteAndRetries()
+    {
+        var dictation = new RecordingDictationControl();
+        dictation.StopResults.Enqueue(
+            CodexDictationControlResult.Failed(dictation.WindowHandle, "Dictation startup is still settling."));
+        var executor = CreateExecutor(
+            new RecordingResolver("Ctrl+Shift+D"),
+            new RecordingInputSender(),
+            dictationControl: dictation);
+        await executor.ExecuteAsync(Request(CodexAction.InAppPushToTalk), CancellationToken.None);
+
+        var firstCleanup = executor.ReleaseHeldKeys();
+        var secondCleanup = executor.ReleaseHeldKeys();
+
+        Assert.False(firstCleanup);
+        Assert.True(secondCleanup);
+        Assert.Equal([dictation.WindowHandle, dictation.WindowHandle], dictation.StopWindows);
     }
 
     [Fact]

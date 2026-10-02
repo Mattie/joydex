@@ -18,6 +18,7 @@ public sealed class BindingEngine
     private readonly CompanionConfig _config;
     private readonly string _deviceId;
     private readonly Dictionary<string, DateTimeOffset> _lastDispatch = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<int, string?> _pressedBanks = [];
 
     public BindingEngine(CompanionConfig config, string? deviceId = null)
     {
@@ -51,12 +52,22 @@ public sealed class BindingEngine
             }
 
             var button = inputEvent.DisplayIndex;
+            var eventBank = activeBank;
+            if (string.Equals(trigger, "press", StringComparison.Ordinal))
+            {
+                _pressedBanks[button] = activeBank;
+            }
+            else if (_pressedBanks.Remove(button, out var pressedBank))
+            {
+                eventBank = pressedBank;
+            }
+
             var bindings = _config.Bindings.Where(candidate =>
                 string.Equals(candidate.DeviceId, _deviceId, StringComparison.OrdinalIgnoreCase)
                 &&
                 (string.Equals(candidate.Bank, CompanionConfig.AlwaysBank, StringComparison.OrdinalIgnoreCase)
-                    || activeBank is not null
-                    && string.Equals(candidate.Bank, activeBank, StringComparison.OrdinalIgnoreCase))
+                    || eventBank is not null
+                    && string.Equals(candidate.Bank, eventBank, StringComparison.OrdinalIgnoreCase))
                 && candidate.Button == button
                 && string.Equals(candidate.Trigger, trigger, StringComparison.OrdinalIgnoreCase));
 
@@ -95,7 +106,11 @@ public sealed class BindingEngine
         return requests;
     }
 
-    public void Reset() => _lastDispatch.Clear();
+    public void Reset()
+    {
+        _lastDispatch.Clear();
+        _pressedBanks.Clear();
+    }
 
     public string? ResolveActiveBank(JoystickSnapshot snapshot)
     {

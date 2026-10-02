@@ -31,6 +31,7 @@ public sealed class CompanionWorker(
     private readonly IInjectedKeyStateLifecycle _keyStateLifecycle = keyStateLifecycle ?? executor;
     private CancellationTokenSource? _cancellation;
     private Task? _runTask;
+    private bool _heldInputCleanupPending;
 
     public event EventHandler<string>? StatusChanged;
 
@@ -109,7 +110,7 @@ public sealed class CompanionWorker(
         }
         finally
         {
-            TryReleaseHeldKeys("worker shutdown");
+            _heldInputCleanupPending = !TryReleaseHeldKeys("worker shutdown");
         }
     }
 
@@ -117,6 +118,16 @@ public sealed class CompanionWorker(
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (_heldInputCleanupPending)
+            {
+                _heldInputCleanupPending = !TryReleaseHeldKeys("controller disconnect retry");
+                if (_heldInputCleanupPending)
+                {
+                    await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+            }
+
             if (source.ConnectedDevice is null)
             {
                 if (source.TryConnect(_deviceSelector, out var connectionMessage))
@@ -150,7 +161,7 @@ public sealed class CompanionWorker(
                     log($"DirectInput disconnected: {readError}");
                 }
 
-                TryReleaseHeldKeys("controller disconnect");
+                _heldInputCleanupPending = !TryReleaseHeldKeys("controller disconnect");
                 _engine.Reset();
                 SetStatus("Controller disconnected");
                 await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
@@ -238,11 +249,11 @@ public sealed class CompanionWorker(
         }
     }
 
-    private void TryReleaseHeldKeys(string context)
+    private bool TryReleaseHeldKeys(string context)
     {
         try
         {
-            _keyStateLifecycle.ReleaseHeldKeys();
+            return _keyStateLifecycle.ReleaseHeldKeys();
         }
         catch (Exception exception)
         {
@@ -254,6 +265,8 @@ public sealed class CompanionWorker(
             {
                 // Cleanup must not fault the worker if the log has also become unavailable.
             }
+
+            return false;
         }
     }
 

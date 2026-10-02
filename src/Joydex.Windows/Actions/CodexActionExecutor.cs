@@ -196,10 +196,15 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         }
     }
 
-    public void ReleaseHeldKeys()
+    public bool ReleaseHeldKeys()
     {
         ReleasePushToTalkKeys(force: false);
         ReleaseAllDictationOwners();
+
+        lock (_dictationLock)
+        {
+            return _dictationWindows.Count == 0;
+        }
     }
 
     private ActionExecutionResult ExecuteInternalAction(ActionRequest request)
