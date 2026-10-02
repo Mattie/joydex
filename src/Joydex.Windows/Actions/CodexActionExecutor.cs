@@ -123,7 +123,7 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
             ActionExecutionResult result;
             if (request.Action is CodexAction.InAppPushToTalk or CodexAction.Dictation)
             {
-                result = StartDictation(request);
+                result = StartDictation(request, foreground.WindowHandle);
             }
             else if (request.Action == CodexAction.PushToTalk)
             {
@@ -220,7 +220,7 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         return ActionExecutionResult.Success(message);
     }
 
-    private ActionExecutionResult StartDictation(ActionRequest request)
+    private ActionExecutionResult StartDictation(ActionRequest request, IntPtr windowHandle)
     {
         var owner = DictationOwner(request);
         if (request.Action == CodexAction.InAppPushToTalk)
@@ -234,7 +234,7 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
             }
         }
 
-        var started = _dictationControl.Start();
+        var started = _dictationControl.Start(windowHandle);
         if (!started.Success)
         {
             return LogBlocked(request, null, started.Detail);

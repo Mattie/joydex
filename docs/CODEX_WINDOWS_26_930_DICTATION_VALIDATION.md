@@ -33,8 +33,9 @@ command or shortcut in this build.
 `in-app-push-to-talk` now invokes the foreground composer's accessible `Dictate` button and records
 that Codex window for the physical control that started the hold. Release bypasses the foreground
 check and invokes the stop or startup-cancel state in the recorded window. Held-input cleanup uses
-the same recorded target. The existing global `push-to-talk` key-hold path is
-unchanged.
+the same recorded target. Start uses the exact window handle validated by the foreground guard, and a
+recorded window that closes is treated as definitively inactive. The existing global `push-to-talk`
+key-hold path is unchanged.
 
 On load, Joydex also migrates the exact legacy T4 starter press/release pair from `push-to-talk` to
 `in-app-push-to-talk`. The migration requires both original starter names and controls, so custom
@@ -53,9 +54,10 @@ this exact-build compatibility research.
 ## Evidence
 
 - The focused dictation-control, executor, keybinding, starter-profile, validation, binding-engine,
-  and worker suite passed 167 tests with no failures or skips, including immediate-release startup
+  and worker suite passed 170 tests with no failures or skips, including immediate-release startup
   settling, retained-owner retry, controller-disconnect cleanup and retry, mixed-case ownership,
-  bank-switch release routing, shutdown cleanup retry, and legacy T4 migration coverage.
+  bank-switch release routing, shutdown cleanup retry, guarded-window targeting, closed-window
+  cleanup, and legacy T4 migration coverage.
 - A live smoke check invoked `Dictate` through the new production control, observed the button change,
   and invoked `Stop dictation` in the same recorded window successfully.
 - The starter profile and public examples map CM3 button 37 press and release to

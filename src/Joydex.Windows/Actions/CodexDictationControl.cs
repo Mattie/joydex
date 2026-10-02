@@ -22,7 +22,7 @@ public readonly record struct CodexDictationControlResult(
 
 public interface ICodexDictationControl
 {
-    CodexDictationControlResult Start();
+    CodexDictationControlResult Start(IntPtr windowHandle);
 
     CodexDictationControlResult Stop(IntPtr windowHandle);
 }
@@ -40,14 +40,13 @@ public sealed partial class WindowsCodexDictationControl : ICodexDictationContro
         "Preparing dictation",
     ];
 
-    public CodexDictationControlResult Start()
+    public CodexDictationControlResult Start(IntPtr windowHandle)
     {
-        var windowHandle = GetForegroundWindow();
-        if (windowHandle == IntPtr.Zero)
+        if (windowHandle == IntPtr.Zero || !IsWindow(windowHandle))
         {
             return CodexDictationControlResult.Failed(
                 windowHandle,
-                "Windows did not report a foreground Codex window.");
+                "The validated foreground Codex window is unavailable.");
         }
 
         return InvokeNamedButton(
@@ -58,16 +57,10 @@ public sealed partial class WindowsCodexDictationControl : ICodexDictationContro
 
     public CodexDictationControlResult Stop(IntPtr windowHandle)
     {
-        if (windowHandle == IntPtr.Zero)
-        {
-            return CodexDictationControlResult.Failed(
-                windowHandle,
-                "The recorded Codex window is unavailable.");
-        }
-
-        try
-        {
-            return WaitForStopTransition(
+        return StopWithWindowLifetime(
+            windowHandle,
+            () => IsWindow(windowHandle),
+            () => WaitForStopTransition(
                 windowHandle,
                 () => InvokeNamedButton(
                     windowHandle,
@@ -75,13 +68,36 @@ public sealed partial class WindowsCodexDictationControl : ICodexDictationContro
                     "The recorded Codex window has no enabled dictation stop or cancel button."),
                 () => FindEnabledButton(AutomationElement.FromHandle(windowHandle), StartName) is not null,
                 () => Thread.Sleep(StopSettleDelayMs),
-                StopSettleAttempts);
+                StopSettleAttempts));
+    }
+
+    internal static CodexDictationControlResult StopWithWindowLifetime(
+        IntPtr windowHandle,
+        Func<bool> windowExists,
+        Func<CodexDictationControlResult> stop)
+    {
+        ArgumentNullException.ThrowIfNull(windowExists);
+        ArgumentNullException.ThrowIfNull(stop);
+
+        if (windowHandle == IntPtr.Zero || !windowExists())
+        {
+            return CodexDictationControlResult.Completed(windowHandle, "dictation-window-closed");
+        }
+
+        try
+        {
+            var result = stop();
+            return !result.Success && !windowExists()
+                ? CodexDictationControlResult.Completed(windowHandle, "dictation-window-closed")
+                : result;
         }
         catch (Exception exception) when (IsAutomationFailure(exception))
         {
-            return CodexDictationControlResult.Failed(
-                windowHandle,
-                $"The recorded Codex window could not be inspected: {exception.Message}");
+            return !windowExists()
+                ? CodexDictationControlResult.Completed(windowHandle, "dictation-window-closed")
+                : CodexDictationControlResult.Failed(
+                    windowHandle,
+                    $"The recorded Codex window could not be inspected: {exception.Message}");
         }
     }
 
@@ -173,5 +189,6 @@ public sealed partial class WindowsCodexDictationControl : ICodexDictationContro
             or COMException;
 
     [LibraryImport("user32.dll")]
-    private static partial IntPtr GetForegroundWindow();
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool IsWindow(IntPtr windowHandle);
 }

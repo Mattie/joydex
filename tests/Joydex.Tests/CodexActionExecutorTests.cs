@@ -234,6 +234,7 @@ public sealed class CodexActionExecutorTests
         Assert.Empty(input.HeldChords);
         Assert.Empty(input.ReleasedChords);
         Assert.Equal(1, dictation.StartCalls);
+        Assert.Equal([dictation.WindowHandle], dictation.StartWindows);
         Assert.Equal([dictation.WindowHandle], dictation.StopWindows);
         Assert.Contains("accessibility-button=Dictate", log[0], StringComparison.Ordinal);
         Assert.Contains("accessibility-button=Stop dictation", log[1], StringComparison.Ordinal);
@@ -683,7 +684,7 @@ public sealed class CodexActionExecutorTests
     private sealed class AllowedForegroundGuard : IForegroundProcessGuard
     {
         public ForegroundCheck Check(SafetyOptions safety, bool actionMayBringCodexForward) =>
-            new(true, "Codex", "allowed");
+            new(true, "Codex", "allowed", new IntPtr(1234));
     }
 
     private sealed class MutableForegroundGuard : IForegroundProcessGuard
@@ -691,7 +692,11 @@ public sealed class CodexActionExecutorTests
         public bool Allowed { get; set; } = true;
 
         public ForegroundCheck Check(SafetyOptions safety, bool actionMayBringCodexForward) =>
-            new(Allowed, Allowed ? "Codex" : "Other", Allowed ? "allowed" : "blocked");
+            new(
+                Allowed,
+                Allowed ? "Codex" : "Other",
+                Allowed ? "allowed" : "blocked",
+                Allowed ? new IntPtr(1234) : IntPtr.Zero);
     }
 
     private sealed class RecordingDictationControl : ICodexDictationControl
@@ -700,14 +705,17 @@ public sealed class CodexActionExecutorTests
 
         public int StartCalls { get; private set; }
 
+        public List<IntPtr> StartWindows { get; } = [];
+
         public List<IntPtr> StopWindows { get; } = [];
 
         public Queue<CodexDictationControlResult> StopResults { get; } = [];
 
-        public CodexDictationControlResult Start()
+        public CodexDictationControlResult Start(IntPtr windowHandle)
         {
             StartCalls++;
-            return CodexDictationControlResult.Completed(WindowHandle, "accessibility-button=Dictate");
+            StartWindows.Add(windowHandle);
+            return CodexDictationControlResult.Completed(windowHandle, "accessibility-button=Dictate");
         }
 
         public CodexDictationControlResult Stop(IntPtr windowHandle)
