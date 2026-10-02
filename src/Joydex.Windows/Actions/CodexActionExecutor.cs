@@ -21,7 +21,8 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
     private KeyChord? _heldPushToTalkChord;
     private CodexBindingResolution? _heldPushToTalkResolution;
     private readonly object _dictationLock = new();
-    private readonly Dictionary<(string DeviceId, string Bank, int Button), IntPtr> _dictationWindows = [];
+    private readonly Dictionary<(string DeviceId, string Bank, int Button), IntPtr> _dictationWindows =
+        new(DictationOwnerEqualityComparer.Instance);
 
     public CodexActionExecutor(
         SafetyOptions safety,
@@ -503,6 +504,25 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
 
     private static (string DeviceId, string Bank, int Button) DictationOwner(ActionRequest request) =>
         (request.DeviceId, request.Bank, request.Button);
+
+    private sealed class DictationOwnerEqualityComparer
+        : IEqualityComparer<(string DeviceId, string Bank, int Button)>
+    {
+        public static DictationOwnerEqualityComparer Instance { get; } = new();
+
+        public bool Equals(
+            (string DeviceId, string Bank, int Button) x,
+            (string DeviceId, string Bank, int Button) y) =>
+            x.Button == y.Button
+            && string.Equals(x.DeviceId, y.DeviceId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Bank, y.Bank, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string DeviceId, string Bank, int Button) owner) =>
+            HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(owner.DeviceId),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(owner.Bank),
+                owner.Button);
+    }
 
     private readonly record struct PushToTalkRelease(
         bool ControlWasHeld,

@@ -240,6 +240,26 @@ public sealed class CodexActionExecutorTests
     }
 
     [Fact]
+    public async Task InAppPushToTalkReleaseMatchesDeviceAndBankCaseInsensitively()
+    {
+        var dictation = new RecordingDictationControl();
+        var executor = CreateExecutor(
+            new RecordingResolver("Ctrl+Shift+D"),
+            new RecordingInputSender(),
+            dictationControl: dictation);
+
+        await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, deviceId: "T4") with { Bank = "Always" },
+            CancellationToken.None);
+        var released = await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, trigger: "release", deviceId: "t4") with { Bank = "ALWAYS" },
+            CancellationToken.None);
+
+        Assert.True(released.Executed);
+        Assert.Equal([dictation.WindowHandle], dictation.StopWindows);
+    }
+
+    [Fact]
     public async Task DictationInvokesTheAccessibleComposerButtonWithoutResolvingACommand()
     {
         var resolver = new RecordingResolver("Ctrl+Shift+D");

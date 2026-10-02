@@ -109,21 +109,7 @@ public sealed class CompanionWorker(
         }
         finally
         {
-            try
-            {
-                _keyStateLifecycle.ReleaseHeldKeys();
-            }
-            catch (Exception exception)
-            {
-                try
-                {
-                    log($"Could not release a held push-to-talk key: {exception.Message}");
-                }
-                catch
-                {
-                    // Cleanup must not fault the worker if the log has also become unavailable.
-                }
-            }
+            TryReleaseHeldKeys("worker shutdown");
         }
     }
 
@@ -164,6 +150,7 @@ public sealed class CompanionWorker(
                     log($"DirectInput disconnected: {readError}");
                 }
 
+                TryReleaseHeldKeys("controller disconnect");
                 _engine.Reset();
                 SetStatus("Controller disconnected");
                 await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
@@ -248,6 +235,25 @@ public sealed class CompanionWorker(
             }
 
             await Task.Delay(config.Polling.PollIntervalMs, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private void TryReleaseHeldKeys(string context)
+    {
+        try
+        {
+            _keyStateLifecycle.ReleaseHeldKeys();
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                log($"Could not release held input during {context}: {exception.Message}");
+            }
+            catch
+            {
+                // Cleanup must not fault the worker if the log has also become unavailable.
+            }
         }
     }
 

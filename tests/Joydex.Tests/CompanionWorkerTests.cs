@@ -43,6 +43,36 @@ public sealed class CompanionWorkerTests
         Assert.Equal(1, lifecycle.ReleaseCalls);
     }
 
+    [Fact]
+    public async Task ControllerDisconnectReleasesHeldKeysBeforeReconnect()
+    {
+        var logs = new List<string>();
+        var callOrder = new List<string>();
+        var source = new DisconnectingJoystickSource(callOrder);
+        var lifecycle = new RecordingKeyStateLifecycle(callOrder);
+        var executor = new CodexActionExecutor(
+            new SafetyOptions { DryRun = true },
+            logs.Add,
+            new UnusedResolver(),
+            new OpenWorkingDirectoryOptions());
+        await using var worker = new CompanionWorker(
+            new CompanionConfig(),
+            source,
+            executor,
+            logs.Add,
+            lifecycle);
+
+        worker.Start();
+        await lifecycle.ReleaseAttempted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(1, lifecycle.ReleaseCalls);
+        Assert.Equal(["clear", "read", "release"], callOrder);
+        Assert.Contains(logs, message => message.Contains("DirectInput disconnected: unplugged", StringComparison.Ordinal));
+
+        await worker.StopAsync();
+        Assert.Equal(2, lifecycle.ReleaseCalls);
+    }
+
     private sealed class RecordingKeyStateLifecycle(List<string> callOrder) : IInjectedKeyStateLifecycle
     {
         public Exception? ClearFailure { get; init; }
@@ -50,6 +80,9 @@ public sealed class CompanionWorkerTests
         public int ClearCalls { get; private set; }
 
         public int ReleaseCalls { get; private set; }
+
+        public TaskCompletionSource ReleaseAttempted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         public void ClearInjectedKeyState()
         {
@@ -61,7 +94,41 @@ public sealed class CompanionWorkerTests
             }
         }
 
-        public void ReleaseHeldKeys() => ReleaseCalls++;
+        public void ReleaseHeldKeys()
+        {
+            callOrder.Add("release");
+            ReleaseCalls++;
+            ReleaseAttempted.TrySetResult();
+        }
+    }
+
+    private sealed class DisconnectingJoystickSource(List<string> callOrder) : IJoystickSource
+    {
+        public DirectInputDeviceInfo? ConnectedDevice { get; private set; } = new(
+            "instance",
+            "controller",
+            Guid.NewGuid(),
+            Guid.NewGuid());
+
+        public IReadOnlyList<JoystickEvent> LatestBufferedButtonEvents => [];
+
+        public bool TryConnect(DeviceSelector selector, out string message) =>
+            throw new InvalidOperationException("The disconnect test should stop before reconnecting.");
+
+        public bool TryRead(out JoystickSnapshot? snapshot, out string? error)
+        {
+            callOrder.Add("read");
+            ConnectedDevice = null;
+            snapshot = null;
+            error = "unplugged";
+            return false;
+        }
+
+        public void Disconnect() => ConnectedDevice = null;
+
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class DisconnectedJoystickSource(List<string> callOrder) : IJoystickSource
