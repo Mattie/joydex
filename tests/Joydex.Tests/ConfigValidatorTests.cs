@@ -153,6 +153,79 @@ public sealed class ConfigValidatorTests
     }
 
     [Fact]
+    public void PersistedStarterT4PairMigratesToInAppPushToTalk()
+    {
+        var config = LoadPersisted(new CompanionConfig
+        {
+            Bindings =
+            [
+                new ButtonBinding
+                {
+                    Name = "T4 - Hold-to-talk",
+                    DeviceId = "cm3",
+                    Bank = CompanionConfig.AlwaysBank,
+                    Button = 37,
+                    Trigger = "press",
+                    Action = "push-to-talk",
+                },
+                new ButtonBinding
+                {
+                    Name = "T4 - Hold-to-talk release",
+                    DeviceId = "cm3",
+                    Bank = CompanionConfig.AlwaysBank,
+                    Button = 37,
+                    Trigger = "release",
+                    Action = "push-to-talk",
+                },
+            ],
+        });
+
+        Assert.Collection(
+            config.Bindings,
+            press =>
+            {
+                Assert.Equal("T4 - In-app hold-to-talk", press.Name);
+                Assert.Equal("in-app-push-to-talk", press.Action);
+            },
+            release =>
+            {
+                Assert.Equal("T4 - In-app hold-to-talk release", release.Name);
+                Assert.Equal("in-app-push-to-talk", release.Action);
+            });
+    }
+
+    [Fact]
+    public void PersistedCustomizedT4PushToTalkPairIsNotMigrated()
+    {
+        var config = LoadPersisted(new CompanionConfig
+        {
+            Bindings =
+            [
+                new ButtonBinding
+                {
+                    Name = "My global hold-to-talk",
+                    DeviceId = "cm3",
+                    Bank = CompanionConfig.AlwaysBank,
+                    Button = 37,
+                    Trigger = "press",
+                    Action = "push-to-talk",
+                },
+                new ButtonBinding
+                {
+                    Name = "My global hold-to-talk release",
+                    DeviceId = "cm3",
+                    Bank = CompanionConfig.AlwaysBank,
+                    Button = 37,
+                    Trigger = "release",
+                    Action = "push-to-talk",
+                },
+            ],
+        });
+
+        Assert.All(config.Bindings, binding => Assert.Equal("push-to-talk", binding.Action));
+    }
+
+    [Fact]
     public void RejectsUnknownOpenWorkingDirectoryTarget()
     {
         var config = new CompanionConfig
@@ -265,6 +338,30 @@ public sealed class ConfigValidatorTests
     }
 
     [Fact]
+    public void AcceptsInAppPushToTalkPressAndReleaseBindings()
+    {
+        var config = CreateConfig(
+            new ButtonBinding
+            {
+                Name = "dictation-on",
+                Bank = "work",
+                Button = 4,
+                Trigger = "press",
+                Action = "in-app-push-to-talk",
+            },
+            new ButtonBinding
+            {
+                Name = "dictation-off",
+                Bank = "work",
+                Button = 4,
+                Trigger = "release",
+                Action = "in-app-push-to-talk",
+            });
+
+        Assert.Empty(ConfigValidator.Validate(config));
+    }
+
+    [Fact]
     public void RejectsReleaseBindingForStartingVoiceChat()
     {
         var config = CreateConfig(
@@ -302,4 +399,20 @@ public sealed class ConfigValidatorTests
         BankSelectors = new Dictionary<string, int> { ["work"] = 10 },
         Bindings = [.. bindings],
     };
+
+    private static CompanionConfig LoadPersisted(CompanionConfig config)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "JoydexTests", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "config.json");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(config));
+        try
+        {
+            return ConfigStore.LoadOrCreate(path);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
 }

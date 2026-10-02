@@ -4,7 +4,11 @@ using Joydex.Core.Config;
 
 namespace Joydex.Windows.Actions;
 
-public sealed record ForegroundCheck(bool Allowed, string ProcessName, string Reason);
+public sealed record ForegroundCheck(
+    bool Allowed,
+    string ProcessName,
+    string Reason,
+    IntPtr WindowHandle = default);
 
 public interface IForegroundProcessGuard
 {
@@ -39,7 +43,10 @@ public sealed partial class ForegroundProcessGuard : IForegroundProcessGuard
             return new ForegroundCheck(false, string.Empty, "The foreground process exited before it could be checked.");
         }
 
-        return Evaluate(safety, processName, actionMayBringCodexForward);
+        return Evaluate(safety, processName, actionMayBringCodexForward) with
+        {
+            WindowHandle = window,
+        };
     }
 
     public static ForegroundCheck Evaluate(

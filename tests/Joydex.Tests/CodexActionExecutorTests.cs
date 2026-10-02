@@ -36,7 +36,6 @@ public sealed class CodexActionExecutorTests
         { CodexAction.StartVoiceChat, "composer.startVoiceMode" },
         { CodexAction.EndVoiceChat, "realtimeVoice.endCall" },
         { CodexAction.ToggleVoiceChatMicrophone, "realtimeVoice.toggleMicrophoneMute" },
-        { CodexAction.Dictation, "composer.startDictation" },
         { CodexAction.OpenWorkingDirectory, "copyWorkingDirectory" },
     };
 
@@ -69,7 +68,6 @@ public sealed class CodexActionExecutorTests
         CodexAction.StartVoiceChat,
         CodexAction.EndVoiceChat,
         CodexAction.ToggleVoiceChatMicrophone,
-        CodexAction.Dictation,
     };
 
     [Theory]
@@ -90,6 +88,8 @@ public sealed class CodexActionExecutorTests
             CodexAction.Home,
             CodexAction.End,
             CodexAction.ButtonMap,
+            CodexAction.InAppPushToTalk,
+            CodexAction.Dictation,
         };
         var expected = Enum.GetValues<CodexAction>().Where(action => !rawActions.Contains(action)).Order().ToArray();
         var actual = CodexCommandCatalog.All.Select(descriptor => descriptor.Action).Order().ToArray();
@@ -212,6 +212,155 @@ public sealed class CodexActionExecutorTests
         Assert.Contains("binding=Alt+Space", log[1], StringComparison.Ordinal);
         Assert.Contains("source=user", log[1], StringComparison.Ordinal);
         Assert.Contains("snapshot=current", log[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InAppPushToTalkInvokesAndStopsDictationInTheRecordedWindow()
+    {
+        var resolver = new RecordingResolver("Ctrl+Shift+D");
+        var input = new RecordingInputSender();
+        var dictation = new RecordingDictationControl();
+        var log = new List<string>();
+        var executor = CreateExecutor(resolver, input, log, dictationControl: dictation);
+
+        var pressed = await executor.ExecuteAsync(Request(CodexAction.InAppPushToTalk), CancellationToken.None);
+        var released = await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, trigger: "release"),
+            CancellationToken.None);
+
+        Assert.True(pressed.Executed);
+        Assert.True(released.Executed);
+        Assert.Empty(resolver.Actions);
+        Assert.Empty(input.HeldChords);
+        Assert.Empty(input.ReleasedChords);
+        Assert.Equal(1, dictation.StartCalls);
+        Assert.Equal([dictation.WindowHandle], dictation.StartWindows);
+        Assert.Equal([dictation.WindowHandle], dictation.StopWindows);
+        Assert.Contains("accessibility-button=Dictate", log[0], StringComparison.Ordinal);
+        Assert.Contains("accessibility-button=Stop dictation", log[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InAppPushToTalkReleaseMatchesDeviceAndBankCaseInsensitively()
+    {
+        var dictation = new RecordingDictationControl();
+        var executor = CreateExecutor(
+            new RecordingResolver("Ctrl+Shift+D"),
+            new RecordingInputSender(),
+            dictationControl: dictation);
+
+        await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, deviceId: "T4") with { Bank = "Always" },
+            CancellationToken.None);
+        var released = await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, trigger: "release", deviceId: "t4") with { Bank = "ALWAYS" },
+            CancellationToken.None);
+
+        Assert.True(released.Executed);
+        Assert.Equal([dictation.WindowHandle], dictation.StopWindows);
+    }
+
+    [Fact]
+    public async Task DictationInvokesTheAccessibleComposerButtonWithoutResolvingACommand()
+    {
+        var resolver = new RecordingResolver("Ctrl+Shift+D");
+        var dictation = new RecordingDictationControl();
+        var executor = CreateExecutor(
+            resolver,
+            new RecordingInputSender(),
+            dictationControl: dictation);
+
+        var result = await executor.ExecuteAsync(Request(CodexAction.Dictation), CancellationToken.None);
+
+        Assert.True(result.Executed);
+        Assert.Empty(resolver.Actions);
+        Assert.Equal(1, dictation.StartCalls);
+        Assert.Empty(dictation.StopWindows);
+    }
+
+    [Fact]
+    public async Task HeldKeyCleanupStopsInAppDictationInTheRecordedWindow()
+    {
+        var dictation = new RecordingDictationControl();
+        var executor = CreateExecutor(
+            new RecordingResolver("Ctrl+Shift+D"),
+            new RecordingInputSender(),
+            dictationControl: dictation);
+        await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, deviceId: "t4"),
+            CancellationToken.None);
+
+        var completed = executor.ReleaseHeldKeys();
+
+        Assert.True(completed);
+        Assert.Equal([dictation.WindowHandle], dictation.StopWindows);
+    }
+
+    [Fact]
+    public async Task FailedDictationCleanupReportsIncompleteAndRetries()
+    {
+        var dictation = new RecordingDictationControl();
+        dictation.StopResults.Enqueue(
+            CodexDictationControlResult.Failed(dictation.WindowHandle, "Dictation startup is still settling."));
+        var executor = CreateExecutor(
+            new RecordingResolver("Ctrl+Shift+D"),
+            new RecordingInputSender(),
+            dictationControl: dictation);
+        await executor.ExecuteAsync(Request(CodexAction.InAppPushToTalk), CancellationToken.None);
+
+        var firstCleanup = executor.ReleaseHeldKeys();
+        var secondCleanup = executor.ReleaseHeldKeys();
+
+        Assert.False(firstCleanup);
+        Assert.True(secondCleanup);
+        Assert.Equal([dictation.WindowHandle, dictation.WindowHandle], dictation.StopWindows);
+    }
+
+    [Fact]
+    public async Task HeldActionReleaseBypassesTheForegroundGuard()
+    {
+        var resolver = new RecordingResolver("Ctrl+Shift+D");
+        var input = new RecordingInputSender();
+        var dictation = new RecordingDictationControl();
+        var foreground = new MutableForegroundGuard();
+        var executor = CreateExecutor(
+            resolver,
+            input,
+            foregroundGuard: foreground,
+            dictationControl: dictation);
+
+        await executor.ExecuteAsync(Request(CodexAction.InAppPushToTalk), CancellationToken.None);
+        foreground.Allowed = false;
+        var released = await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, trigger: "release"),
+            CancellationToken.None);
+
+        Assert.True(released.Executed);
+        Assert.Equal([dictation.WindowHandle], dictation.StopWindows);
+    }
+
+    [Fact]
+    public async Task FailedInAppStopKeepsTheRecordedOwnerForRetry()
+    {
+        var dictation = new RecordingDictationControl();
+        dictation.StopResults.Enqueue(
+            CodexDictationControlResult.Failed(dictation.WindowHandle, "Dictation startup is still settling."));
+        var executor = CreateExecutor(
+            new RecordingResolver("Ctrl+Shift+D"),
+            new RecordingInputSender(),
+            dictationControl: dictation);
+
+        await executor.ExecuteAsync(Request(CodexAction.InAppPushToTalk), CancellationToken.None);
+        var firstRelease = await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, trigger: "release"),
+            CancellationToken.None);
+        var secondRelease = await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, trigger: "release"),
+            CancellationToken.None);
+
+        Assert.False(firstRelease.Executed);
+        Assert.True(secondRelease.Executed);
+        Assert.Equal([dictation.WindowHandle, dictation.WindowHandle], dictation.StopWindows);
     }
 
     [Fact]
@@ -505,32 +654,77 @@ public sealed class CodexActionExecutorTests
         List<string>? log = null,
         IWorkingDirectoryClipboard? clipboard = null,
         WorkingDirectoryLauncherRegistry? launchers = null,
-        string openTarget = OpenWorkingDirectoryOptions.VisualStudioCodeTarget) => new(
+        string openTarget = OpenWorkingDirectoryOptions.VisualStudioCodeTarget,
+        IForegroundProcessGuard? foregroundGuard = null,
+        ICodexDictationControl? dictationControl = null) => new(
             new SafetyOptions { DryRun = false },
             (log ?? []).Add,
             resolver,
             new OpenWorkingDirectoryOptions { Target = openTarget },
-            foregroundGuard: new AllowedForegroundGuard(),
+            foregroundGuard: foregroundGuard ?? new AllowedForegroundGuard(),
             inputSender: input,
             clipboard: clipboard ?? new RecordingClipboard(0, ClipboardDirectoryResult.Failure("not used")),
-            launchers: launchers ?? new WorkingDirectoryLauncherRegistry([]));
+            launchers: launchers ?? new WorkingDirectoryLauncherRegistry([]),
+            dictationControl: dictationControl);
 
     private static ActionRequest Request(
         CodexAction action,
         string trigger = "press",
-        int wheelNotches = 1) => new(
+        int wheelNotches = 1,
+        string deviceId = "test-device") => new(
             BindingName: "test",
             Bank: "work",
             Button: 3,
             Trigger: trigger,
             Action: action,
             RequestedAt: DateTimeOffset.UtcNow,
-            WheelNotches: wheelNotches);
+            WheelNotches: wheelNotches,
+            DeviceId: deviceId);
 
     private sealed class AllowedForegroundGuard : IForegroundProcessGuard
     {
         public ForegroundCheck Check(SafetyOptions safety, bool actionMayBringCodexForward) =>
-            new(true, "Codex", "allowed");
+            new(true, "Codex", "allowed", new IntPtr(1234));
+    }
+
+    private sealed class MutableForegroundGuard : IForegroundProcessGuard
+    {
+        public bool Allowed { get; set; } = true;
+
+        public ForegroundCheck Check(SafetyOptions safety, bool actionMayBringCodexForward) =>
+            new(
+                Allowed,
+                Allowed ? "Codex" : "Other",
+                Allowed ? "allowed" : "blocked",
+                Allowed ? new IntPtr(1234) : IntPtr.Zero);
+    }
+
+    private sealed class RecordingDictationControl : ICodexDictationControl
+    {
+        public IntPtr WindowHandle { get; } = new(1234);
+
+        public int StartCalls { get; private set; }
+
+        public List<IntPtr> StartWindows { get; } = [];
+
+        public List<IntPtr> StopWindows { get; } = [];
+
+        public Queue<CodexDictationControlResult> StopResults { get; } = [];
+
+        public CodexDictationControlResult Start(IntPtr windowHandle)
+        {
+            StartCalls++;
+            StartWindows.Add(windowHandle);
+            return CodexDictationControlResult.Completed(windowHandle, "accessibility-button=Dictate");
+        }
+
+        public CodexDictationControlResult Stop(IntPtr windowHandle)
+        {
+            StopWindows.Add(windowHandle);
+            return StopResults.TryDequeue(out var result)
+                ? result
+                : CodexDictationControlResult.Completed(windowHandle, "accessibility-button=Stop dictation");
+        }
     }
 
     private sealed class RecordingResolver : ICodexKeybindingResolver

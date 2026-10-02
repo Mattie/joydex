@@ -21,6 +21,8 @@ public sealed class CompanionWorker(
     Func<PromptPickerRequest, CancellationToken, Task>? promptPickerHandler = null,
     Action<ButtonMapVisibilityRequest>? buttonMapHandler = null) : IAsyncDisposable
 {
+    private const int ShutdownCleanupAttempts = 3;
+    private const int ShutdownCleanupRetryDelayMs = 100;
     private readonly CompanionEngine _engine = new(config, taskAlertInputInterceptor, deviceId);
     private readonly DeviceSelector _deviceSelector = CompanionConfigNormalizer.Normalize(config).Devices
         .First(device => string.Equals(
@@ -31,6 +33,7 @@ public sealed class CompanionWorker(
     private readonly IInjectedKeyStateLifecycle _keyStateLifecycle = keyStateLifecycle ?? executor;
     private CancellationTokenSource? _cancellation;
     private Task? _runTask;
+    private bool _heldInputCleanupPending;
 
     public event EventHandler<string>? StatusChanged;
 
@@ -109,21 +112,7 @@ public sealed class CompanionWorker(
         }
         finally
         {
-            try
-            {
-                _keyStateLifecycle.ReleaseHeldKeys();
-            }
-            catch (Exception exception)
-            {
-                try
-                {
-                    log($"Could not release a held push-to-talk key: {exception.Message}");
-                }
-                catch
-                {
-                    // Cleanup must not fault the worker if the log has also become unavailable.
-                }
-            }
+            await ReleaseHeldKeysBeforeShutdownAsync().ConfigureAwait(false);
         }
     }
 
@@ -131,6 +120,16 @@ public sealed class CompanionWorker(
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (_heldInputCleanupPending)
+            {
+                _heldInputCleanupPending = !TryReleaseHeldKeys("controller disconnect retry");
+                if (_heldInputCleanupPending)
+                {
+                    await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+            }
+
             if (source.ConnectedDevice is null)
             {
                 if (source.TryConnect(_deviceSelector, out var connectionMessage))
@@ -164,6 +163,7 @@ public sealed class CompanionWorker(
                     log($"DirectInput disconnected: {readError}");
                 }
 
+                _heldInputCleanupPending = !TryReleaseHeldKeys("controller disconnect");
                 _engine.Reset();
                 SetStatus("Controller disconnected");
                 await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
@@ -248,6 +248,45 @@ public sealed class CompanionWorker(
             }
 
             await Task.Delay(config.Polling.PollIntervalMs, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private bool TryReleaseHeldKeys(string context)
+    {
+        try
+        {
+            return _keyStateLifecycle.ReleaseHeldKeys();
+        }
+        catch (Exception exception)
+        {
+            try
+            {
+                log($"Could not release held input during {context}: {exception.Message}");
+            }
+            catch
+            {
+                // Cleanup must not fault the worker if the log has also become unavailable.
+            }
+
+            return false;
+        }
+    }
+
+    private async Task ReleaseHeldKeysBeforeShutdownAsync()
+    {
+        for (var attempt = 1; attempt <= ShutdownCleanupAttempts; attempt++)
+        {
+            var context = attempt == 1 ? "worker shutdown" : "worker shutdown retry";
+            _heldInputCleanupPending = !TryReleaseHeldKeys(context);
+            if (!_heldInputCleanupPending)
+            {
+                return;
+            }
+
+            if (attempt < ShutdownCleanupAttempts)
+            {
+                await Task.Delay(ShutdownCleanupRetryDelayMs).ConfigureAwait(false);
+            }
         }
     }
 

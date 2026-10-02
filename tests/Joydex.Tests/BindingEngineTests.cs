@@ -82,6 +82,52 @@ public sealed class BindingEngineTests
     }
 
     [Fact]
+    public void ResolvesReleaseFromTheBankThatWasActiveAtPress()
+    {
+        var engine = new BindingEngine(new CompanionConfig
+        {
+            BankSelectors = new Dictionary<string, int>
+            {
+                ["work"] = 10,
+                ["navigate"] = 11,
+            },
+            Bindings =
+            [
+                new ButtonBinding
+                {
+                    Name = "dictation-press",
+                    Bank = "work",
+                    Button = 3,
+                    Action = "in-app-push-to-talk",
+                },
+                new ButtonBinding
+                {
+                    Name = "dictation-release",
+                    Bank = "work",
+                    Button = 3,
+                    Trigger = "release",
+                    Action = "in-app-push-to-talk",
+                },
+            ],
+        });
+        var pressedAt = DateTimeOffset.UtcNow;
+
+        var pressed = Assert.Single(engine.Resolve(
+            Snapshot(pressedAt, workBank: true, navigateBank: false),
+            [new JoystickEvent(JoystickEventKind.ButtonPressed, ControlIndex: 2, Value: 1)],
+            pressedAt));
+        var released = Assert.Single(engine.Resolve(
+            Snapshot(pressedAt.AddMilliseconds(1), workBank: false, navigateBank: true),
+            [new JoystickEvent(JoystickEventKind.ButtonReleased, ControlIndex: 2, Value: 0)],
+            pressedAt.AddMilliseconds(1)));
+
+        Assert.Equal("work", pressed.Bank);
+        Assert.Equal("work", released.Bank);
+        Assert.Equal("release", released.Trigger);
+        Assert.Equal(CodexAction.InAppPushToTalk, released.Action);
+    }
+
+    [Fact]
     public void ResolvesVoiceMicrophoneToggleFromItsPublicActionId()
     {
         var engine = new BindingEngine(new CompanionConfig

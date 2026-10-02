@@ -15,10 +15,14 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
     private readonly IWorkingDirectoryClipboard _clipboard;
     private readonly WorkingDirectoryLauncherRegistry _launchers;
     private readonly Action<ActionRequest>? _internalAction;
+    private readonly ICodexDictationControl _dictationControl;
     private readonly object _heldKeyLock = new();
     private readonly HashSet<(string Bank, int Button)> _heldPushToTalkControls = [];
     private KeyChord? _heldPushToTalkChord;
     private CodexBindingResolution? _heldPushToTalkResolution;
+    private readonly object _dictationLock = new();
+    private readonly Dictionary<(string DeviceId, string Bank, int Button), IntPtr> _dictationWindows =
+        new(DictationOwnerEqualityComparer.Instance);
 
     public CodexActionExecutor(
         SafetyOptions safety,
@@ -29,7 +33,8 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         IInputSender? inputSender = null,
         IWorkingDirectoryClipboard? clipboard = null,
         WorkingDirectoryLauncherRegistry? launchers = null,
-        Action<ActionRequest>? internalAction = null)
+        Action<ActionRequest>? internalAction = null,
+        ICodexDictationControl? dictationControl = null)
     {
         _safety = safety ?? throw new ArgumentNullException(nameof(safety));
         _log = log ?? throw new ArgumentNullException(nameof(log));
@@ -40,6 +45,7 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         _clipboard = clipboard ?? new WindowsWorkingDirectoryClipboard();
         _launchers = launchers ?? new WorkingDirectoryLauncherRegistry();
         _internalAction = internalAction;
+        _dictationControl = dictationControl ?? new WindowsCodexDictationControl();
     }
 
     public async Task<ActionExecutionResult> ExecuteAsync(
@@ -52,6 +58,12 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         if (request.Action == CodexAction.ButtonMap)
         {
             return ExecuteInternalAction(request);
+        }
+
+        if (request.Action == CodexAction.InAppPushToTalk
+            && string.Equals(request.Trigger, "release", StringComparison.OrdinalIgnoreCase))
+        {
+            return ReleaseInAppPushToTalk(request);
         }
 
         if (request.Action == CodexAction.PushToTalk
@@ -109,7 +121,11 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
             }
 
             ActionExecutionResult result;
-            if (request.Action == CodexAction.PushToTalk)
+            if (request.Action is CodexAction.InAppPushToTalk or CodexAction.Dictation)
+            {
+                result = StartDictation(request, foreground.WindowHandle);
+            }
+            else if (request.Action == CodexAction.PushToTalk)
             {
                 result = HoldPushToTalk(request, resolution!);
             }
@@ -180,7 +196,16 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         }
     }
 
-    public void ReleaseHeldKeys() => ReleasePushToTalkKeys(force: false);
+    public bool ReleaseHeldKeys()
+    {
+        ReleasePushToTalkKeys(force: false);
+        ReleaseAllDictationOwners();
+
+        lock (_dictationLock)
+        {
+            return _dictationWindows.Count == 0;
+        }
+    }
 
     private ActionExecutionResult ExecuteInternalAction(ActionRequest request)
     {
@@ -193,6 +218,110 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         var message = $"EXECUTED {DescribeRequest(request)}; internal-action";
         _log(message);
         return ActionExecutionResult.Success(message);
+    }
+
+    private ActionExecutionResult StartDictation(ActionRequest request, IntPtr windowHandle)
+    {
+        var owner = DictationOwner(request);
+        if (request.Action == CodexAction.InAppPushToTalk)
+        {
+            lock (_dictationLock)
+            {
+                if (_dictationWindows.ContainsKey(owner))
+                {
+                    return Success(request, null, "accessibility-button=Dictate; hold-already-active");
+                }
+            }
+        }
+
+        var started = _dictationControl.Start(windowHandle);
+        if (!started.Success)
+        {
+            return LogBlocked(request, null, started.Detail);
+        }
+
+        if (request.Action == CodexAction.InAppPushToTalk)
+        {
+            lock (_dictationLock)
+            {
+                _dictationWindows[owner] = started.WindowHandle;
+            }
+        }
+
+        return Success(
+            request,
+            null,
+            request.Action == CodexAction.InAppPushToTalk
+                ? $"{started.Detail}; hold-started"
+                : started.Detail);
+    }
+
+    private ActionExecutionResult ReleaseInAppPushToTalk(ActionRequest request)
+    {
+        if (_safety.DryRun)
+        {
+            var simulated = $"DRY RUN {DescribeRequest(request)}; accessibility-button=Stop dictation; release-only";
+            _log(simulated);
+            return ActionExecutionResult.Simulated(simulated);
+        }
+
+        var owner = DictationOwner(request);
+        IntPtr windowHandle;
+        lock (_dictationLock)
+        {
+            if (!_dictationWindows.TryGetValue(owner, out windowHandle))
+            {
+                return LogBlocked(request, null, "No in-app dictation hold was active for this control.");
+            }
+        }
+
+        var stopped = _dictationControl.Stop(windowHandle);
+        if (!stopped.Success)
+        {
+            return LogBlocked(request, null, stopped.Detail);
+        }
+
+        lock (_dictationLock)
+        {
+            if (_dictationWindows.TryGetValue(owner, out var current)
+                && current == windowHandle)
+            {
+                _dictationWindows.Remove(owner);
+            }
+        }
+
+        var result = Success(request, null, $"{stopped.Detail}; release");
+        _log(result.Message);
+        return result;
+    }
+
+    private void ReleaseAllDictationOwners()
+    {
+        KeyValuePair<(string DeviceId, string Bank, int Button), IntPtr>[] pending;
+        lock (_dictationLock)
+        {
+            pending = _dictationWindows.ToArray();
+        }
+
+        foreach (var (owner, windowHandle) in pending)
+        {
+            var stopped = _dictationControl.Stop(windowHandle);
+            if (!stopped.Success)
+            {
+                _log($"BLOCKED in-app dictation cleanup; error={stopped.Detail}");
+                continue;
+            }
+
+            lock (_dictationLock)
+            {
+                if (_dictationWindows.TryGetValue(owner, out var current)
+                    && current == windowHandle)
+                {
+                    _dictationWindows.Remove(owner);
+                }
+            }
+            _log($"EXECUTED in-app dictation cleanup; {stopped.Detail}");
+        }
     }
 
     private async Task<ActionExecutionResult> OpenWorkingDirectoryAsync(
@@ -376,6 +505,28 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
             _heldPushToTalkResolution = null;
             _heldPushToTalkControls.Clear();
         }
+    }
+
+    private static (string DeviceId, string Bank, int Button) DictationOwner(ActionRequest request) =>
+        (request.DeviceId, request.Bank, request.Button);
+
+    private sealed class DictationOwnerEqualityComparer
+        : IEqualityComparer<(string DeviceId, string Bank, int Button)>
+    {
+        public static DictationOwnerEqualityComparer Instance { get; } = new();
+
+        public bool Equals(
+            (string DeviceId, string Bank, int Button) x,
+            (string DeviceId, string Bank, int Button) y) =>
+            x.Button == y.Button
+            && string.Equals(x.DeviceId, y.DeviceId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Bank, y.Bank, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string DeviceId, string Bank, int Button) owner) =>
+            HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(owner.DeviceId),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(owner.Bank),
+                owner.Button);
     }
 
     private readonly record struct PushToTalkRelease(

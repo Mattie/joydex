@@ -4,5 +4,7 @@ public interface IInjectedKeyStateLifecycle
 {
     void ClearInjectedKeyState();
 
-    void ReleaseHeldKeys();
+    /// <summary>Attempts to release every input hold still owned by the companion.</summary>
+    /// <returns><see langword="true"/> when no tracked hold remains; otherwise <see langword="false"/>.</returns>
+    bool ReleaseHeldKeys();
 }
