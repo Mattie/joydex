@@ -42,8 +42,9 @@ this exact-build compatibility research.
 
 ## Evidence
 
-- The focused executor, keybinding, starter-profile, validation, binding-engine, and worker suite
-  passed 155 tests with no failures or skips.
+- The focused dictation-control, executor, keybinding, starter-profile, validation, binding-engine,
+  and worker suite passed 159 tests with no failures or skips, including immediate-release startup
+  settling and retained-owner retry coverage.
 - A live smoke check invoked `Dictate` through the new production control, observed the button change,
   and invoked `Stop dictation` in the same recorded window successfully.
 - The starter profile and public examples map CM3 button 37 press and release to

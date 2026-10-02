@@ -8,11 +8,16 @@ public readonly record struct CodexDictationControlResult(
     IntPtr WindowHandle,
     string Detail)
 {
+    internal bool ButtonMissing { get; init; }
+
     public static CodexDictationControlResult Completed(IntPtr windowHandle, string detail) =>
         new(true, windowHandle, detail);
 
     public static CodexDictationControlResult Failed(IntPtr windowHandle, string detail) =>
         new(false, windowHandle, detail);
+
+    internal static CodexDictationControlResult Missing(IntPtr windowHandle, string detail) =>
+        new(false, windowHandle, detail) { ButtonMissing = true };
 }
 
 public interface ICodexDictationControl
@@ -25,6 +30,8 @@ public interface ICodexDictationControl
 public sealed partial class WindowsCodexDictationControl : ICodexDictationControl
 {
     private const string StartName = "Dictate";
+    private const int StopSettleAttempts = 21;
+    private const int StopSettleDelayMs = 50;
 
     private static readonly string[] StopNames =
     [
@@ -58,22 +65,17 @@ public sealed partial class WindowsCodexDictationControl : ICodexDictationContro
                 "The recorded Codex window is unavailable.");
         }
 
-        var result = InvokeNamedButton(
-            windowHandle,
-            StopNames,
-            "The recorded Codex window has no enabled dictation stop or cancel button.");
-        if (result.Success)
-        {
-            return result;
-        }
-
         try
         {
-            var root = AutomationElement.FromHandle(windowHandle);
-            if (FindEnabledButton(root, StartName) is not null)
-            {
-                return CodexDictationControlResult.Completed(windowHandle, "dictation-already-stopped");
-            }
+            return WaitForStopTransition(
+                windowHandle,
+                () => InvokeNamedButton(
+                    windowHandle,
+                    StopNames,
+                    "The recorded Codex window has no enabled dictation stop or cancel button."),
+                () => FindEnabledButton(AutomationElement.FromHandle(windowHandle), StartName) is not null,
+                () => Thread.Sleep(StopSettleDelayMs),
+                StopSettleAttempts);
         }
         catch (Exception exception) when (IsAutomationFailure(exception))
         {
@@ -81,8 +83,40 @@ public sealed partial class WindowsCodexDictationControl : ICodexDictationContro
                 windowHandle,
                 $"The recorded Codex window could not be inspected: {exception.Message}");
         }
+    }
 
-        return result;
+    internal static CodexDictationControlResult WaitForStopTransition(
+        IntPtr windowHandle,
+        Func<CodexDictationControlResult> tryStop,
+        Func<bool> isInactive,
+        Action wait,
+        int maxAttempts)
+    {
+        ArgumentNullException.ThrowIfNull(tryStop);
+        ArgumentNullException.ThrowIfNull(isInactive);
+        ArgumentNullException.ThrowIfNull(wait);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxAttempts, 1);
+
+        var inactiveThroughout = true;
+        CodexDictationControlResult result = default;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            result = tryStop();
+            if (result.Success || !result.ButtonMissing)
+            {
+                return result;
+            }
+
+            inactiveThroughout &= isInactive();
+            if (attempt < maxAttempts - 1)
+            {
+                wait();
+            }
+        }
+
+        return inactiveThroughout
+            ? CodexDictationControlResult.Completed(windowHandle, "dictation-already-stopped")
+            : result;
     }
 
     private static CodexDictationControlResult InvokeNamedButton(
@@ -113,7 +147,7 @@ public sealed partial class WindowsCodexDictationControl : ICodexDictationContro
                 return CodexDictationControlResult.Completed(windowHandle, $"accessibility-button={name}");
             }
 
-            return CodexDictationControlResult.Failed(windowHandle, missingMessage);
+            return CodexDictationControlResult.Missing(windowHandle, missingMessage);
         }
         catch (Exception exception) when (IsAutomationFailure(exception))
         {

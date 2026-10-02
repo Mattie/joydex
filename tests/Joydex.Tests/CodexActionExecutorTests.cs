@@ -298,6 +298,30 @@ public sealed class CodexActionExecutorTests
     }
 
     [Fact]
+    public async Task FailedInAppStopKeepsTheRecordedOwnerForRetry()
+    {
+        var dictation = new RecordingDictationControl();
+        dictation.StopResults.Enqueue(
+            CodexDictationControlResult.Failed(dictation.WindowHandle, "Dictation startup is still settling."));
+        var executor = CreateExecutor(
+            new RecordingResolver("Ctrl+Shift+D"),
+            new RecordingInputSender(),
+            dictationControl: dictation);
+
+        await executor.ExecuteAsync(Request(CodexAction.InAppPushToTalk), CancellationToken.None);
+        var firstRelease = await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, trigger: "release"),
+            CancellationToken.None);
+        var secondRelease = await executor.ExecuteAsync(
+            Request(CodexAction.InAppPushToTalk, trigger: "release"),
+            CancellationToken.None);
+
+        Assert.False(firstRelease.Executed);
+        Assert.True(secondRelease.Executed);
+        Assert.Equal([dictation.WindowHandle, dictation.WindowHandle], dictation.StopWindows);
+    }
+
+    [Fact]
     public void StartupCleanupReleasesTheCurrentlyResolvedPushToTalkChord()
     {
         var resolver = new RecordingResolver("Alt+Space", commandId: "globalDictationHold");
@@ -637,6 +661,8 @@ public sealed class CodexActionExecutorTests
 
         public List<IntPtr> StopWindows { get; } = [];
 
+        public Queue<CodexDictationControlResult> StopResults { get; } = [];
+
         public CodexDictationControlResult Start()
         {
             StartCalls++;
@@ -646,7 +672,9 @@ public sealed class CodexActionExecutorTests
         public CodexDictationControlResult Stop(IntPtr windowHandle)
         {
             StopWindows.Add(windowHandle);
-            return CodexDictationControlResult.Completed(windowHandle, "accessibility-button=Stop dictation");
+            return StopResults.TryDequeue(out var result)
+                ? result
+                : CodexDictationControlResult.Completed(windowHandle, "accessibility-button=Stop dictation");
         }
     }
 
