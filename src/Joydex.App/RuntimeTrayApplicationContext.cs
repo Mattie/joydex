@@ -17,6 +17,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private const int MaximumConsecutiveHostExits = 2;
     private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ConfigurationMismatchDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ExitShutdownTimeout = TimeSpan.FromSeconds(5);
     private readonly string _configurationPath;
     private readonly string _dataRoot;
     private readonly string _runtimeHostPath;
@@ -1341,24 +1342,29 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
 
     private async Task ShutdownAndExitAsync(bool shutdownRuntime)
     {
+        var shutdownDelivered = false;
         try
         {
             if (shutdownRuntime && _connection is { } connection)
             {
-                try
-                {
-                    var request = new RuntimeCommandRequest(
-                        Guid.NewGuid(),
-                        RuntimeCommandKind.ShutdownRuntime);
-                    _ = await connection.Rpc.ExecuteCommandAsync(request, CancellationToken.None)
-                        .ConfigureAwait(true);
-                }
-                catch (Exception)
-                {
-                }
+                using var timeout = new CancellationTokenSource(ExitShutdownTimeout);
+                shutdownDelivered = await TryRequestRuntimeShutdownAsync(
+                        connection,
+                        timeout.Token)
+                    .ConfigureAwait(true);
             }
             await _lifetime.CancelAsync().ConfigureAwait(true);
             await _connectTask.ConfigureAwait(true);
+            if (shutdownRuntime && !shutdownDelivered)
+            {
+                shutdownDelivered = await TryReconnectAndRequestRuntimeShutdownAsync()
+                    .ConfigureAwait(true);
+            }
+            if (shutdownRuntime && _startedHost is { } startedHost)
+            {
+                await EnsureStartedRuntimeHostExitedAsync(startedHost, shutdownDelivered)
+                    .ConfigureAwait(true);
+            }
             if (_promptPickerEditor is { IsDisposed: false } promptEditor)
             {
                 await promptEditor.QuiesceCaptureAsync().ConfigureAwait(true);
@@ -1392,6 +1398,117 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             _startedHost?.Dispose();
             _lifetime.Dispose();
             ExitThread();
+        }
+    }
+
+    private async Task<bool> TryReconnectAndRequestRuntimeShutdownAsync()
+    {
+        using var timeout = new CancellationTokenSource(ExitShutdownTimeout);
+        RuntimeClientConnection? connection = null;
+        try
+        {
+            var admission = await RequestAdmissionAsync(timeout.Token).ConfigureAwait(true);
+            if (admission.Status != RuntimeBootstrapRendezvousStatus.Admitted
+                || admission.LaunchTicket is not { } ticket)
+            {
+                return false;
+            }
+            connection = await RuntimeClientConnection.ConnectAsync(
+                    _endpoint,
+                    RuntimeClientKind.Tray,
+                    ticket.Value,
+                    _ui,
+                    cancellationToken: timeout.Token)
+                .ConfigureAwait(true);
+            return await TryRequestRuntimeShutdownAsync(connection, timeout.Token)
+                .ConfigureAwait(true);
+        }
+        catch (Exception exception) when (exception is IOException
+                                          or TimeoutException
+                                          or RuntimeIpcAuthenticationException
+                                          or InvalidDataException
+                                          or InvalidOperationException
+                                          or OperationCanceledException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (connection is not null)
+            {
+                try
+                {
+                    await connection.DisposeAsync().ConfigureAwait(true);
+                }
+                catch (Exception)
+                {
+                }
+            }
+        }
+    }
+
+    private static async Task<bool> TryRequestRuntimeShutdownAsync(
+        RuntimeClientConnection connection,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var request = new RuntimeCommandRequest(
+                Guid.NewGuid(),
+                RuntimeCommandKind.ShutdownRuntime);
+            var result = await connection.Rpc.ExecuteCommandAsync(request, cancellationToken)
+                .ConfigureAwait(true);
+            return result.OperationId == request.OperationId
+                && result.Kind == request.Kind
+                && result.Status == RuntimeCommandStatus.Completed;
+        }
+        catch (Exception exception) when (exception is IOException
+                                          or TimeoutException
+                                          or RuntimeIpcAuthenticationException
+                                          or InvalidDataException
+                                          or InvalidOperationException
+                                          or OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task EnsureStartedRuntimeHostExitedAsync(
+        Process startedHost,
+        bool shutdownDelivered)
+    {
+        try
+        {
+            if (startedHost.HasExited)
+            {
+                return;
+            }
+            if (shutdownDelivered)
+            {
+                try
+                {
+                    await startedHost.WaitForExitAsync()
+                        .WaitAsync(ExitShutdownTimeout)
+                        .ConfigureAwait(true);
+                    return;
+                }
+                catch (TimeoutException)
+                {
+                }
+            }
+
+            // This handle identifies the exact RuntimeHost this tray launched, so the fallback
+            // cannot terminate a different Joydex installation that happens to be running.
+            startedHost.Kill(entireProcessTree: true);
+            await startedHost.WaitForExitAsync()
+                .WaitAsync(ExitShutdownTimeout)
+                .ConfigureAwait(true);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+                                          or NotSupportedException
+                                          or System.ComponentModel.Win32Exception
+                                          or TimeoutException)
+        {
         }
     }
 

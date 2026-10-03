@@ -642,6 +642,51 @@ public sealed class ProductionRuntimeCompositionTests
     }
 
     [Fact]
+    public void VoiceUpdateReloadsDraftsCreatedAfterThePreviousProjection()
+    {
+        using var scratch = new ScratchDirectory();
+        var projector = new ProductionRuntimeUiProjector();
+        var preferences = VoicePePreferences.Default with
+        {
+            AgentWorkspacePath = scratch.Root,
+            DesktopTaskMessagingEnabled = true,
+        };
+        var session = new RuntimeVoiceSnapshot(
+            RuntimeVoiceSessionState.Armed,
+            true,
+            false,
+            true,
+            false,
+            "Armed",
+            null,
+            1);
+        var state = new ProductionVoiceState(session, []);
+        projector.SetActiveVoicePreferences(preferences);
+        projector.PublishVoice(state);
+        Assert.Empty(projector.GetSnapshot().Voice!.Messaging.Drafts);
+
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"),
+            "local",
+            "Target",
+            "idle",
+            null,
+            null,
+            1);
+        var draft = new VoiceTaskOutbox(scratch.Root).Hold(
+            target,
+            "Review this delivery",
+            "voice-session",
+            "Desktop bridge unavailable");
+
+        projector.PublishVoice(state);
+
+        var projected = Assert.Single(projector.GetSnapshot().Voice!.Messaging.Drafts);
+        Assert.Equal(draft.Id, projected.Id);
+        Assert.Equal(draft.Message, projected.MessagePreview);
+    }
+
+    [Fact]
     public void DelayedVoiceStatusAndTaskCatalogKeepTheCurrentActiveTarget()
     {
         var projector = new ProductionRuntimeUiProjector();

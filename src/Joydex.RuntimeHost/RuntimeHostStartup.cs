@@ -325,6 +325,22 @@ internal sealed class RuntimeHostLiveRunner(IRuntimeHostComponentFactory compone
             {
                 engine = await engineTask.ConfigureAwait(false);
                 engineReady.SetResult(engine);
+                if (policy.Mode == RuntimeHostLaunchMode.Production
+                    && !policy.ExistingCompanionInstall)
+                {
+                    var openSettings = await settings.Launcher.OpenAsync(
+                            new RuntimeCommandRequest(
+                                Guid.NewGuid(),
+                                RuntimeCommandKind.OpenSettings),
+                            hostLifetime.Token)
+                        .ConfigureAwait(false);
+                    if (openSettings.Status != RuntimeCommandStatus.Completed)
+                    {
+                        throw new InvalidOperationException(
+                            openSettings.Detail
+                            ?? "Joydex could not open Settings for the new installation.");
+                    }
+                }
                 await WaitForTerminalSignalAsync(
                         engine,
                         runtimeListener,

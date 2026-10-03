@@ -66,6 +66,40 @@ public sealed class RuntimeHostLiveRunnerTests
     }
 
     [Fact]
+    public async Task FreshProductionInstallOpensSettingsAfterTheEngineIsReady()
+    {
+        var policy = CreateProductionPolicy() with { ExistingCompanionInstall = false };
+        var components = new FakeComponents(policy);
+        var runner = new RuntimeHostLiveRunner(components);
+        var run = runner.RunAsync(policy, CancellationToken.None);
+        await components.EngineStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(components.SettingsLauncher.Opened.Task.IsCompleted);
+        components.CompleteEngineStartup();
+        var request = await components.SettingsLauncher.Opened.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(RuntimeCommandKind.OpenSettings, request.Kind);
+        components.Engine.RequestShutdown();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task ExistingProductionInstallLeavesSettingsClosedAtStartup()
+    {
+        var policy = CreateProductionPolicy() with { ExistingCompanionInstall = true };
+        var components = new FakeComponents(policy);
+        var runner = new RuntimeHostLiveRunner(components);
+        var run = runner.RunAsync(policy, CancellationToken.None);
+        await components.EngineStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        components.CompleteEngineStartup();
+        components.Engine.RequestShutdown();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(components.SettingsLauncher.Opened.Task.IsCompleted);
+    }
+
+    [Fact]
     public async Task UnexpectedListenerCompletionIsTerminalAndCleansUpInOrder()
     {
         var components = new FakeComponents(CreateProductionPolicy());
@@ -228,6 +262,7 @@ public sealed class RuntimeHostLiveRunnerTests
         public FakeRuntimeListener Listener { get; private set; } = null!;
         public FakeRendezvous Rendezvous { get; private set; } = null!;
         public FakeEngine Engine { get; } = new();
+        public FakeSettingsLauncher SettingsLauncher { get; } = new();
 
         public IRuntimeOwnershipLeaseFactory PrepareOwnership(RuntimeHostLiveLaunchPolicy _)
         {
@@ -258,9 +293,8 @@ public sealed class RuntimeHostLiveRunnerTests
             IRuntimeHostRuntimeListener __)
         {
             Log.Enqueue("settings");
-            var launcher = new FakeSettingsLauncher();
             return new RuntimeHostSettingsProcessOwner(
-                launcher,
+                SettingsLauncher,
                 new RecordingAsyncDisposable(Log, "settings-dispose"));
         }
 
@@ -423,10 +457,20 @@ public sealed class RuntimeHostLiveRunnerTests
 
     private sealed class FakeSettingsLauncher : IRuntimeSettingsProcessLauncher
     {
+        public TaskCompletionSource<RuntimeCommandRequest> Opened { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
         public Task<RuntimeCommandResult> OpenAsync(
             RuntimeCommandRequest request,
-            CancellationToken runtimeCancellationToken) =>
-            throw new NotSupportedException();
+            CancellationToken runtimeCancellationToken)
+        {
+            runtimeCancellationToken.ThrowIfCancellationRequested();
+            Opened.TrySetResult(request);
+            return Task.FromResult(new RuntimeCommandResult(
+                request.OperationId,
+                request.Kind,
+                RuntimeCommandStatus.Completed));
+        }
     }
 
     private sealed class FakeRpcClient : IRuntimeRpcClient

@@ -175,9 +175,7 @@ internal sealed class ProductionRuntimeUiProjector
         var messaging = ProjectMessaging(
             normalized,
             desktopTasks,
-            desktopBridgeAvailable,
-            previous is not null && !timelineReset ? previous.Messaging.Drafts : null,
-            previous is not null && !timelineReset && previous.Messaging.DraftsTruncated);
+            desktopBridgeAvailable);
         timelineReset |= previous is not null && !IsIncremental(previous.Timeline, timeline);
         var projected = new RuntimeVoiceUiSnapshot(
             ProjectVoiceSession(state.Snapshot),
@@ -292,9 +290,7 @@ internal sealed class ProductionRuntimeUiProjector
     private static RuntimeVoiceMessagingSnapshot ProjectMessaging(
         VoicePePreferences preferences,
         IReadOnlyList<DesktopTaskSummary>? tasks,
-        bool bridgeAvailable,
-        RuntimeVoiceOutboxDraft[]? existingDrafts = null,
-        bool existingDraftsTruncated = false)
+        bool bridgeAvailable)
     {
         var taskArray = (tasks ?? []).Take(RuntimeUiLimits.MaximumVoiceTasks)
             .Select(task => new RuntimeDesktopTask(
@@ -307,7 +303,7 @@ internal sealed class ProductionRuntimeUiProjector
                 task.UpdatedAt,
                 task.Pinned))
             .ToArray();
-        var drafts = existingDrafts ?? LoadDrafts(preferences, out existingDraftsTruncated);
+        var drafts = LoadDrafts(preferences, out var draftsTruncated);
         var selected = CodexTaskReference.TryParse(preferences.VoiceTargetTaskId, out var taskId)
             && !string.IsNullOrWhiteSpace(preferences.VoiceTargetHostId)
                 ? new RuntimeTaskReference(taskId, preferences.VoiceTargetHostId)
@@ -323,7 +319,7 @@ internal sealed class ProductionRuntimeUiProjector
             Limit(preferences.VoiceTargetTaskLabel),
             drafts,
             TasksTruncated: tasks is { Count: > RuntimeUiLimits.MaximumVoiceTasks },
-            DraftsTruncated: existingDraftsTruncated);
+            DraftsTruncated: draftsTruncated);
     }
 
     private static RuntimeVoiceOutboxDraft[] LoadDrafts(
