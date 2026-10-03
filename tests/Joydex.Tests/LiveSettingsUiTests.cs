@@ -343,6 +343,20 @@ public sealed class LiveSettingsUiTests
     }
 
     [Fact]
+    public void ObservationCoalescerReschedulesPendingObservationAfterPostingFails()
+    {
+        var coalescer = new InputObservationCoalescer();
+        coalescer.SelectSource("selected");
+        var selected = Observation("selected", sequence: 1, buttonPressed: false, events: []);
+
+        Assert.True(coalescer.TryQueue(selected));
+        coalescer.CancelScheduledDispatch();
+
+        Assert.True(coalescer.TryQueue(Observation("selected", sequence: 2, buttonPressed: false, events: [])));
+        Assert.Equal(selected, coalescer.TakePending());
+    }
+
+    [Fact]
     public void SettingsSaveKeepsTheCurrentVoiceTargetWithOtherDraftEdits()
     {
         var candidate = VoicePePreferences.Default with

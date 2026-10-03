@@ -1378,9 +1378,17 @@ internal sealed class ConfigurationForm : ThemedForm
 
     private void OnInputObserved(object? sender, InputObservationEventArgs eventArgs)
     {
+        if (IsDisposed || Disposing || !IsHandleCreated)
+        {
+            return;
+        }
+
         if (_inputObservations.TryQueue(eventArgs.Observation))
         {
-            RunOnUiThread(DrainInputObservation);
+            if (!RunOnUiThread(DrainInputObservation))
+            {
+                _inputObservations.CancelScheduledDispatch();
+            }
         }
     }
 
@@ -1427,7 +1435,7 @@ internal sealed class ConfigurationForm : ThemedForm
     }
 
     private void OnCaptureChanged(object? sender, InputCaptureChangedEventArgs eventArgs) =>
-        RunOnUiThread(() => ApplyCaptureChange(eventArgs));
+        _ = RunOnUiThread(() => ApplyCaptureChange(eventArgs));
 
     private void ApplyCaptureChange(InputCaptureChangedEventArgs eventArgs)
     {
@@ -1557,17 +1565,17 @@ internal sealed class ConfigurationForm : ThemedForm
         _cancelCaptureButton.Visible = _captureTarget is not null;
     }
 
-    private void RunOnUiThread(Action action)
+    private bool RunOnUiThread(Action action)
     {
         if (IsDisposed || Disposing || !IsHandleCreated)
         {
-            return;
+            return false;
         }
 
         if (!InvokeRequired)
         {
             action();
-            return;
+            return true;
         }
 
         try
@@ -1579,9 +1587,11 @@ internal sealed class ConfigurationForm : ThemedForm
                     action();
                 }
             });
+            return true;
         }
         catch (InvalidOperationException) when (IsDisposed || Disposing || !IsHandleCreated)
         {
+            return false;
         }
     }
 

@@ -50,7 +50,7 @@ internal sealed class InputObservationCoalescer
                 && _lastAccepted is not null
                 && HasSameVisibleState(_lastAccepted, observation))
             {
-                return false;
+                return TrySchedulePending();
             }
 
             _lastAccepted = observation;
@@ -74,6 +74,26 @@ internal sealed class InputObservationCoalescer
             _dispatchScheduled = false;
             return observation;
         }
+    }
+
+    /// <summary>Allows a pending observation to schedule another UI drain after posting failed.</summary>
+    public void CancelScheduledDispatch()
+    {
+        lock (_gate)
+        {
+            _dispatchScheduled = false;
+        }
+    }
+
+    private bool TrySchedulePending()
+    {
+        if (_pending is null || _dispatchScheduled)
+        {
+            return false;
+        }
+
+        _dispatchScheduled = true;
+        return true;
     }
 
     private static bool HasSameVisibleState(InputObservation left, InputObservation right) =>
