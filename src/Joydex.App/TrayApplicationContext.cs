@@ -549,6 +549,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async void OnReloadConfig(object? sender, EventArgs eventArgs)
     {
+        if (_configuring || _configurationForm is { IsDisposed: false })
+        {
+            return;
+        }
+
         try
         {
             CloseActivityForm();
@@ -557,6 +562,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _recentActivity.Clear();
             await StopWorkersAsync();
             await StopPebbleIndexReceiverAsync().ConfigureAwait(true);
+            if (_inputSourceProvider is not null)
+            {
+                await _inputSourceProvider.DisposeAsync().ConfigureAwait(true);
+                _inputSourceProvider = null;
+            }
 
             StartWorker(showFirstRunNotice: false);
             if (_activeConfig?.Safety.DryRun == true)
@@ -572,7 +582,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async void OnToggleDryRun(object? sender, EventArgs eventArgs)
     {
-        if (_demoMode || _configuring || _activeConfig is null)
+        if (_demoMode
+            || _configuring
+            || _configurationForm is { IsDisposed: false }
+            || _activeConfig is null)
         {
             return;
         }
@@ -619,7 +632,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         finally
         {
-            _modeItem.Enabled = _activeConfig is not null;
+            _modeItem.Enabled = !_demoMode
+                && _configurationForm is not { IsDisposed: false }
+                && _activeConfig is not null;
         }
     }
 
@@ -856,6 +871,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
             _configurationForm = form;
             form.FormClosed += OnConfigurationFormClosed;
+            _modeItem.Enabled = false;
             _promptPickersItem.Enabled = false;
             if (!_demoMode)
             {
@@ -871,6 +887,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _configurationForm = null;
                 failedForm.Dispose();
             }
+            _modeItem.Enabled = !_demoMode && _activeConfig is not null;
             _promptPickersItem.Enabled = !_demoMode;
             _log.Write($"Configuration window error: {exception}");
             _notifyIcon.ShowBalloonTip(
@@ -977,6 +994,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             finally
             {
                 _configuring = false;
+                _modeItem.Enabled = !_demoMode && _activeConfig is not null;
                 _promptPickersItem.Enabled = !_demoMode;
                 RefreshVoicePeMenu();
             }
@@ -1587,7 +1605,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _activeConfig = config;
             _modeItem.Text = _demoMode ? "Dry run (locked for demo)" : "Dry run";
             _modeItem.Checked = config.Safety.DryRun;
-            _modeItem.Enabled = !_demoMode;
+            _modeItem.Enabled = !_demoMode
+                && _configurationForm is not { IsDisposed: false };
             _modeItem.ForeColor = SystemColors.ControlText;
             _testControlsItem.Enabled = config.Safety.DryRun;
             _testingAdvancedMenu.Text = _demoMode

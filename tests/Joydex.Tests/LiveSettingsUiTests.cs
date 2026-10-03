@@ -311,6 +311,54 @@ public sealed class LiveSettingsUiTests
         }
     }
 
+    [Fact]
+    public void ObservationCoalescerFiltersOtherSourcesAndRepeatedIdlePolls()
+    {
+        var coalescer = new InputObservationCoalescer();
+        coalescer.SelectSource("selected");
+        var selected = Observation("selected", sequence: 1, buttonPressed: false, events: []);
+
+        Assert.False(coalescer.TryQueue(Observation("other", sequence: 2, buttonPressed: true, events: [])));
+        Assert.True(coalescer.TryQueue(selected));
+        Assert.False(coalescer.TryQueue(Observation("selected", sequence: 3, buttonPressed: false, events: [])));
+        Assert.Equal(selected, coalescer.TakePending());
+        Assert.False(coalescer.TryQueue(Observation("selected", sequence: 4, buttonPressed: false, events: [])));
+    }
+
+    [Fact]
+    public void ObservationCoalescerKeepsEdgesWhileReplacingThePendingSnapshot()
+    {
+        var coalescer = new InputObservationCoalescer();
+        coalescer.SelectSource("selected");
+        var pressed = new JoystickEvent(JoystickEventKind.ButtonPressed, 0, 1);
+        var released = new JoystickEvent(JoystickEventKind.ButtonReleased, 0, 0);
+
+        Assert.True(coalescer.TryQueue(Observation("selected", 1, buttonPressed: true, [pressed])));
+        Assert.False(coalescer.TryQueue(Observation("selected", 2, buttonPressed: false, [released])));
+
+        var pending = Assert.IsType<InputObservation>(coalescer.TakePending());
+        Assert.False(pending.Snapshot.Buttons[0]);
+        Assert.Equal([pressed, released], pending.Events);
+        Assert.Equal(2, pending.Sequence);
+    }
+
+    private static InputObservation Observation(
+        string sourceId,
+        long sequence,
+        bool buttonPressed,
+        IReadOnlyList<JoystickEvent> events) => new(
+            sequence,
+            new InputSourceState(
+                new InputSourceDescriptor(sourceId, sourceId),
+                Generation: 1,
+                Connected: true),
+            new JoystickSnapshot(
+                DateTimeOffset.UtcNow,
+                [buttonPressed],
+                [-1],
+                [0]),
+            events);
+
     private static CompanionConfig Config(Guid instanceGuid, string deviceId) => new()
     {
         Device = new DeviceSelector

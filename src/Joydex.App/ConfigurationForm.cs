@@ -19,6 +19,7 @@ internal sealed class ConfigurationForm : ThemedForm
     private readonly RoomVoiceSettingsControl? _roomVoiceSettings;
     private readonly PebbleIndexSettingsControl? _pebbleIndexSettings;
     private readonly Func<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?, bool> _saveConfiguration;
+    private readonly InputObservationCoalescer _inputObservations = new();
     private readonly ComboBox _deviceCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label _connectionLabel = new() { AutoSize = true, Text = "Looking for controller..." };
     private readonly Label _inputLabel = new() { AutoSize = true, Text = "Held buttons: none" };
@@ -156,6 +157,7 @@ internal sealed class ConfigurationForm : ThemedForm
     protected override void OnFormClosed(FormClosedEventArgs eventArgs)
     {
         CancelCapture();
+        _inputObservations.SelectSource(null);
         _promptPickerEditor?.Close();
         _promptPickerEditor?.Dispose();
         if (_inputClient is not null)
@@ -1318,10 +1320,12 @@ internal sealed class ConfigurationForm : ThemedForm
         _inputLabel.Text = "Held buttons: none";
         if (_deviceCombo.SelectedItem is not RuntimeInputSourceCatalogEntry selected)
         {
+            _inputObservations.SelectSource(null);
             _connectionLabel.Text = "No DirectInput game controller is available.";
             return;
         }
 
+        _inputObservations.SelectSource(selected.Source.SourceId);
         var state = _inputClient?.GetSourceState(selected.Source.SourceId);
         _connectionLabel.Text = state?.Connected == true
             ? $"Observed by Joydex: {selected.Source.DisplayName}."
@@ -1372,8 +1376,21 @@ internal sealed class ConfigurationForm : ThemedForm
         return true;
     }
 
-    private void OnInputObserved(object? sender, InputObservationEventArgs eventArgs) =>
-        RunOnUiThread(() => ApplyObservation(eventArgs.Observation));
+    private void OnInputObserved(object? sender, InputObservationEventArgs eventArgs)
+    {
+        if (_inputObservations.TryQueue(eventArgs.Observation))
+        {
+            RunOnUiThread(DrainInputObservation);
+        }
+    }
+
+    private void DrainInputObservation()
+    {
+        if (_inputObservations.TakePending() is { } observation)
+        {
+            ApplyObservation(observation);
+        }
+    }
 
     private void ApplyObservation(InputObservation observation)
     {
