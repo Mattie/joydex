@@ -9,6 +9,34 @@ public sealed class TaskAlertCoordinatorTests
     private static readonly string AttentionKey = new('B', 64);
 
     [Fact]
+    public async Task ActivePreferencesConstructorDoesNotReadOrRewriteDesiredPreferences()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "joydex-coordinator-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var preferencesPath = Path.Combine(directory, "task-alerts.json");
+        const string desiredContents = "pending desired settings";
+        File.WriteAllText(preferencesPath, desiredContents);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(
+                preferencesPath,
+                new TaskAlertPreferences(Enabled: false, Bank: 99));
+
+            var snapshot = coordinator.GetSnapshot();
+            Assert.False(snapshot.Enabled);
+            Assert.Equal(5, snapshot.Bank);
+            Assert.Equal(desiredContents, File.ReadAllText(preferencesPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task PublishesChangedSnapshotWhenOverflowEventIsDropped()
     {
         var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));

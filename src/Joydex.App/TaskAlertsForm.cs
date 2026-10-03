@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Joydex.Contracts;
 using Joydex.Core.TaskAlerts;
 using Joydex.Windows.TaskAlerts;
 
@@ -8,12 +9,15 @@ internal sealed class TaskAlertsForm : ThemedForm
 {
     private static readonly Size PreferredMinimumSize = new(820, 640);
     private static readonly Size PreferredWindowSize = new(1100, 720);
-    private readonly TaskAlertCoordinator _coordinator;
-    private readonly CodexHookManager _hooks;
-    private readonly string _relayPath;
+    private readonly TaskAlertCoordinator? _coordinator;
+    private readonly CodexHookManager? _hooks;
+    private readonly RuntimeTaskAlertsConnectionServices? _runtimeServices;
+    private readonly string? _relayPath;
     private readonly string _linkToolProfilePath;
-    private readonly Func<bool, Task> _setEnabled;
-    private readonly Func<TaskAlertLedOptions, Task> _setLedOutput;
+    private readonly Func<TaskAlertSnapshot> _getSnapshot;
+    private readonly Func<bool, Guid, Task> _setEnabled;
+    private readonly Func<TaskAlertLedOptions, Guid, Task> _setLedOutput;
+    private readonly Func<TaskAlertSuppressionScope, string, Guid, Task<bool>> _addSuppression;
     private readonly CheckBox _enabled;
     private readonly Label _bank;
     private readonly Label _dropped;
@@ -39,6 +43,7 @@ internal sealed class TaskAlertsForm : ThemedForm
     private bool _eventStreamSelected;
     private bool _updating;
     private bool _keepInitialSelectionForDocumentation;
+    private int _recoveringPendingOperations;
     private ContextMenuStrip? _ignoreMenu;
 
     public TaskAlertsForm(
@@ -48,17 +53,35 @@ internal sealed class TaskAlertsForm : ThemedForm
         string linkToolProfilePath,
         Func<bool, Task> setEnabled,
         Func<TaskAlertLedOptions, Task>? setLedOutput = null)
+        : this(CreateLegacyServices(
+            coordinator,
+            hooks,
+            relayPath,
+            linkToolProfilePath,
+            setEnabled,
+            setLedOutput))
     {
-        _coordinator = coordinator;
-        _hooks = hooks;
-        _relayPath = relayPath;
-        _linkToolProfilePath = linkToolProfilePath;
-        _setEnabled = setEnabled;
-        _setLedOutput = setLedOutput ?? (options =>
-        {
-            _coordinator.SetLedOutput(options);
-            return Task.CompletedTask;
-        });
+    }
+
+    /// <summary>Creates a presentation-only Task Alerts window backed by runtime authority.</summary>
+    public TaskAlertsForm(
+        RuntimeTaskAlertsConnectionServices runtimeServices,
+        string linkToolProfilePath)
+        : this(CreateRuntimeServices(runtimeServices, linkToolProfilePath))
+    {
+    }
+
+    private TaskAlertsForm(FormServices services)
+    {
+        _coordinator = services.Coordinator;
+        _hooks = services.Hooks;
+        _runtimeServices = services.RuntimeServices;
+        _relayPath = services.RelayPath;
+        _linkToolProfilePath = services.LinkToolProfilePath;
+        _getSnapshot = services.GetSnapshot;
+        _setEnabled = services.SetEnabled;
+        _setLedOutput = services.SetLedOutput;
+        _addSuppression = services.AddSuppression;
 
         Text = "Joydex Task Alerts";
         StartPosition = FormStartPosition.CenterScreen;
@@ -91,7 +114,7 @@ internal sealed class TaskAlertsForm : ThemedForm
                 _enabled.Enabled = false;
                 try
                 {
-                    await _setEnabled(_enabled.Checked);
+                    await _setEnabled(_enabled.Checked, Guid.NewGuid());
                 }
                 catch (Exception exception)
                 {
@@ -104,7 +127,7 @@ internal sealed class TaskAlertsForm : ThemedForm
                 finally
                 {
                     _enabled.Enabled = true;
-                    UpdateSnapshot(_coordinator.GetSnapshot());
+                    UpdateSnapshot(_getSnapshot());
                 }
             }
         };
@@ -485,18 +508,33 @@ internal sealed class TaskAlertsForm : ThemedForm
         TaskAlertSnapshot initialSnapshot;
         lock (_snapshotSync)
         {
-            _coordinator.Changed += OnCoordinatorChanged;
-            initialSnapshot = _coordinator.GetSnapshot();
+            if (_coordinator is not null)
+            {
+                _coordinator.Changed += OnCoordinatorChanged;
+            }
+            else
+            {
+                _runtimeServices!.Changed += OnRuntimeChanged;
+            }
+            initialSnapshot = _getSnapshot();
             _latestSnapshot = initialSnapshot;
         }
 
         try
         {
             UpdateSnapshot(initialSnapshot);
+            RequestPendingOperationRecovery();
         }
         catch
         {
-            _coordinator.Changed -= OnCoordinatorChanged;
+            if (_coordinator is not null)
+            {
+                _coordinator.Changed -= OnCoordinatorChanged;
+            }
+            else
+            {
+                _runtimeServices!.Changed -= OnRuntimeChanged;
+            }
             throw;
         }
     }
@@ -567,7 +605,14 @@ internal sealed class TaskAlertsForm : ThemedForm
     {
         if (disposing)
         {
-            _coordinator.Changed -= OnCoordinatorChanged;
+            if (_coordinator is not null)
+            {
+                _coordinator.Changed -= OnCoordinatorChanged;
+            }
+            if (_runtimeServices is not null)
+            {
+                _runtimeServices.Changed -= OnRuntimeChanged;
+            }
             _toolTips.Dispose();
             _ignoreMenu?.Dispose();
         }
@@ -625,6 +670,47 @@ internal sealed class TaskAlertsForm : ThemedForm
         }
     }
 
+    private void OnRuntimeChanged(object? sender, RuntimeTaskAlertsPresentationState state)
+    {
+        UpdateHookStatus(state.Hooks);
+        OnCoordinatorChanged(sender, state.Snapshot);
+        if (state.IsConnected)
+        {
+            RequestPendingOperationRecovery();
+        }
+    }
+
+    private void RequestPendingOperationRecovery()
+    {
+        if (_runtimeServices is not null
+            && !IsDisposed
+            && !Disposing
+            && Interlocked.CompareExchange(ref _recoveringPendingOperations, 1, 0) == 0)
+        {
+            _ = RecoverPendingOperationsAsync();
+        }
+    }
+
+    private async Task RecoverPendingOperationsAsync()
+    {
+        try
+        {
+            _ = await RuntimeTaskAlertsRecoveryPolicy
+                .RecoverUntilSettledAsync(_runtimeServices!)
+                .ConfigureAwait(true);
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidOperationException
+            or OperationCanceledException)
+        {
+            // A later connection change provides another safe reconciliation opportunity.
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _recoveringPendingOperations, 0);
+        }
+    }
+
     protected override void OnVisibleChanged(EventArgs eventArgs)
     {
         base.OnVisibleChanged(eventArgs);
@@ -637,12 +723,14 @@ internal sealed class TaskAlertsForm : ThemedForm
         if (Visible && latest is not null && !IsDisposed && !Disposing)
         {
             UpdateSnapshot(latest);
+            RequestPendingOperationRecovery();
         }
     }
 
     protected override void OnShown(EventArgs eventArgs)
     {
         base.OnShown(eventArgs);
+        RequestPendingOperationRecovery();
         if (_keepInitialSelectionForDocumentation)
         {
             return;
@@ -845,7 +933,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         _ignoreMenu.Show(_ignoreSelected, new Point(0, _ignoreSelected.Height));
     }
 
-    private void IgnoreSelectedTask(SuppressionTarget target)
+    private async void IgnoreSelectedTask(SuppressionTarget target)
     {
         if (MessageBox.Show(
                 $"Ignore this exact Codex task?\n\n{target.SessionId}\n\n" +
@@ -858,12 +946,13 @@ internal sealed class TaskAlertsForm : ThemedForm
             return;
         }
 
-        TryChangeSuppression(() => _coordinator.AddSuppression(
+        await TryChangeSuppressionAsync(() => _addSuppression(
             TaskAlertSuppressionScope.Task,
-            target.SessionId));
+            target.SessionId,
+            Guid.NewGuid()));
     }
 
-    private void IgnoreSelectedWorkspace(SuppressionTarget target)
+    private async void IgnoreSelectedWorkspace(SuppressionTarget target)
     {
         if (string.IsNullOrWhiteSpace(target.Workspace))
         {
@@ -881,28 +970,32 @@ internal sealed class TaskAlertsForm : ThemedForm
             return;
         }
 
-        TryChangeSuppression(() => _coordinator.AddSuppression(
+        await TryChangeSuppressionAsync(() => _addSuppression(
             TaskAlertSuppressionScope.Workspace,
-            target.Workspace));
+            target.Workspace,
+            Guid.NewGuid()));
     }
 
     private void ShowIgnoredSources()
     {
-        using var form = new IgnoredTaskSourcesForm(_coordinator);
+        using var form = _coordinator is not null
+            ? new IgnoredTaskSourcesForm(_coordinator)
+            : new IgnoredTaskSourcesForm(_runtimeServices!);
         _ = form.ShowDialog(this);
-        UpdateSnapshot(_coordinator.GetSnapshot());
+        UpdateSnapshot(_getSnapshot());
     }
 
-    private static void TryChangeSuppression(Func<bool> change)
+    private static async Task TryChangeSuppressionAsync(Func<Task<bool>> change)
     {
         try
         {
-            _ = change();
+            _ = await change().ConfigureAwait(true);
         }
         catch (Exception exception) when (exception is IOException
             or UnauthorizedAccessException
             or ArgumentException
-            or InvalidOperationException)
+            or InvalidOperationException
+            or OperationCanceledException)
         {
             MessageBox.Show(
                 exception.Message,
@@ -933,11 +1026,23 @@ internal sealed class TaskAlertsForm : ThemedForm
         ? $"P{TaskAlertSlots.PageIndex(slot)}"
         : $"O{TaskAlertSlots.PageIndex(slot)}";
 
-    private void OnInstallHooks(object? sender, EventArgs eventArgs)
+    private async void OnInstallHooks(object? sender, EventArgs eventArgs)
     {
         try
         {
-            _hooks.InstallOrRepair(_relayPath);
+            if (_runtimeServices is null)
+            {
+                _hooks!.InstallOrRepair(_relayPath!);
+            }
+            else
+            {
+                await RuntimeTaskAlertsRecoveryPolicy
+                    .ReconcileBeforeNewActionAsync(_runtimeServices)
+                    .ConfigureAwait(true);
+                EnsureSuccessful(await _runtimeServices
+                    .InstallHooksAsync(Guid.NewGuid())
+                    .ConfigureAwait(true));
+            }
             UpdateHookStatus();
             MessageBox.Show(
                 "The three Joydex handlers were merged into hooks.json. Codex may ask you to trust them on first use.",
@@ -951,11 +1056,23 @@ internal sealed class TaskAlertsForm : ThemedForm
         }
     }
 
-    private void OnRemoveHooks(object? sender, EventArgs eventArgs)
+    private async void OnRemoveHooks(object? sender, EventArgs eventArgs)
     {
         try
         {
-            _hooks.Remove();
+            if (_runtimeServices is null)
+            {
+                _hooks!.Remove();
+            }
+            else
+            {
+                await RuntimeTaskAlertsRecoveryPolicy
+                    .ReconcileBeforeNewActionAsync(_runtimeServices)
+                    .ConfigureAwait(true);
+                EnsureSuccessful(await _runtimeServices
+                    .RemoveHooksAsync(Guid.NewGuid())
+                    .ConfigureAwait(true));
+            }
             UpdateHookStatus();
         }
         catch (Exception exception)
@@ -966,9 +1083,26 @@ internal sealed class TaskAlertsForm : ThemedForm
 
     private void UpdateHookStatus()
     {
-        var status = InspectHookStatus(_hooks, _relayPath);
+        if (_runtimeServices is not null)
+        {
+            UpdateHookStatus(_runtimeServices.Current.Hooks);
+            return;
+        }
+
+        var status = InspectHookStatus(_hooks!, _relayPath!);
         _hookStatus.Text = status.Text;
         _toolTips.SetToolTip(_hookStatus, status.Error ?? string.Empty);
+    }
+
+    private void UpdateHookStatus(RuntimeTaskAlertHookStatus status)
+    {
+        _hookStatus.Text = status.State switch
+        {
+            RuntimeTaskAlertHookState.Installed => "Hooks: installed",
+            RuntimeTaskAlertHookState.RepairNeeded => "Hooks: repair needed",
+            _ => "Hooks: not installed",
+        };
+        _toolTips.SetToolTip(_hookStatus, status.Detail ?? string.Empty);
     }
 
     internal static (string Text, string? Error) InspectHookStatus(CodexHookManager hooks, string relayPath)
@@ -1018,14 +1152,15 @@ internal sealed class TaskAlertsForm : ThemedForm
 
     private async void OnConfigureLeds(object? sender, EventArgs eventArgs)
     {
-        using var form = new TaskAlertLedSettingsForm(_coordinator.GetLedOutput());
+        var currentLedOutput = _getSnapshot().EffectiveLedOutput;
+        using var form = new TaskAlertLedSettingsForm(currentLedOutput);
         if (form.ShowDialog(this) != DialogResult.OK)
         {
             return;
         }
 
         if (form.Options.Mode == TaskAlertLedOutputMode.DirectHid
-            && _coordinator.GetLedOutput().Mode != TaskAlertLedOutputMode.DirectHid
+            && currentLedOutput.Mode != TaskAlertLedOutputMode.DirectHid
             && MessageBox.Show(
                 this,
                 "Direct USB will take temporary host control of the CM3 and Alpha LEDs. " +
@@ -1041,8 +1176,8 @@ internal sealed class TaskAlertsForm : ThemedForm
         try
         {
             Enabled = false;
-            await _setLedOutput(form.Options);
-            UpdateSnapshot(_coordinator.GetSnapshot());
+            await _setLedOutput(form.Options, Guid.NewGuid());
+            UpdateSnapshot(_getSnapshot());
             if (form.Options.Mode == TaskAlertLedOutputMode.LinkTool)
             {
                 MessageBox.Show(
@@ -1067,6 +1202,105 @@ internal sealed class TaskAlertsForm : ThemedForm
             Enabled = true;
         }
     }
+
+    private static FormServices CreateLegacyServices(
+        TaskAlertCoordinator coordinator,
+        CodexHookManager hooks,
+        string relayPath,
+        string linkToolProfilePath,
+        Func<bool, Task> setEnabled,
+        Func<TaskAlertLedOptions, Task>? setLedOutput)
+    {
+        ArgumentNullException.ThrowIfNull(coordinator);
+        ArgumentNullException.ThrowIfNull(hooks);
+        ArgumentException.ThrowIfNullOrWhiteSpace(relayPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(linkToolProfilePath);
+        ArgumentNullException.ThrowIfNull(setEnabled);
+        return new FormServices(
+            coordinator,
+            hooks,
+            RuntimeServices: null,
+            relayPath,
+            linkToolProfilePath,
+            coordinator.GetSnapshot,
+            (enabled, _) => setEnabled(enabled),
+            (options, _) => SetLegacyLedOutputAsync(coordinator, setLedOutput, options),
+            (scope, value, _) => Task.FromResult(coordinator.AddSuppression(scope, value)));
+    }
+
+    private static FormServices CreateRuntimeServices(
+        RuntimeTaskAlertsConnectionServices runtimeServices,
+        string linkToolProfilePath)
+    {
+        ArgumentNullException.ThrowIfNull(runtimeServices);
+        ArgumentException.ThrowIfNullOrWhiteSpace(linkToolProfilePath);
+        return new FormServices(
+            Coordinator: null,
+            Hooks: null,
+            runtimeServices,
+            RelayPath: null,
+            linkToolProfilePath,
+            () => runtimeServices.Current.Snapshot,
+            async (enabled, operationId) =>
+            {
+                await RuntimeTaskAlertsRecoveryPolicy
+                    .ReconcileBeforeNewActionAsync(runtimeServices)
+                    .ConfigureAwait(true);
+                EnsureSuccessful(
+                    await runtimeServices.SetEnabledAsync(enabled, operationId).ConfigureAwait(true));
+            },
+            async (options, operationId) =>
+            {
+                await RuntimeTaskAlertsRecoveryPolicy
+                    .ReconcileBeforeNewActionAsync(runtimeServices)
+                    .ConfigureAwait(true);
+                EnsureSuccessful(
+                    await runtimeServices.SetLedOutputAsync(options, operationId).ConfigureAwait(true));
+            },
+            async (scope, value, operationId) =>
+            {
+                await RuntimeTaskAlertsRecoveryPolicy
+                    .ReconcileBeforeNewActionAsync(runtimeServices)
+                    .ConfigureAwait(true);
+                var result = await runtimeServices
+                    .AddSuppressionAsync(scope, value, operationId)
+                    .ConfigureAwait(true);
+                EnsureSuccessful(result);
+                return result.Outcome != RuntimeTaskAlertsActionOutcome.NoChanges;
+            });
+    }
+
+    private static Task SetLegacyLedOutputAsync(
+        TaskAlertCoordinator coordinator,
+        Func<TaskAlertLedOptions, Task>? setLedOutput,
+        TaskAlertLedOptions options)
+    {
+        if (setLedOutput is not null)
+        {
+            return setLedOutput(options);
+        }
+        coordinator.SetLedOutput(options);
+        return Task.CompletedTask;
+    }
+
+    private static void EnsureSuccessful(RuntimeTaskAlertsActionResult result)
+    {
+        if (!result.Succeeded)
+        {
+            throw new InvalidOperationException(result.Detail);
+        }
+    }
+
+    private sealed record FormServices(
+        TaskAlertCoordinator? Coordinator,
+        CodexHookManager? Hooks,
+        RuntimeTaskAlertsConnectionServices? RuntimeServices,
+        string? RelayPath,
+        string LinkToolProfilePath,
+        Func<TaskAlertSnapshot> GetSnapshot,
+        Func<bool, Guid, Task> SetEnabled,
+        Func<TaskAlertLedOptions, Guid, Task> SetLedOutput,
+        Func<TaskAlertSuppressionScope, string, Guid, Task<bool>> AddSuppression);
 
     private sealed record SuppressionTarget(string SessionId, string? Workspace);
 }

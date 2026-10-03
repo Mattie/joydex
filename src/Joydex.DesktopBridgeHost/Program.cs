@@ -303,12 +303,12 @@ internal static class DesktopBridgeProgram
         },
     };
 
-    private static async Task<object> BuildVoiceToolResponseAsync(
+    internal static async Task<object> BuildVoiceToolResponseAsync(
         JsonElement request,
         JsonElement id,
         string preferencesPath,
         string sourceThreadId,
-        DesktopTaskBridgeClient bridge,
+        IDesktopTaskBridgeClient bridge,
         VoiceTaskDeliveryDeduplicator recentDeliveries,
         CancellationToken cancellationToken)
     {
@@ -335,13 +335,13 @@ internal static class DesktopBridgeProgram
         VoicePePreferences preferences;
         try
         {
-            preferences = VoicePePreferencesStore.LoadOrCreate(preferencesPath);
+            preferences = ReadVoiceToolPreferences(preferencesPath);
         }
         catch (Exception exception)
         {
             return VoiceToolResult(id, true, $"held for review: Room Voice settings are unavailable ({exception.Message}).");
         }
-        if (!preferences.DesktopTaskMessagingEnabled)
+        if (!preferences.Enabled || !preferences.DesktopTaskMessagingEnabled)
         {
             return VoiceToolResult(id, true, "held for review: Desktop task messaging is disabled in Room Voice settings.");
         }
@@ -422,6 +422,9 @@ internal static class DesktopBridgeProgram
             }
         }
     }
+
+    internal static VoicePePreferences ReadVoiceToolPreferences(string preferencesPath) =>
+        VoicePePreferencesStore.LoadExisting(preferencesPath);
 
     private static DesktopTaskSummary? BuildSavedTarget(VoicePePreferences preferences, string? spokenTarget)
     {

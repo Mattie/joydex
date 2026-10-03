@@ -1,8 +1,10 @@
 # Settings that stays open while Joydex runs
 
-Status: proposed. Recommended choice: **KEEPFORMS**, with a separate runtime process.
+Status: **KEEPFORMS** selected; HOSTSEAM completed and PROCESSUI in progress.
+See the accepted [PROCESSUI contract](13-process-settings-contract.md) and current
+[milestone evidence](12-milestone-demos.md).
 
-## What currently interrupts operation
+## Baseline before HOSTSEAM
 
 TrayApplicationContext.ShowConfigurationAsync explicitly asks to end an active Room Voice session, stops it, closes activity/maps, dismisses prompt selection, marks Voice paused, and calls StopWorkersAsync before showing ConfigurationForm.ShowDialog. That shutdown covers Voice, wireless panel and controller workers. Pebble and the shared Desktop broker already have more independent lifetimes.
 

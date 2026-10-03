@@ -31,6 +31,9 @@
     <ProjectReference Include="..\..\src\Joydex.Windows\Joydex.Windows.csproj" />
     <ProjectReference Include="..\..\src\Joydex.Virpil\Joydex.Virpil.csproj" />
     <ProjectReference Include="..\..\src\Joydex.App\Joydex.App.csproj" />
+    <ProjectReference Include="..\..\src\Joydex.Contracts\Joydex.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Joydex.RuntimeHost\Joydex.RuntimeHost.csproj"
+                      Aliases="RuntimeHost" />
   </ItemGroup>
 
   <ItemGroup>

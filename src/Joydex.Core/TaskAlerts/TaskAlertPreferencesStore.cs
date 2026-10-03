@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text;
 
 namespace Joydex.Core.TaskAlerts;
 
@@ -58,8 +59,15 @@ public static class TaskAlertPreferencesStore
             return TaskAlertPreferences.Default;
         }
 
-        var json = File.ReadAllText(path);
-        var preferences = JsonSerializer.Deserialize<TaskAlertPreferences>(json, JsonOptions)
+        return ParseExisting(File.ReadAllBytes(path));
+    }
+
+    internal static TaskAlertPreferences ParseExisting(byte[] documentBytes)
+    {
+        ArgumentNullException.ThrowIfNull(documentBytes);
+        using var stream = new MemoryStream(documentBytes, writable: false);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var preferences = JsonSerializer.Deserialize<TaskAlertPreferences>(reader.ReadToEnd(), JsonOptions)
             ?? throw new InvalidDataException("The task-alert settings file was empty.");
         return preferences.Normalize();
     }

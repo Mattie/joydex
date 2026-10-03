@@ -9,7 +9,7 @@ internal sealed class PromptPickerEditorForm : ThemedForm
 {
     private readonly string _configPath;
     private readonly IntPtr _cooperativeWindowHandle;
-    private readonly CompanionConfig _original;
+    private CompanionConfig _original;
     private readonly List<MutableDevice> _devices;
     private readonly List<MutablePicker> _pickers;
     private readonly ComboBox _pickerCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
@@ -25,7 +25,9 @@ internal sealed class PromptPickerEditorForm : ThemedForm
     private readonly ModernDataGridView _deviceGrid = new();
     private readonly DirectInputJoystickSource? _captureSource;
     private readonly IConfigurationInputClient? _inputClient;
-    private readonly IReadOnlyList<RuntimeInputSourceCatalogEntry> _runtimeSources;
+    private readonly IConfigurationInputSession? _inputSession;
+    private IReadOnlyList<RuntimeInputSourceCatalogEntry> _runtimeSources;
+    private readonly Func<CompanionConfig, CancellationToken, Task<RuntimeSettingsWriteResult>>? _applyConfiguration;
     private readonly System.Windows.Forms.Timer _captureTimer = new() { Interval = 16 };
     private readonly List<EditorNavigationPage> _navigationPages = [];
     private readonly bool _pickerOnly;
@@ -33,11 +35,14 @@ internal sealed class PromptPickerEditorForm : ThemedForm
     private bool _captureResourcesDisposed;
     private Action<int>? _captureTarget;
     private InputCaptureLease? _captureLease;
-    private string? _captureSourceId;
+    private CancellationTokenSource? _captureStartCancellation;
+    private Task? _captureStartTask;
     private DateTimeOffset _captureReadyAt;
     private int _currentPickerIndex = -1;
     private int _currentPromptIndex = -1;
     private bool _refreshingPromptSelection;
+    private bool _closingAfterCaptureCancellation;
+    private bool _closeCancellationStarted;
     internal Control EmbeddedPickerPage { get; }
 
     public PromptPickerEditorForm(
@@ -45,14 +50,18 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         IntPtr cooperativeWindowHandle,
         bool pickerOnly = false,
         CompanionConfig? initialConfig = null,
-        IConfigurationInputClient? inputClient = null)
+        IConfigurationInputClient? inputClient = null,
+        IConfigurationInputSession? inputSession = null,
+        Func<CompanionConfig, CancellationToken, Task<RuntimeSettingsWriteResult>>? applyConfiguration = null)
     {
         _pickerOnly = pickerOnly;
         _configPath = configPath;
         _cooperativeWindowHandle = cooperativeWindowHandle;
         _original = CompanionConfigNormalizer.Normalize(initialConfig ?? ConfigStore.LoadOrCreate(configPath));
         _inputClient = inputClient;
-        if (_inputClient is null)
+        _inputSession = inputSession ?? inputClient as IConfigurationInputSession;
+        _applyConfiguration = applyConfiguration;
+        if (_inputSession is null)
         {
             _captureSource = new DirectInputJoystickSource(cooperativeWindowHandle);
             _runtimeSources = [];
@@ -60,9 +69,9 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         }
         else
         {
-            _runtimeSources = _inputClient.RefreshSources();
+            _runtimeSources = _inputClient?.RefreshSources() ?? [];
             _devices = BuildDevices(_original, _runtimeSources);
-            _inputClient.CaptureChanged += OnRuntimeCaptureChanged;
+            _inputSession.CaptureChanged += OnRuntimeCaptureChanged;
         }
         _pickers = _original.PromptPickers.Select(MutablePicker.FromConfig).ToList();
 
@@ -148,17 +157,41 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         if (disposing && !_captureResourcesDisposed)
         {
             _captureResourcesDisposed = true;
-            CancelRuntimeCapture();
+            _captureStartCancellation?.Cancel();
+            _captureStartCancellation?.Dispose();
+            _captureStartCancellation = null;
+            _captureStartTask = null;
+            _captureLease = null;
+            _captureTarget = null;
             _captureTimer.Stop();
             _captureTimer.Dispose();
             _captureSource?.Dispose();
-            if (_inputClient is not null)
+            if (_inputSession is not null)
             {
-                _inputClient.CaptureChanged -= OnRuntimeCaptureChanged;
+                _inputSession.CaptureChanged -= OnRuntimeCaptureChanged;
             }
         }
 
         base.Dispose(disposing);
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs eventArgs)
+    {
+        if (!_pickerOnly
+            && !_closingAfterCaptureCancellation
+            && CaptureIsInProgress)
+        {
+            eventArgs.Cancel = true;
+            base.OnFormClosing(eventArgs);
+            if (!_closeCancellationStarted)
+            {
+                _closeCancellationStarted = true;
+                _ = QuiesceCaptureAndCloseAsync();
+            }
+            return;
+        }
+
+        base.OnFormClosing(eventArgs);
     }
 
     internal IReadOnlyList<PromptPickerConfig> GetPromptPickers()
@@ -166,6 +199,51 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         CommitPromptText();
         CommitPicker();
         return _pickers.Select(picker => picker.ToConfig()).ToList();
+    }
+
+    internal bool CaptureIsInProgress =>
+        _captureTarget is not null
+        || _captureLease is not null
+        || _captureStartTask is { IsCompleted: false }
+        || _captureTimer.Enabled;
+
+    internal async Task<IReadOnlyList<PromptPickerConfig>> ProjectPromptPickersAsync()
+    {
+        await QuiesceCaptureAsync().ConfigureAwait(true);
+        return GetPromptPickers();
+    }
+
+    internal void ReplaceConfiguration(CompanionConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        _original = CompanionConfigNormalizer.Normalize(config);
+        _currentPickerIndex = -1;
+        _currentPromptIndex = -1;
+        _pickers.Clear();
+        _pickers.AddRange(_original.PromptPickers.Select(MutablePicker.FromConfig));
+
+        var refreshedDevices = _inputSession is null
+            ? BuildDevices(_original, _captureSource?.EnumerateDevices() ?? [])
+            : BuildDevices(_original, _runtimeSources);
+        _devices.Clear();
+        _devices.AddRange(refreshedDevices);
+        foreach (var deviceCombo in _controlDevices.Values)
+        {
+            deviceCombo.BeginUpdate();
+            deviceCombo.Items.Clear();
+            deviceCombo.Items.AddRange([.. _devices.Cast<object>()]);
+            deviceCombo.EndUpdate();
+        }
+
+        RefreshPickerCombo();
+        if (_pickers.Count > 0)
+        {
+            _pickerCombo.SelectedIndex = 0;
+        }
+        if (!_pickerOnly)
+        {
+            PopulateDeviceGrid();
+        }
     }
 
     internal IReadOnlyList<DeviceProfile> GetDeviceProfiles() =>
@@ -841,9 +919,64 @@ internal sealed class PromptPickerEditorForm : ThemedForm
 
     private void BeginCaptureForDevice(MutableDevice device, Action<int> target)
     {
-        if (_inputClient is not null)
+        if (CaptureIsInProgress)
         {
-            CancelRuntimeCapture();
+            return;
+        }
+
+        var cancellation = new CancellationTokenSource();
+        _captureStartCancellation = cancellation;
+        var task = BeginCaptureForDeviceCoreAsync(device, target, cancellation.Token);
+        _captureStartTask = task;
+        _ = ObserveCaptureStartAsync(task, cancellation);
+    }
+
+    private async Task ObserveCaptureStartAsync(
+        Task task,
+        CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await task.ConfigureAwait(true);
+        }
+        finally
+        {
+            if (ReferenceEquals(_captureStartTask, task))
+            {
+                _captureStartTask = null;
+            }
+            if (ReferenceEquals(_captureStartCancellation, cancellation))
+            {
+                _captureStartCancellation = null;
+            }
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task BeginCaptureForDeviceCoreAsync(
+        MutableDevice device,
+        Action<int> target,
+        CancellationToken cancellationToken)
+    {
+        if (_inputSession is not null)
+        {
+            try
+            {
+                _runtimeSources = await _inputSession.RefreshSourcesAsync(cancellationToken)
+                    .ConfigureAwait(true);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(
+                    DialogOwner,
+                    "Joydex could not refresh its controller list: " + exception.Message,
+                    "Capture control");
+                return;
+            }
             var source = _runtimeSources.FirstOrDefault(candidate =>
                 Matches(candidate, device.Selector));
             if (source is null)
@@ -853,11 +986,31 @@ internal sealed class PromptPickerEditorForm : ThemedForm
             }
 
             _captureTarget = target;
-            var state = _inputClient.GetSourceState(source.Source.SourceId);
-            var result = _inputClient.BeginCapture(
-                source.Source.SourceId,
-                $"Capture a prompt-picker control for {device.DisplayName}.",
-                state?.Connected == true ? state.Generation : null);
+            var state = _inputSession.GetSourceState(source.Source.SourceId);
+            InputCaptureStartResult result;
+            try
+            {
+                result = await _inputSession.BeginCaptureAsync(
+                        source.Source.SourceId,
+                        $"Capture a prompt-picker control for {device.DisplayName}.",
+                        state?.Connected == true ? state.Generation : null,
+                        cancellationToken)
+                    .ConfigureAwait(true);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _captureTarget = null;
+                return;
+            }
+            catch (Exception exception)
+            {
+                _captureTarget = null;
+                MessageBox.Show(
+                    DialogOwner,
+                    "Capture could not start: " + exception.Message,
+                    "Capture control");
+                return;
+            }
             if (!result.Accepted || result.Lease is null)
             {
                 _captureTarget = null;
@@ -866,14 +1019,41 @@ internal sealed class PromptPickerEditorForm : ThemedForm
             }
 
             _captureLease = result.Lease;
-            _captureSourceId = source.Source.SourceId;
-            if (!_inputClient.ObserveForCapture(source.Source.SourceId))
+            if (result.Lease.Status is not (InputCaptureStatus.Pending or InputCaptureStatus.Active))
             {
-                CancelRuntimeCapture();
-                MessageBox.Show(
-                    DialogOwner,
-                    "Joydex could not observe the selected controller.",
-                    "Capture control");
+                InputCaptureChangedEventArgs? terminal;
+                try
+                {
+                    terminal = await _inputSession.GetCaptureAsync(
+                            result.Lease.CaptureId,
+                            cancellationToken)
+                        .ConfigureAwait(true);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    _captureTarget = null;
+                    _captureLease = null;
+                    return;
+                }
+                catch (Exception exception)
+                {
+                    _captureTarget = null;
+                    _captureLease = null;
+                    MessageBox.Show(
+                        DialogOwner,
+                        "Capture status could not be confirmed: " + exception.Message,
+                        "Capture control");
+                    return;
+                }
+                if (terminal is not null)
+                {
+                    ApplyRuntimeCaptureChange(terminal);
+                }
+                else
+                {
+                    _captureTarget = null;
+                    _captureLease = null;
+                }
             }
             return;
         }
@@ -913,8 +1093,6 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         var target = _captureTarget;
         _captureTarget = null;
         _captureLease = null;
-        _captureSourceId = null;
-        _inputClient?.ReleaseCaptureObservation(eventArgs.Lease.SourceId);
         if (eventArgs.Lease.Status == InputCaptureStatus.Completed
             && eventArgs.CapturedInput is { Kind: JoystickEventKind.ButtonPressed } captured)
         {
@@ -922,21 +1100,53 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         }
     }
 
-    private void CancelRuntimeCapture()
+    internal async Task QuiesceCaptureAsync()
     {
+        _captureStartCancellation?.Cancel();
+        var captureStart = _captureStartTask;
+        if (captureStart is not null)
+        {
+            try
+            {
+                await captureStart.ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception)
+            {
+                // The capture core reports actionable failures before returning. Quiescing must still finish.
+            }
+        }
+
+        _captureTimer.Stop();
+        _captureSource?.Disconnect();
         var capture = _captureLease;
-        var sourceId = _captureSourceId;
         _captureLease = null;
         _captureTarget = null;
-        _captureSourceId = null;
         if (capture is not null)
         {
-            _inputClient?.CancelCapture(capture.CaptureId);
+            try
+            {
+                _ = await _inputSession!.CancelCaptureAsync(capture.CaptureId)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception)
+            {
+                // Disconnecting the owning session also releases this connection-scoped capture.
+            }
         }
-        if (sourceId is not null)
+    }
+
+    private async Task QuiesceCaptureAndCloseAsync()
+    {
+        await QuiesceCaptureAsync().ConfigureAwait(true);
+        if (IsDisposed || Disposing)
         {
-            _inputClient?.ReleaseCaptureObservation(sourceId);
+            return;
         }
+        _closingAfterCaptureCancellation = true;
+        Close();
     }
 
     private void RunOnUiThread(Action action)
@@ -981,8 +1191,9 @@ internal sealed class PromptPickerEditorForm : ThemedForm
                 StringComparison.OrdinalIgnoreCase);
     }
 
-    private void OnSave(object? sender, EventArgs eventArgs)
+    private async void OnSave(object? sender, EventArgs eventArgs)
     {
+        await QuiesceCaptureAsync().ConfigureAwait(true);
         CommitPromptText();
         CommitPicker();
         foreach (DataGridViewRow row in _deviceGrid.Rows)
@@ -1013,7 +1224,43 @@ internal sealed class PromptPickerEditorForm : ThemedForm
             return;
         }
 
-        ConfigStore.Save(_configPath, config);
+        if (_applyConfiguration is null)
+        {
+            ConfigStore.Save(_configPath, config);
+        }
+        else
+        {
+            RuntimeSettingsWriteResult result;
+            try
+            {
+                result = await _applyConfiguration(config, CancellationToken.None)
+                    .ConfigureAwait(true);
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(
+                    DialogOwner,
+                    "The prompt-picker save could not be confirmed. Choose Save again after the runtime reconnects to check the same operation. "
+                    + exception.Message,
+                    "Prompt-picker save needs attention",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+            if (result.Outcome is not (RuntimeSettingsWriteOutcome.NoChanges
+                or RuntimeSettingsWriteOutcome.Applied
+                or RuntimeSettingsWriteOutcome.PendingIdle))
+            {
+                MessageBox.Show(
+                    DialogOwner,
+                    result.Detail,
+                    "Prompt-picker settings were not saved",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+            ReplaceConfiguration(result.Snapshot.Desired.Companion);
+        }
         DialogResult = DialogResult.OK;
         Close();
     }

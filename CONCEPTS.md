@@ -265,7 +265,7 @@ These terms describe the [plugin design](docs/design/joydex-plugins/README.md), 
 2026-09-11. They do not imply that the runtime extraction or new plugins have shipped.
 
 **Joydex Runtime**:
-The proposed per-user background owner of input, shared actions, configuration and plugin
+The per-user background owner of input, shared actions, configuration and plugin
 lifetimes. Settings connects as a client; opening a window does not acquire or stop devices.
 
 **Bundled Plugin**:

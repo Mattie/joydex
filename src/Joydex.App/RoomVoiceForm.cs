@@ -1,8 +1,87 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using Joydex.Core.Voice;
 using Joydex.Windows.Voice;
 
 namespace Joydex.App;
+
+internal sealed record RoomVoiceConversationCopyResult(string Text, string? Notice);
+
+internal sealed class RoomVoiceConversationCopyReader
+{
+    private readonly RoomVoiceConversationModel _model;
+    private readonly Func<CancellationToken, Task<IReadOnlyList<RoomVoiceConversationEntry>>>? _readFullConversation;
+
+    public RoomVoiceConversationCopyReader(
+        RoomVoiceConversationModel model,
+        Func<CancellationToken, Task<IReadOnlyList<RoomVoiceConversationEntry>>>? readFullConversation)
+    {
+        _model = model ?? throw new ArgumentNullException(nameof(model));
+        _readFullConversation = readFullConversation;
+    }
+
+    public async Task<RoomVoiceConversationCopyResult> ReadAsync(
+        bool showRaw,
+        CancellationToken cancellationToken)
+    {
+        if (_readFullConversation is null)
+        {
+            var visible = _model.GetSnapshot();
+            return new RoomVoiceConversationCopyResult(
+                BuildPlainText(visible.Entries, showRaw),
+                visible.TimelineTruncated
+                    ? "Copied only the visible conversation because older entries are not available."
+                    : null);
+        }
+
+        try
+        {
+            var entries = await _readFullConversation(cancellationToken).ConfigureAwait(false);
+            return new RoomVoiceConversationCopyResult(BuildPlainText(entries, showRaw), Notice: null);
+        }
+        catch (Exception exception)
+            when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            var visible = _model.GetSnapshot();
+            var truncation = visible.TimelineTruncated
+                ? " The visible timeline is truncated."
+                : string.Empty;
+            return new RoomVoiceConversationCopyResult(
+                BuildPlainText(visible.Entries, showRaw),
+                "Copied the visible conversation because full history was unavailable: "
+                + exception.Message
+                + truncation);
+        }
+    }
+
+    internal static string BuildPlainText(
+        IReadOnlyList<RoomVoiceConversationEntry> entries,
+        bool showRaw)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        var result = new StringBuilder();
+        foreach (var entry in entries)
+        {
+            if (result.Length > 0)
+            {
+                result.AppendLine().AppendLine();
+            }
+            var role = entry.Kind switch
+            {
+                CodexVoiceConversationKind.User => "YOU",
+                CodexVoiceConversationKind.Assistant => "COMPUTER",
+                _ => "ACTIVITY",
+            };
+            var text = showRaw && entry.RawText is { Length: > 0 } raw ? raw : entry.Text;
+            result.Append(role)
+                .Append("  ")
+                .Append(entry.Timestamp.LocalDateTime.ToString("t"))
+                .AppendLine()
+                .Append(text);
+        }
+        return result.ToString();
+    }
+}
 
 /// <summary>
 /// Presents the Joydex-owned conversation and recovery controls without taking task ownership
@@ -19,6 +98,7 @@ internal sealed class RoomVoiceForm : ThemedForm
     private readonly Action _openSettings;
     private readonly Action<bool> _visibilityChanged;
     private readonly RoomVoiceTaskMessagingCallbacks _taskMessaging;
+    private readonly RoomVoiceConversationCopyReader _conversationCopy;
     private readonly Label _state = new() { AutoSize = true };
     private readonly Label _status = new() { AutoSize = true, Tag = ThemeTone.Subtle };
     private readonly FlowLayoutPanel _indicators = new() { AutoSize = true, WrapContents = true };
@@ -65,7 +145,8 @@ internal sealed class RoomVoiceForm : ThemedForm
         Func<Task> restart,
         Action openSettings,
         Action<bool> visibilityChanged,
-        RoomVoiceTaskMessagingCallbacks taskMessaging)
+        RoomVoiceTaskMessagingCallbacks taskMessaging,
+        Func<CancellationToken, Task<IReadOnlyList<RoomVoiceConversationEntry>>>? readFullConversation = null)
     {
         _model = model ?? throw new ArgumentNullException(nameof(model));
         _windowStatePath = windowStatePath ?? throw new ArgumentNullException(nameof(windowStatePath));
@@ -75,6 +156,7 @@ internal sealed class RoomVoiceForm : ThemedForm
         _openSettings = openSettings ?? throw new ArgumentNullException(nameof(openSettings));
         _visibilityChanged = visibilityChanged ?? throw new ArgumentNullException(nameof(visibilityChanged));
         _taskMessaging = taskMessaging ?? throw new ArgumentNullException(nameof(taskMessaging));
+        _conversationCopy = new RoomVoiceConversationCopyReader(model, readFullConversation);
 
         Text = "Room Voice";
         ShowIcon = false;
@@ -257,7 +339,7 @@ internal sealed class RoomVoiceForm : ThemedForm
         var settings = new RoundedButton { Text = "Settings" };
         settings.Click += (_, _) => _openSettings();
         var copy = new RoundedButton { Text = "Copy conversation" };
-        copy.Click += (_, _) => CopyConversation();
+        copy.Click += async (_, _) => await CopyConversationAsync();
         _clearButton.Click += (_, _) =>
         {
             _model.ClearVisibleConversation();
@@ -463,16 +545,16 @@ internal sealed class RoomVoiceForm : ThemedForm
         }
         try
         {
-            await _taskMessaging.SelectTarget(target, CancellationToken.None);
-            _taskMessagingStatus.Text = $"Voice commands will target {target.Title}.";
-            if (_taskMessagingSnapshot is { } snapshot)
+            var result = await _taskMessaging.SelectTarget(target, CancellationToken.None);
+            if (_taskMessagingSnapshot is { } active)
             {
-                _taskMessagingSnapshot = snapshot with
-                {
-                    SelectedTaskId = target.Id,
-                    SelectedHostId = target.HostId,
-                    SelectedLabel = target.Title,
-                };
+                _taskMessagingSnapshot = active with { Status = result.Detail };
+                PopulateVoiceTargets(_taskMessagingSnapshot);
+            }
+            else
+            {
+                _taskMessagingStatus.Text = result.Detail;
+                _voiceTarget.SelectedItem = null;
             }
         }
         catch (Exception exception)
@@ -494,7 +576,7 @@ internal sealed class RoomVoiceForm : ThemedForm
         }
     }
 
-    private void UpdatePendingMessages(IReadOnlyList<VoiceTaskOutboxDraft> drafts)
+    private void UpdatePendingMessages(IReadOnlyList<RoomVoiceOutboxDraftSummary> drafts)
     {
         _pendingMessagesButton.Visible = drafts.Count > 0;
         _pendingMessagesButton.Text = $"Pending messages ({drafts.Count})";
@@ -604,18 +686,28 @@ internal sealed class RoomVoiceForm : ThemedForm
         UpdateCommandState(snapshot);
     }
 
-    private void CopyConversation()
+    private async Task CopyConversationAsync()
     {
-        var text = _transcript.BuildPlainText();
-        if (text.Length == 0)
-        {
-            return;
-        }
         try
         {
-            Clipboard.SetText(text);
+            var result = await _conversationCopy.ReadAsync(
+                _showRaw.Checked,
+                CancellationToken.None);
+            if (result.Text.Length > 0)
+            {
+                Clipboard.SetText(result.Text);
+            }
+            if (result.Notice is { Length: > 0 })
+            {
+                MessageBox.Show(
+                    this,
+                    result.Notice,
+                    "Room Voice conversation",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
         }
-        catch (ExternalException exception)
+        catch (Exception exception) when (exception is ExternalException or OperationCanceledException)
         {
             MessageBox.Show(
                 this,

@@ -1,3 +1,4 @@
+using Joydex.Contracts;
 using Joydex.Core.Voice;
 
 namespace Joydex.App;
@@ -29,6 +30,7 @@ internal sealed class PebbleIndexSettingsControl : UserControl
     private readonly string _secretPath;
     private readonly string _inboxDirectory;
     private readonly bool _allowExternalActions;
+    private readonly Func<CancellationToken, Task<RuntimePebbleIndexAccess>>? _readAccess;
     private readonly CancellationTokenSource _lifetime = new();
 
     public PebbleIndexSettingsControl(
@@ -38,13 +40,15 @@ internal sealed class PebbleIndexSettingsControl : UserControl
         Func<string?, CancellationToken, Task<DesktopTaskCatalog>> listTasks,
         PebbleIndexReceiverStatus status,
         Action<string>? copyText = null,
-        bool allowExternalActions = true)
+        bool allowExternalActions = true,
+        Func<CancellationToken, Task<RuntimePebbleIndexAccess>>? readAccess = null)
     {
         _secretPath = secretPath;
         _inboxDirectory = Path.GetFullPath(inboxDirectory);
         _listTasks = listTasks;
         _copyText = copyText ?? Clipboard.SetText;
         _allowExternalActions = allowExternalActions;
+        _readAccess = readAccess;
         AutoScroll = true;
         Dock = DockStyle.Fill;
         _enabled.Checked = initial.Enabled;
@@ -74,14 +78,19 @@ internal sealed class PebbleIndexSettingsControl : UserControl
         refresh.Click += async (_, _) => await RefreshTasksAsync(refresh);
         var copyEndpoint = new RoundedButton
             { AutoSize = true, Enabled = _allowExternalActions, Text = "Copy local endpoint", Name = "PebbleIndexCopyEndpoint" };
-        copyEndpoint.Click += (_, _) => CopySetupValue(
-            "local endpoint",
-            () => $"http://127.0.0.1:{(int)_port.Value}/pebble-index");
+        copyEndpoint.Click += async (_, _) =>
+            await CopyAccessValueAsync(
+                "local endpoint",
+                access => access.Endpoint,
+                () => $"http://127.0.0.1:{(int)_port.Value}/pebble-index");
         var copyAuthorization = new RoundedButton
             { AutoSize = true, Enabled = _allowExternalActions, Text = "Copy Authorization header", Name = "PebbleIndexCopyAuthorization" };
-        copyAuthorization.Click += (_, _) => CopySetupValue(
-            "Authorization header",
-            () => "Bearer " + PebbleIndexSecretStore.LoadOrCreate(_secretPath));
+        copyAuthorization.Click += async (_, _) =>
+            await CopyAccessValueAsync(
+                "Authorization header",
+                access => access.AuthorizationHeader
+                    ?? throw new InvalidDataException("The runtime did not return an authorization header."),
+                () => "Bearer " + PebbleIndexSecretStore.LoadOrCreate(_secretPath));
         var openInbox = new RoundedButton
             { AutoSize = true, Enabled = _allowExternalActions, Text = "Open inbox", Name = "PebbleIndexOpenInbox" };
         openInbox.Click += (_, _) => OpenInbox();
@@ -132,6 +141,39 @@ internal sealed class PebbleIndexSettingsControl : UserControl
             TargetTaskId: selected?.Id ?? typedTaskId,
             TargetHostId: selected?.HostId ?? (typedTaskId.Length > 0 ? "local" : string.Empty),
             TargetTaskLabel: selected?.Title ?? (typedTaskId.Length > 0 ? $"Task {typedTaskId[..8]}" : string.Empty)).Normalize();
+    }
+
+    internal void ApplyPreferences(PebbleIndexPreferences preferences)
+    {
+        ArgumentNullException.ThrowIfNull(preferences);
+        var normalized = preferences.Normalize();
+        _enabled.Checked = normalized.Enabled;
+        _port.Value = normalized.Port;
+        _target.BeginUpdate();
+        _target.Items.Clear();
+        _target.Text = string.Empty;
+        if (!string.IsNullOrWhiteSpace(normalized.TargetTaskId))
+        {
+            _target.Items.Add(new TaskChoice(new DesktopTaskSummary(
+                normalized.TargetTaskId,
+                normalized.TargetHostId,
+                normalized.TargetTaskLabel,
+                string.Empty,
+                null,
+                null,
+                0)));
+            _target.SelectedIndex = 0;
+        }
+        _target.EndUpdate();
+    }
+
+    internal void ApplyStatus(RuntimePebbleIndexSnapshot status)
+    {
+        ArgumentNullException.ThrowIfNull(status);
+        _status.Text = status.OutstandingCount == 0 || status.Latest is null
+            ? status.Message
+            : status.Message + Environment.NewLine
+                + $"Latest: {status.Latest.State} — {status.Latest.Detail}";
     }
 
     private async Task RefreshTasksAsync(Control button)
@@ -193,6 +235,29 @@ internal sealed class PebbleIndexSettingsControl : UserControl
         try
         {
             _copyText(readValue());
+        }
+        catch (Exception exception)
+        {
+            _status.Text = $"Could not copy the Pebble Index {label}: {exception.Message}";
+        }
+    }
+
+    private async Task CopyAccessValueAsync(
+        string label,
+        Func<RuntimePebbleIndexAccess, string> select,
+        Func<string> fallback)
+    {
+        if (!_allowExternalActions)
+        {
+            return;
+        }
+
+        try
+        {
+            var value = _readAccess is null
+                ? fallback()
+                : select(await _readAccess(_lifetime.Token).ConfigureAwait(true));
+            _copyText(value);
         }
         catch (Exception exception)
         {

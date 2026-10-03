@@ -9,7 +9,9 @@ namespace Joydex.App;
 internal sealed class IgnoredTaskSourcesForm : ThemedForm
 {
     private static readonly Size PreferredMinimumSize = new(620, 360);
-    private readonly TaskAlertCoordinator _coordinator;
+    private readonly RuntimeTaskAlertsConnectionServices? _runtimeServices;
+    private readonly Func<IReadOnlyList<TaskAlertSuppressionRule>> _getSuppressions;
+    private readonly Func<TaskAlertSuppressionRule, Guid, Task<bool>> _removeSuppression;
     private readonly Label _summary;
     private readonly ModernDataGridView _rules;
     private readonly Label _empty;
@@ -17,8 +19,20 @@ internal sealed class IgnoredTaskSourcesForm : ThemedForm
     private readonly RoundedButton _close;
 
     public IgnoredTaskSourcesForm(TaskAlertCoordinator coordinator)
+        : this(CreateLegacyServices(coordinator))
     {
-        _coordinator = coordinator;
+    }
+
+    public IgnoredTaskSourcesForm(RuntimeTaskAlertsConnectionServices runtimeServices)
+        : this(CreateRuntimeServices(runtimeServices))
+    {
+    }
+
+    private IgnoredTaskSourcesForm(FormServices services)
+    {
+        _runtimeServices = services.RuntimeServices;
+        _getSuppressions = services.GetSuppressions;
+        _removeSuppression = services.RemoveSuppression;
         Text = "Ignored Task Status Sources";
         StartPosition = FormStartPosition.CenterParent;
         SetLogicalMinimumSize(PreferredMinimumSize);
@@ -138,7 +152,7 @@ internal sealed class IgnoredTaskSourcesForm : ThemedForm
             Margin = new Padding(0, 0, 8, 0),
             Text = "Re-enable selected",
         };
-        _reenable.Click += (_, _) => ReenableSelected();
+        _reenable.Click += async (_, _) => await ReenableSelectedAsync();
         _rules.SelectionChanged += (_, _) =>
             _reenable.Enabled = _rules.SelectedRows.Count == 1;
         _close = new RoundedButton
@@ -155,6 +169,19 @@ internal sealed class IgnoredTaskSourcesForm : ThemedForm
         CancelButton = _close;
 
         RefreshRules();
+        if (_runtimeServices is not null)
+        {
+            _runtimeServices.Changed += OnRuntimeChanged;
+        }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && _runtimeServices is not null)
+        {
+            _runtimeServices.Changed -= OnRuntimeChanged;
+        }
+        base.Dispose(disposing);
     }
 
     protected override void OnShown(EventArgs eventArgs)
@@ -171,7 +198,7 @@ internal sealed class IgnoredTaskSourcesForm : ThemedForm
 
     private void RefreshRules()
     {
-        var suppressions = (_coordinator.GetSnapshot().Suppressions ?? [])
+        var suppressions = _getSuppressions()
             .OrderBy(rule => rule.Scope)
             .ThenBy(rule => rule.Value, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -207,7 +234,7 @@ internal sealed class IgnoredTaskSourcesForm : ThemedForm
         _reenable.Enabled = false;
     }
 
-    private void ReenableSelected()
+    private async Task ReenableSelectedAsync()
     {
         var rule = _rules.SelectedRows.Count == 1
             ? _rules.SelectedRows[0].Tag as TaskAlertSuppressionRule
@@ -219,19 +246,28 @@ internal sealed class IgnoredTaskSourcesForm : ThemedForm
 
         try
         {
-            _ = _coordinator.RemoveSuppression(rule);
+            _ = await _removeSuppression(rule, Guid.NewGuid()).ConfigureAwait(true);
             RefreshRules();
         }
         catch (Exception exception) when (exception is IOException
             or UnauthorizedAccessException
             or ArgumentException
-            or InvalidOperationException)
+            or InvalidOperationException
+            or OperationCanceledException)
         {
             MessageBox.Show(
                 exception.Message,
                 "Joydex task alerts",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
+        }
+    }
+
+    private void OnRuntimeChanged(object? sender, RuntimeTaskAlertsPresentationState state)
+    {
+        if (!IsDisposed && !Disposing)
+        {
+            RefreshRules();
         }
     }
 
@@ -247,4 +283,41 @@ internal sealed class IgnoredTaskSourcesForm : ThemedForm
             Path.AltDirectorySeparatorChar));
         return string.IsNullOrWhiteSpace(name) ? rule.Value : name;
     }
+
+    private static FormServices CreateLegacyServices(TaskAlertCoordinator coordinator)
+    {
+        ArgumentNullException.ThrowIfNull(coordinator);
+        return new FormServices(
+            RuntimeServices: null,
+            () => coordinator.GetSnapshot().Suppressions ?? [],
+            (rule, _) => Task.FromResult(coordinator.RemoveSuppression(rule)));
+    }
+
+    private static FormServices CreateRuntimeServices(
+        RuntimeTaskAlertsConnectionServices runtimeServices)
+    {
+        ArgumentNullException.ThrowIfNull(runtimeServices);
+        return new FormServices(
+            runtimeServices,
+            () => runtimeServices.Current.Snapshot.Suppressions ?? [],
+            async (rule, operationId) =>
+            {
+                await RuntimeTaskAlertsRecoveryPolicy
+                    .ReconcileBeforeNewActionAsync(runtimeServices)
+                    .ConfigureAwait(true);
+                var result = await runtimeServices
+                    .RemoveSuppressionAsync(rule, operationId)
+                    .ConfigureAwait(true);
+                if (!result.Succeeded)
+                {
+                    throw new InvalidOperationException(result.Detail);
+                }
+                return result.Outcome != RuntimeTaskAlertsActionOutcome.NoChanges;
+            });
+    }
+
+    private sealed record FormServices(
+        RuntimeTaskAlertsConnectionServices? RuntimeServices,
+        Func<IReadOnlyList<TaskAlertSuppressionRule>> GetSuppressions,
+        Func<TaskAlertSuppressionRule, Guid, Task<bool>> RemoveSuppression);
 }

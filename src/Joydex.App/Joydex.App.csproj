@@ -1,7 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <EmbeddedResource Include="Assets\Icons\joydex-configuration.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Joydex.Contracts\Joydex.Contracts.csproj" />
     <ProjectReference Include="..\Joydex.Core\Joydex.Core.csproj" />
+    <ProjectReference Include="..\Joydex.Ipc\Joydex.Ipc.csproj" />
     <ProjectReference Include="..\Joydex.WirelessPanel\Joydex.WirelessPanel.csproj" />
     <ProjectReference Include="..\Joydex.Windows\Joydex.Windows.csproj" />
   </ItemGroup>
@@ -34,6 +40,10 @@
              CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\LICENSES\Microsoft-WebView2-NOTICE.txt"
              Link="LICENSES\Microsoft-WebView2-NOTICE.txt"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\LICENSES\Runtime-IPC.txt"
+             Link="LICENSES\Runtime-IPC.txt"
              CopyToOutputDirectory="PreserveNewest"
              CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>

@@ -8,7 +8,7 @@ namespace Joydex.Tests;
 
 public sealed class TrayMenuStatusTests
 {
-    [Fact]
+    [AttendedFact]
     public void NativeWindowHiddenBehindWinFormsStateCanBeReshown()
     {
         Exception? failure = null;

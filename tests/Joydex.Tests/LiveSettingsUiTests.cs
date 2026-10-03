@@ -13,7 +13,7 @@ namespace Joydex.Tests;
 
 public sealed class LiveSettingsUiTests
 {
-    [Fact]
+    [AttendedFact]
     public void DemoTrayOpeningAndCancellingSettingsKeepsConfiguredWorkersAndSourceGenerations()
     {
         var directory = CreateDirectory();
@@ -99,7 +99,7 @@ public sealed class LiveSettingsUiTests
         }
     }
 
-    [Fact]
+    [AttendedFact]
     public async Task OpeningAndCancellingSettingsKeepsTheSameControllerWorkerConnected()
     {
         var directory = CreateDirectory();
@@ -220,7 +220,7 @@ public sealed class LiveSettingsUiTests
         }
     }
 
-    [Fact]
+    [AttendedFact]
     public async Task ClosingSettingsReleasesAnEmbeddedPickerCaptureSource()
     {
         var directory = CreateDirectory();
@@ -486,9 +486,16 @@ public sealed class LiveSettingsUiTests
                 initialConfig: config,
                 inputClient: client);
 
-            var device = Assert.Single(form.GetDeviceProfiles());
+            var devices = form.GetDeviceProfiles();
+            var device = Assert.Single(devices, profile => string.Equals(
+                profile.Id,
+                "configured",
+                StringComparison.OrdinalIgnoreCase));
             Assert.Equal("configured", device.Id);
             Assert.Null(device.Selector.InstanceGuid);
+            Assert.DoesNotContain(devices, profile =>
+                Guid.TryParse(profile.Selector.InstanceGuid, out var configuredInstance)
+                && configuredInstance == instanceGuid);
         });
     }
 

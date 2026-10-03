@@ -82,6 +82,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private PebbleIndexReceiverStatus _pebbleIndexStatus = new(false, "Receiver is off.");
     private DesktopTaskBridgeBrokerProcess? _desktopTaskBroker;
     private Task<DesktopTaskBridgeBrokerProcess>? _desktopTaskBrokerStartup;
+    private readonly DesktopTaskBridgeBrokerAdmission _desktopTaskBrokerAdmission = new();
     private readonly string _desktopTaskBridgePipeName =
         DesktopTaskBridgeProtocol.PipeName + "." + Guid.NewGuid().ToString("N");
     private readonly CancellationTokenSource _desktopTaskBrokerCancellation = new();
@@ -1394,6 +1395,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (_demoMode
             || !DesktopTaskBrokerNeeded
+            || !_desktopTaskBrokerAdmission.CanStart
             || _desktopTaskBrokerCancellation.IsCancellationRequested) return;
         if (_desktopTaskBroker is not null || _desktopTaskBrokerStartup is not null) return;
         Task<DesktopTaskBridgeBrokerProcess>? startup = null;
@@ -1417,10 +1419,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
             if (_pebbleIndexPreferences.Enabled) StartPebbleIndexReceiver();
         }
         catch (OperationCanceledException) when (_desktopTaskBrokerCancellation.IsCancellationRequested) { }
+        catch (DesktopTaskBridgeOwnershipCleanupException exception)
+        {
+            DesktopTaskBridgeBrokerFailurePolicy.HandleTerminalStartupFailure(
+                exception,
+                _desktopTaskBrokerAdmission,
+                WriteDesktopTaskBrokerLog);
+        }
         catch (Exception exception)
         {
-            WriteDesktopTaskBrokerLog($"Desktop Task Bridge broker worker is unavailable: {exception.Message}");
-            ScheduleDesktopTaskBrokerRestart();
+            DesktopTaskBridgeBrokerFailurePolicy.HandleRetryableStartupFailure(
+                exception,
+                WriteDesktopTaskBrokerLog,
+                ScheduleDesktopTaskBrokerRestart);
         }
         finally
         {
@@ -1480,7 +1491,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             await Task.Delay(delay, _desktopTaskBrokerCancellation.Token).ConfigureAwait(false);
-            if (DesktopTaskBrokerNeeded)
+            if (DesktopTaskBrokerNeeded && _desktopTaskBrokerAdmission.CanStart)
                 _uiContext.Post(_ => StartDesktopTaskBroker(), null);
         }
         catch (OperationCanceledException) when (_desktopTaskBrokerCancellation.IsCancellationRequested) { }

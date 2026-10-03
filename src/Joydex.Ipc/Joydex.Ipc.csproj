@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TargetFramework>net8.0-windows</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="StreamJsonRpc" Version="2.25.29" />
+    <PackageReference Include="System.IO.Pipelines" Version="9.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Joydex.Contracts\Joydex.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

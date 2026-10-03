@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 
 namespace Joydex.Core.Config;
 
@@ -22,16 +23,24 @@ public static class ConfigStore
             Save(path, CompanionConfig.CreateSafeDefault());
         }
 
-        var json = File.ReadAllText(path);
-        var deserialized = JsonSerializer.Deserialize<CompanionConfig>(json, SerializerOptions)
-            ?? throw new InvalidDataException($"Configuration file '{path}' was empty.");
+        return ParseExisting(File.ReadAllBytes(path), path);
+    }
+
+    internal static CompanionConfig ParseExisting(byte[] documentBytes, string sourcePath)
+    {
+        ArgumentNullException.ThrowIfNull(documentBytes);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
+        using var stream = new MemoryStream(documentBytes, writable: false);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var deserialized = JsonSerializer.Deserialize<CompanionConfig>(reader.ReadToEnd(), SerializerOptions)
+            ?? throw new InvalidDataException($"Configuration file '{sourcePath}' was empty.");
         var config = CompanionConfigNormalizer.Normalize(deserialized);
 
         var errors = ConfigValidator.Validate(config);
         if (errors.Count > 0)
         {
             throw new InvalidDataException(
-                $"Configuration file '{path}' is invalid:{Environment.NewLine}- "
+                $"Configuration file '{sourcePath}' is invalid:{Environment.NewLine}- "
                 + string.Join($"{Environment.NewLine}- ", errors));
         }
 

@@ -24,6 +24,13 @@ Any change to command IDs, default bindings, aliases, or precedence behavior mus
 
 Runtime code must never inspect or parse `app.asar`; compatibility is maintained through verified catalogs and tests.
 
+## Background test execution
+
+Use explicitly audited test-class or method filters for unattended validation.
+Tests that display native windows or tray icons use `AttendedFact` and are skipped
+by default. Set `JOYDEX_RUN_ATTENDED_TESTS=1` only for an explicitly requested
+attended test session. Building or reviewing those tests does not require opt-in.
+
 ## Windows ESPHome firmware builds
 
 Before compiling Voice PE ESPHome firmware on Windows, prepend `C:\Program Files\Git\usr\bin` to that process's `PATH` and verify that `patch.exe` exists. The pinned `micro-opus` component invokes `patch.exe` by name.
