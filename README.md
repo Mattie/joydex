@@ -255,6 +255,7 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 | `config/joydex.example.json` | Safe, machine-neutral starter configuration |
 | `config/joydex.advanced.example.json` | Sanitized two-controller working example |
 | `docs/` | Case study, setup guides, research notes, and images |
+| [Plugin design](docs/design/joydex-plugins/README.md) | Proposed independent runtime, live settings, plugin extraction and agent implementation plan |
 
 ## Versions and Config
 

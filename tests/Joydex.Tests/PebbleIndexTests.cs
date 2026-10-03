@@ -221,6 +221,51 @@ public sealed class PebbleIndexTests : IDisposable
         Assert.Single(control.Controls.Find("PebbleIndexOpenInbox", searchAllChildren: true));
     }
 
+    [Fact]
+    public void DemoInspectorDisablesExternalCommandsAndRejectsForcedCallbacks()
+    {
+        var listCalls = 0;
+        var copiedValues = new List<string>();
+        using var control = new PebbleIndexSettingsControl(
+            PebbleIndexPreferences.Default,
+            Path.Combine(_directory, "secret"),
+            Path.Combine(_directory, "inbox"),
+            (_, _) =>
+            {
+                listCalls++;
+                return Task.FromResult(new DesktopTaskCatalog([]));
+            },
+            new PebbleIndexReceiverStatus(false, "off"),
+            copiedValues.Add,
+            allowExternalActions: false);
+
+        var commandNames = new[]
+        {
+            "PebbleIndexRefreshTasks",
+            "PebbleIndexCopyEndpoint",
+            "PebbleIndexCopyAuthorization",
+            "PebbleIndexOpenInbox",
+        };
+        foreach (var commandName in commandNames)
+        {
+            Assert.False(Assert.Single(control.Controls.Find(
+                commandName,
+                searchAllChildren: true)).Enabled);
+        }
+
+        foreach (var commandName in commandNames[..3])
+        {
+            var button = Assert.IsAssignableFrom<Button>(Assert.Single(
+                control.Controls.Find(commandName, searchAllChildren: true)));
+            button.Enabled = true;
+            button.PerformClick();
+        }
+
+        Assert.Equal(0, listCalls);
+        Assert.Empty(copiedValues);
+        Assert.False(File.Exists(Path.Combine(_directory, "secret")));
+    }
+
     [Theory]
     [InlineData("PebbleIndexCopyEndpoint")]
     [InlineData("PebbleIndexCopyAuthorization")]
@@ -424,22 +469,22 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
-    public void DesktopBridgeRunsOnlyForConfigurationOrEnabledMessaging()
+    public void DesktopBridgeStopsAfterConfigurationClosesUnlessAnIntegrationNeedsIt()
     {
         Assert.False(TrayApplicationContext.ShouldStartDesktopTaskBroker(
-            configuring: false,
+            configurationWindowOpen: false,
             VoicePePreferences.Default,
             PebbleIndexPreferences.Default));
         Assert.True(TrayApplicationContext.ShouldStartDesktopTaskBroker(
-            configuring: true,
+            configurationWindowOpen: true,
             VoicePePreferences.Default,
             PebbleIndexPreferences.Default));
         Assert.True(TrayApplicationContext.ShouldStartDesktopTaskBroker(
-            configuring: false,
+            configurationWindowOpen: false,
             VoicePePreferences.Default with { DesktopTaskMessagingEnabled = true },
             PebbleIndexPreferences.Default));
         Assert.True(TrayApplicationContext.ShouldStartDesktopTaskBroker(
-            configuring: false,
+            configurationWindowOpen: false,
             VoicePePreferences.Default,
             PebbleIndexPreferences.Default with { Enabled = true }));
     }

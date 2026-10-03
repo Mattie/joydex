@@ -258,3 +258,34 @@ _Avoid_: End turn, stop response
 **Pebble Index Receiver**:
 An opt-in, loopback-only Joydex HTTP endpoint for authenticated, transcript-only multipart webhooks from the Pebble Index mobile app. Each accepted transcription is durably recorded before acknowledgement and receives at most one automatic delivery attempt to one configured Desktop Task through the Desktop Task Bridge. The saved task is resolved directly by ID, independent of the bounded recent-task catalog. A stable delivery header is preferred for duplicate identity; otherwise the recorded timestamp, client, trigger, and transcript form the identity. Duplicate requests never cause another send, and any unconfirmed send remains Delivery Uncertain for manual review rather than automatic retry. The receiver stores its preferences and secret independently from Room Voice and rejects uploaded audio.
 _Avoid_: Voice session, generic public task bridge, automatic retry queue
+
+## Proposed plugin architecture language
+
+These terms describe the [plugin design](docs/design/joydex-plugins/README.md), refreshed
+2026-09-11. They do not imply that the runtime extraction or new plugins have shipped.
+
+**Joydex Runtime**:
+The proposed per-user background owner of input, shared actions, configuration and plugin
+lifetimes. Settings connects as a client; opening a window does not acquire or stop devices.
+
+**Bundled Plugin**:
+A trusted integration shipped in the Joydex release with explicit capabilities and lifecycle.
+A worker process provides independent lifetime; it does not establish a hostile-code sandbox.
+
+**Active / Desired Configuration**:
+Active configuration describes what an owner is using. Desired configuration is a validated,
+saved revision that may wait for a safe boundary. An editor draft is neither. Dependency
+lifetimes follow active ownership until the relevant change is applied.
+
+**Capture Lease**:
+A bounded host reservation for observing a selected device's next eligible input without
+dispatching its normal binding. It belongs to a UI connection and expires on completion,
+cancellation, disconnect or timeout.
+
+**Registered Secret Client**:
+A broker-enrolled local client with an authenticated credential and canonical project scope.
+A submitted task ID is only a label until trusted host context proves its origin.
+
+**Discord Task Binding**:
+A gateway-owned record connecting a Discord thread to the fresh Desktop-owned task that
+Joydex created in an allowed project. A worker-supplied task ID cannot establish this binding.

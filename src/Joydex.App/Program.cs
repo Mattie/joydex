@@ -11,6 +11,22 @@ internal static class Program
                 : HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+
+        DemoLaunchPolicy? demoPolicy;
+        try
+        {
+            demoPolicy = DemoLaunchPolicy.FromArguments(args);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                exception.Message,
+                "Joydex demo could not start",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return;
+        }
+
         if (DocumentationScreenshotRenderer.TryRender(args))
         {
             return;
@@ -21,7 +37,8 @@ internal static class Program
             return;
         }
 
-        using var mutex = new Mutex(initiallyOwned: true, "Local\\Joydex", out var createdNew);
+        var mutexName = demoPolicy is null ? "Local\\Joydex" : "Local\\Joydex.Demo";
+        using var mutex = new Mutex(initiallyOwned: true, mutexName, out var createdNew);
         if (!createdNew)
         {
             MessageBox.Show(
@@ -34,8 +51,11 @@ internal static class Program
 
         try
         {
-            var configPath = ConfigPathResolver.Resolve(args);
-            Application.Run(new TrayApplicationContext(configPath));
+            var configPath = demoPolicy?.ConfigPath ?? ConfigPathResolver.Resolve(args);
+            Application.Run(new TrayApplicationContext(
+                configPath,
+                demoMode: demoPolicy is not null,
+                demoInputSourceFactory: demoPolicy is null ? null : new DemoJoystickSourceFactory()));
         }
         catch (Exception exception)
         {

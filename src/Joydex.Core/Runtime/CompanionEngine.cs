@@ -54,6 +54,17 @@ public sealed class CompanionEngine
         JoystickSnapshot snapshot,
         IReadOnlyList<JoystickEvent>? bufferedButtonEvents = null)
     {
+        var events = Observe(snapshot, bufferedButtonEvents);
+        return ProcessRouted(snapshot, events);
+    }
+
+    /// <summary>
+    /// Detects and sanitizes physical edges without running bindings or other input consumers.
+    /// </summary>
+    public IReadOnlyList<JoystickEvent> Observe(
+        JoystickSnapshot snapshot,
+        IReadOnlyList<JoystickEvent>? bufferedButtonEvents = null)
+    {
         var detectedEvents = _detector.Detect(snapshot);
         IReadOnlyList<JoystickEvent> bufferedEvents;
         if (_previousButtons is null
@@ -81,9 +92,20 @@ public sealed class CompanionEngine
         }
 
         _previousButtons = [.. snapshot.Buttons];
-        var events = FilterStartupHeldButtonPresses(bufferedEvents
+        return FilterStartupHeldButtonPresses(bufferedEvents
             .Concat(detectedEvents.Where(detected => !bufferedEvents.Any(buffered => buffered == detected)))
             .ToArray());
+    }
+
+    /// <summary>
+    /// Runs every stateful input consumer against edges already routed by the runtime host.
+    /// </summary>
+    public EngineResult ProcessRouted(
+        JoystickSnapshot snapshot,
+        IReadOnlyList<JoystickEvent> events)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(events);
         var interception = _taskAlerts?.Intercept(snapshot, events)
             ?? new TaskAlertInterception(events, []);
         var requests = _bindings.Resolve(snapshot, interception.RemainingEvents, snapshot.Timestamp);
@@ -92,14 +114,20 @@ public sealed class CompanionEngine
         return new EngineResult(events, requests, interception.NavigationRequests, pickerRequests, mapRequests);
     }
 
+    /// <summary>Clears state that must not cross a capture or resolver boundary.</summary>
+    public void ResetDispatchState()
+    {
+        _bindings.Reset();
+        _taskAlerts?.Reset();
+    }
+
     public void Reset()
     {
         _detector.Reset();
         _previousButtons = null;
         _bufferedButtonsInitialized = null;
         _buttonsAwaitingRelease = null;
-        _bindings.Reset();
-        _taskAlerts?.Reset();
+        ResetDispatchState();
     }
 
     private IReadOnlyList<JoystickEvent> FilterStartupHeldButtonPresses(

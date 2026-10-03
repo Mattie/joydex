@@ -1,4 +1,5 @@
 using Joydex.Core.Config;
+using Joydex.Core.Input;
 using Joydex.Core.Mapping;
 
 namespace Joydex.Windows.Actions;
@@ -15,13 +16,12 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
     private readonly IWorkingDirectoryClipboard _clipboard;
     private readonly WorkingDirectoryLauncherRegistry _launchers;
     private readonly Action<ActionRequest>? _internalAction;
-    private readonly ICodexDictationControl _dictationControl;
+    private readonly InjectedKeyStateOwner _injectedKeyState;
     private readonly object _heldKeyLock = new();
-    private readonly HashSet<(string Bank, int Button)> _heldPushToTalkControls = [];
-    private KeyChord? _heldPushToTalkChord;
-    private CodexBindingResolution? _heldPushToTalkResolution;
+    private readonly Dictionary<InjectedKeyHoldId, CodexBindingResolution> _heldPushToTalkResolutions = [];
+    private readonly ICodexDictationControl _dictationControl;
     private readonly object _dictationLock = new();
-    private readonly Dictionary<(string DeviceId, string Bank, int Button), IntPtr> _dictationWindows =
+    private readonly Dictionary<DictationHoldId, IntPtr> _dictationWindows =
         new(DictationOwnerEqualityComparer.Instance);
 
     public CodexActionExecutor(
@@ -34,6 +34,7 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         IWorkingDirectoryClipboard? clipboard = null,
         WorkingDirectoryLauncherRegistry? launchers = null,
         Action<ActionRequest>? internalAction = null,
+        InjectedKeyStateOwner? injectedKeyStateOwner = null,
         ICodexDictationControl? dictationControl = null)
     {
         _safety = safety ?? throw new ArgumentNullException(nameof(safety));
@@ -45,6 +46,7 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         _clipboard = clipboard ?? new WindowsWorkingDirectoryClipboard();
         _launchers = launchers ?? new WorkingDirectoryLauncherRegistry();
         _internalAction = internalAction;
+        _injectedKeyState = injectedKeyStateOwner ?? new InjectedKeyStateOwner(_inputSender);
         _dictationControl = dictationControl ?? new WindowsCodexDictationControl();
     }
 
@@ -87,6 +89,7 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
                     "Binding resolution did not complete.");
                 resolution = await _keybindings.ResolveAsync(request.Action, cancellationToken).ConfigureAwait(false);
             }
+            cancellationToken.ThrowIfCancellationRequested();
             var foreground = _foregroundGuard.Check(_safety, actionMayBringCodexForward: false);
             if (_safety.DryRun)
             {
@@ -186,8 +189,11 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
 
         try
         {
-            _inputSender.ReleaseChord(resolution.Sequence.Chords[0]);
-            _log($"EXECUTED startup push-to-talk cleanup; {DescribeResolution(resolution)}");
+            var released = _injectedKeyState.ClearStaleChord(resolution.Sequence.Chords[0]);
+            if (released)
+            {
+                _log($"EXECUTED startup push-to-talk cleanup; {DescribeResolution(resolution)}");
+            }
         }
         catch (Exception exception)
         {
@@ -196,15 +202,40 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         }
     }
 
+    public void ReleaseHeldKeys(InputSourceSession source)
+    {
+        _injectedKeyState.ReleaseSource(source);
+        lock (_heldKeyLock)
+        {
+            foreach (var owner in _heldPushToTalkResolutions.Keys
+                         .Where(owner => SourceMatches(owner.Source, source))
+                         .ToArray())
+            {
+                _heldPushToTalkResolutions.Remove(owner);
+            }
+        }
+
+        if (!ReleaseDictationOwners(source))
+        {
+            throw new InvalidOperationException("One or more in-app dictation holds could not be stopped.");
+        }
+    }
+
+    public void ReleaseAllHeldKeys()
+    {
+        _ = ReleaseHeldKeys();
+    }
+
+    // Retained as a convenience for direct executor owners and existing cleanup callers.
     public bool ReleaseHeldKeys()
     {
-        ReleasePushToTalkKeys(force: false);
-        ReleaseAllDictationOwners();
-
-        lock (_dictationLock)
+        _injectedKeyState.ReleaseAll();
+        lock (_heldKeyLock)
         {
-            return _dictationWindows.Count == 0;
+            _heldPushToTalkResolutions.Clear();
         }
+
+        return ReleaseDictationOwners();
     }
 
     private ActionExecutionResult ExecuteInternalAction(ActionRequest request)
@@ -295,12 +326,14 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         return result;
     }
 
-    private void ReleaseAllDictationOwners()
+    private bool ReleaseDictationOwners(InputSourceSession? source = null)
     {
-        KeyValuePair<(string DeviceId, string Bank, int Button), IntPtr>[] pending;
+        KeyValuePair<DictationHoldId, IntPtr>[] pending;
         lock (_dictationLock)
         {
-            pending = _dictationWindows.ToArray();
+            pending = _dictationWindows
+                .Where(entry => source is null || SourceMatches(entry.Key.Source, source.Value))
+                .ToArray();
         }
 
         foreach (var (owner, windowHandle) in pending)
@@ -321,6 +354,13 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
                 }
             }
             _log($"EXECUTED in-app dictation cleanup; {stopped.Detail}");
+        }
+
+        lock (_dictationLock)
+        {
+            return source is null
+                ? _dictationWindows.Count == 0
+                : !_dictationWindows.Keys.Any(owner => SourceMatches(owner.Source, source.Value));
         }
     }
 
@@ -364,33 +404,13 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
 
         lock (_heldKeyLock)
         {
-            var control = (request.Bank, request.Button);
-            if (!_heldPushToTalkControls.Add(control) || _heldPushToTalkControls.Count > 1)
+            var chord = resolution.Sequence.Chords[0];
+            var owner = PushToTalkOwner(request);
+            var added = _injectedKeyState.Hold(owner, chord);
+            _heldPushToTalkResolutions[owner] = resolution;
+            if (!added)
             {
                 return Success(request, resolution, "hold-already-active");
-            }
-
-            var chord = resolution.Sequence.Chords[0];
-            _heldPushToTalkChord = chord;
-            _heldPushToTalkResolution = resolution;
-            try
-            {
-                _inputSender.HoldChord(chord);
-            }
-            catch
-            {
-                try
-                {
-                    _inputSender.ReleaseChord(chord);
-                    _heldPushToTalkControls.Clear();
-                    _heldPushToTalkChord = null;
-                    _heldPushToTalkResolution = null;
-                }
-                catch (Exception releaseException)
-                {
-                    _log($"Could not clean up a partial push-to-talk chord: {releaseException.Message}");
-                }
-                throw;
             }
         }
 
@@ -412,7 +432,7 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         {
             lock (_heldKeyLock)
             {
-                resolution = _heldPushToTalkResolution;
+                _heldPushToTalkResolutions.TryGetValue(PushToTalkOwner(request), out resolution);
             }
 
             var released = ReleasePushToTalkControl(request);
@@ -440,28 +460,14 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
     {
         lock (_heldKeyLock)
         {
-            var control = (request.Bank, request.Button);
-            if (!_heldPushToTalkControls.Contains(control))
+            var owner = PushToTalkOwner(request);
+            _heldPushToTalkResolutions.TryGetValue(owner, out var resolution);
+            var released = _injectedKeyState.Release(owner);
+            if (released.WasHeld)
             {
-                return new(false, false, null);
+                _heldPushToTalkResolutions.Remove(owner);
             }
-
-            var resolution = _heldPushToTalkResolution;
-            if (_heldPushToTalkControls.Count > 1)
-            {
-                _heldPushToTalkControls.Remove(control);
-                return new(true, false, resolution);
-            }
-
-            if (_heldPushToTalkChord is not null)
-            {
-                _inputSender.ReleaseChord(_heldPushToTalkChord);
-            }
-
-            _heldPushToTalkChord = null;
-            _heldPushToTalkResolution = null;
-            _heldPushToTalkControls.Remove(control);
-            return new(true, true, resolution);
+            return new(released.WasHeld, released.KeysReleased, resolution);
         }
     }
 
@@ -487,52 +493,45 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         }
     }
 
-    private void ReleasePushToTalkKeys(bool force)
-    {
-        lock (_heldKeyLock)
-        {
-            if (!force && _heldPushToTalkControls.Count == 0 && _heldPushToTalkChord is null)
-            {
-                return;
-            }
+    private static DictationHoldId DictationOwner(ActionRequest request) => new(
+        new InputSourceSession(request.DeviceId, request.SourceGeneration),
+        request.Bank,
+        request.Button);
 
-            if (_heldPushToTalkChord is not null)
-            {
-                _inputSender.ReleaseChord(_heldPushToTalkChord);
-            }
-
-            _heldPushToTalkChord = null;
-            _heldPushToTalkResolution = null;
-            _heldPushToTalkControls.Clear();
-        }
-    }
-
-    private static (string DeviceId, string Bank, int Button) DictationOwner(ActionRequest request) =>
-        (request.DeviceId, request.Bank, request.Button);
+    private readonly record struct DictationHoldId(InputSourceSession Source, string Bank, int Button);
 
     private sealed class DictationOwnerEqualityComparer
-        : IEqualityComparer<(string DeviceId, string Bank, int Button)>
+        : IEqualityComparer<DictationHoldId>
     {
         public static DictationOwnerEqualityComparer Instance { get; } = new();
 
-        public bool Equals(
-            (string DeviceId, string Bank, int Button) x,
-            (string DeviceId, string Bank, int Button) y) =>
+        public bool Equals(DictationHoldId x, DictationHoldId y) =>
             x.Button == y.Button
-            && string.Equals(x.DeviceId, y.DeviceId, StringComparison.OrdinalIgnoreCase)
+            && x.Source.Generation == y.Source.Generation
+            && string.Equals(x.Source.SourceId, y.Source.SourceId, StringComparison.OrdinalIgnoreCase)
             && string.Equals(x.Bank, y.Bank, StringComparison.OrdinalIgnoreCase);
 
-        public int GetHashCode((string DeviceId, string Bank, int Button) owner) =>
+        public int GetHashCode(DictationHoldId owner) =>
             HashCode.Combine(
-                StringComparer.OrdinalIgnoreCase.GetHashCode(owner.DeviceId),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(owner.Source.SourceId),
+                owner.Source.Generation,
                 StringComparer.OrdinalIgnoreCase.GetHashCode(owner.Bank),
                 owner.Button);
     }
-
     private readonly record struct PushToTalkRelease(
         bool ControlWasHeld,
         bool KeysReleased,
         CodexBindingResolution? Resolution);
+
+    private static InjectedKeyHoldId PushToTalkOwner(ActionRequest request) => new(
+        new InputSourceSession(request.DeviceId, request.SourceGeneration),
+        request.Bank,
+        request.Button,
+        CodexActionCatalog.GetId(CodexAction.PushToTalk));
+
+    private static bool SourceMatches(InputSourceSession left, InputSourceSession right) =>
+        left.Generation == right.Generation
+        && string.Equals(left.SourceId, right.SourceId, StringComparison.OrdinalIgnoreCase);
 
     private ActionExecutionResult LogBlocked(
         ActionRequest request,
