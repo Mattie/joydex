@@ -8,6 +8,8 @@
     <ProjectReference Include="..\Joydex.Contracts\Joydex.Contracts.csproj" />
     <ProjectReference Include="..\Joydex.Core\Joydex.Core.csproj" />
     <ProjectReference Include="..\Joydex.Ipc\Joydex.Ipc.csproj" />
+    <ProjectReference Include="..\Joydex.RuntimeHost\Joydex.RuntimeHost.csproj"
+                      ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\Joydex.WirelessPanel\Joydex.WirelessPanel.csproj" />
     <ProjectReference Include="..\Joydex.Windows\Joydex.Windows.csproj" />
   </ItemGroup>
@@ -85,6 +87,31 @@
       <Reference Remove="@(Reference)"
                  Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
     </ItemGroup>
+  </Target>
+
+  <Target Name="CopyRuntimeHostBuildOutput"
+          AfterTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <!-- The documented dotnet-run workflow launches RuntimeHost beside Joydex.App. The
+         non-assembly project reference above orders both builds; this target supplies the
+         executable files that ordinary project references do not copy. -->
+    <PropertyGroup>
+      <_RuntimeHostOutputDirectory>$(MSBuildProjectDirectory)\..\Joydex.RuntimeHost\bin\$(Configuration)\$(TargetFramework)\</_RuntimeHostOutputDirectory>
+      <_RuntimeHostOutputDirectory Condition="'$(RuntimeIdentifier)' != ''">$(_RuntimeHostOutputDirectory)$(RuntimeIdentifier)\</_RuntimeHostOutputDirectory>
+    </PropertyGroup>
+    <ItemGroup>
+      <_RuntimeHostBuildOutput Include="$(_RuntimeHostOutputDirectory)Joydex.RuntimeHost.exe" />
+      <_RuntimeHostBuildOutput Include="$(_RuntimeHostOutputDirectory)Joydex.RuntimeHost.dll" />
+      <_RuntimeHostBuildOutput Include="$(_RuntimeHostOutputDirectory)Joydex.RuntimeHost.deps.json" />
+      <_RuntimeHostBuildOutput Include="$(_RuntimeHostOutputDirectory)Joydex.RuntimeHost.runtimeconfig.json" />
+      <_RuntimeHostBuildOutput Include="$(_RuntimeHostOutputDirectory)Joydex.RuntimeHost.pdb"
+                               Condition="Exists('$(_RuntimeHostOutputDirectory)Joydex.RuntimeHost.pdb')" />
+    </ItemGroup>
+    <Error Condition="!Exists('$(_RuntimeHostOutputDirectory)Joydex.RuntimeHost.exe')"
+           Text="The RuntimeHost build output is missing from '$(_RuntimeHostOutputDirectory)'." />
+    <Copy SourceFiles="@(_RuntimeHostBuildOutput)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true" />
   </Target>
 
 </Project>
