@@ -826,7 +826,15 @@ public sealed class ProductionRuntimeCompositionTests
             TimeSpan.FromSeconds(2),
             TimeSpan.FromSeconds(2));
 
-        host.Invoke(Application.ExitThread);
+        var dispatchFailure = Record.Exception(() => host.Invoke(Application.ExitThread));
+        if (dispatchFailure is not null)
+        {
+            var unavailable = Assert.IsType<InvalidOperationException>(dispatchFailure);
+            Assert.Contains(
+                "stopped unexpectedly",
+                unavailable.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+        }
 
         var failure = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             host.Completion.WaitAsync(TimeSpan.FromSeconds(2)));

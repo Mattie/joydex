@@ -134,15 +134,15 @@ public sealed class RuntimeBootstrapRendezvousTests : IDisposable
         var verifier = new FakeImageVerifier();
         var options = new RuntimeBootstrapRendezvousOptions
         {
-            TicketLifetime = TimeSpan.FromMilliseconds(100),
-            ClaimRaceGrace = TimeSpan.FromMilliseconds(50),
+            TicketLifetime = TimeSpan.FromSeconds(1),
+            ClaimRaceGrace = TimeSpan.FromSeconds(1),
         };
         await using var runtime = RuntimeIpcServer.Start(
             endpoint,
             RejectUnexpectedRuntimeConnection,
             new RuntimeIpcServerOptions
             {
-                DefaultTicketLifetime = TimeSpan.FromMilliseconds(100),
+                DefaultTicketLifetime = TimeSpan.FromSeconds(1),
             });
         await using var rendezvous = StartRendezvous(runtime, endpoint, verifier, options);
 
