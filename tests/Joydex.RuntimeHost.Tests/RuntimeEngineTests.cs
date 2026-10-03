@@ -53,6 +53,11 @@ public sealed class RuntimeEngineTests
             {
                 return true;
             }
+            catch (InvalidOperationException)
+            {
+                // The dispatcher becomes unavailable before session cleanup finishes.
+                return false;
+            }
         });
 
         var secondClient = new RecordingClient();

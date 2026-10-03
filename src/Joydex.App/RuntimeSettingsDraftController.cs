@@ -244,6 +244,8 @@ internal sealed class RuntimeSettingsDraftController
             case RuntimeSettingsWriteOutcome.NoChanges:
             case RuntimeSettingsWriteOutcome.Applied:
             case RuntimeSettingsWriteOutcome.PendingIdle:
+            case RuntimeSettingsWriteOutcome.Failed
+                when result.ApplyResult?.DesiredStateCommitted == true:
                 _latestSnapshot = _latestSnapshot with { Settings = result.Snapshot };
                 _state = new RuntimeSettingsDraftState(
                     _latestSnapshot.EngineEpoch,

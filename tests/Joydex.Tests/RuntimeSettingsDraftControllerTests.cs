@@ -255,6 +255,50 @@ public sealed class RuntimeSettingsDraftControllerTests
     }
 
     [Fact]
+    public async Task CommittedDesiredStateBecomesTheBaseWhenActivationFails()
+    {
+        var initial = Snapshot(revision: 4);
+        var candidate = initial.Settings.Desired with
+        {
+            Voice = initial.Settings.Desired.Voice with { ConversationSpeakerGain = 4 },
+        };
+        var committed = new SettingsSnapshot(
+            5,
+            candidate,
+            initial.Settings.Active,
+            [],
+            []);
+        var writer = new RecordingWriter
+        {
+            Apply = (_, _, operationId, _) => Task.FromResult(new RuntimeSettingsWriteResult(
+                RuntimeSettingsWriteOutcome.Failed,
+                operationId,
+                committed,
+                new ApplySettingsResult(
+                    operationId,
+                    SettingsApplyStatus.ActivationFailed,
+                    DesiredStateCommitted: true,
+                    CanCloseSettings: false,
+                    [],
+                    ["port busy"],
+                    committed),
+                "The settings were saved, but activation failed.")),
+        };
+        var controller = new RuntimeSettingsDraftController(writer, initial);
+
+        var result = await controller.ApplyAsync(candidate, CancellationToken.None);
+
+        Assert.Equal(RuntimeSettingsWriteOutcome.Failed, result.Outcome);
+        Assert.Equal(5, controller.Current.BaseRevision);
+        Assert.Equal(candidate, controller.Current.BaseSettings);
+        Assert.Equal(candidate, controller.Current.DraftSettings);
+        Assert.False(controller.Current.IsDirty);
+        Assert.False(controller.Current.RequiresRebase);
+        Assert.Null(controller.Current.PendingOperationId);
+        Assert.Contains("activation failed", controller.Current.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void DiscardDraftAdoptsTheLatestAuthoritativeSettings()
     {
         var initial = Snapshot(revision: 2);

@@ -66,15 +66,23 @@ public sealed class RuntimeSettingsProcessLauncherTests
     {
         var selection = Selection();
         var processes = new FakeProcessFactory();
+        var tickets = new FakeTicketIssuer();
         await using var launcher = new RuntimeSettingsProcessLauncher(
             selection.Endpoint,
             selection.Root,
             selection.ConfigurationPath,
             selection.ApplicationPath,
-            new FakeTicketIssuer(),
+            tickets,
             processes,
             attachTimeout: TimeSpan.FromMilliseconds(50),
             exitTimeout: TimeSpan.FromSeconds(1));
+        tickets.AfterIssue = issueNumber =>
+        {
+            if (issueNumber == 2)
+            {
+                launcher.OnSettingsAttached("replacement-settings");
+            }
+        };
 
         var firstResult = await launcher.OpenAsync(Request(), CancellationToken.None);
         var first = processes.Processes[0];
@@ -84,10 +92,7 @@ public sealed class RuntimeSettingsProcessLauncherTests
         Assert.Equal(0, first.KillCount);
         Assert.Equal(1, first.DisposeCount);
 
-        var secondOpen = launcher.OpenAsync(Request(), CancellationToken.None);
-        await EventuallyAsync(() => processes.Processes.Count == 2);
-        launcher.OnSettingsAttached("replacement-settings");
-        var secondResult = await secondOpen;
+        var secondResult = await launcher.OpenAsync(Request(), CancellationToken.None);
 
         Assert.Equal(RuntimeCommandStatus.Completed, secondResult.Status);
         Assert.Equal(2, processes.Processes.Count);
@@ -585,6 +590,7 @@ public sealed class RuntimeSettingsProcessLauncherTests
         }
         public int? BlockOnIssueNumber { get; init; }
         public int? FailOnIssueNumber { get; init; }
+        public Action<int>? AfterIssue { get; set; }
         public TaskCompletionSource BlockedIssueStarted { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         public ManualResetEventSlim ReleaseBlockedIssue { get; } = new(initialState: false);
@@ -609,6 +615,7 @@ public sealed class RuntimeSettingsProcessLauncherTests
             {
                 throw new InvalidOperationException("ticket issue failed");
             }
+            AfterIssue?.Invoke(issueNumber);
             var suffix = issueNumber == 1 ? string.Empty : $"-{issueNumber}";
             return new RuntimeIpcLaunchTicket(
                 "settings-ticket" + suffix,

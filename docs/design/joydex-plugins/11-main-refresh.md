@@ -41,7 +41,7 @@ The following existing sources are implementation anchors, inspected during this
 
 - [PebbleIndexTests](../../../tests/Joydex.Tests/PebbleIndexTests.cs): duplicate concurrency/content, direct target lookup, authorization before body arrival, multipart rejection, state-at-send uncertainty, active-client shutdown, unreadable status, coordinator cancellation/restart and multi-file save rollback.
 - [CodexAppServerRuntimeResolverTests](../../../tests/Joydex.Tests/CodexAppServerRuntimeResolverTests.cs): complete managed candidates, explicit overrides and update races.
-- [Pebble receiver](../../../src/Joydex.App/PebbleIndexReceiverRuntime.cs), [coordinator](../../../src/Joydex.App/CancellableRuntimeCoordinator.cs) and [tray composition](../../../src/Joydex.App/TrayApplicationContext.cs): current lifetime and delivery boundaries.
+- [Pebble receiver](../../../src/Joydex.App/PebbleIndexReceiverRuntime.cs), [production runtime composition](../../../src/Joydex.RuntimeHost/Production/ProductionRuntimeComposition.cs) and [tray projection](../../../src/Joydex.App/RuntimeTrayApplicationContext.cs): current lifetime and delivery boundaries.
 - [Publish-Joydex.ps1](../../../scripts/Publish-Joydex.ps1): current release assembly, helper and native-asset requirements.
 
 Implementation adds targeted evidence for capture/key ownership, UI/process/media continuity, selective Apply, active-versus-desired dependency lifetime, data leases, queue saturation and crash/recovery boundaries. Do not rerun hardware indiscriminately; exercise the changed boundary from one integrated package and retain the accepted baseline limits.

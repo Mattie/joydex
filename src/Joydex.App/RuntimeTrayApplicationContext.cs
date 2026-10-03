@@ -855,13 +855,20 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     {
         var baseRevision = _promptPickerEditorBaseRevision
             ?? throw new InvalidOperationException("The prompt-picker editor has no settings base revision.");
-        return await ExecuteRecoverableSettingsWriteAsync(
+        var result = await ExecuteRecoverableSettingsWriteAsync(
                 TraySettingsAction.PromptEditor,
                 baseRevision,
                 new SettingsPatch(Companion: candidate),
                 cancellationToken)
             .ConfigureAwait(true);
+        _promptPickerEditorBaseRevision = PromptPickerBaseRevisionAfter(baseRevision, result);
+        return result;
     }
+
+    internal static long PromptPickerBaseRevisionAfter(
+        long baseRevision,
+        RuntimeSettingsWriteResult result) =>
+        IsTerminal(result.Outcome) ? result.Snapshot.Revision : baseRevision;
 
     private async Task<RuntimeSettingsWriteResult> ExecuteRecoverableSettingsWriteAsync(
         TraySettingsAction action,

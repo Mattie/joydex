@@ -55,6 +55,48 @@ public sealed class ProductionRuntimeCompositionTests
     }
 
     [Fact]
+    public async Task StartupFailureRetriesOnlyThroughTheSettingsAuthority()
+    {
+        using var scratch = new ScratchDirectory();
+        var factory = new FakeFactory();
+        factory.FailNextCreate[SettingsAggregateId.Companion] = new IOException("device busy");
+        await using var composition = new ProductionRuntimeComposition(factory, default);
+        await using var coordinator = RuntimeSettingsCoordinator.Create(
+            RuntimeSettingsPaths.InDataRoot(scratch.Root),
+            new DefaultSettingsImpactPlanner(() => composition.VoiceSessionActive),
+            composition);
+
+        var startup = await coordinator.ReconcileStartupAsync(CancellationToken.None);
+        var failed = Assert.Single(
+            startup.Aggregates,
+            state => state.Aggregate == SettingsAggregateId.Companion);
+
+        Assert.Equal(SettingsActivationState.Failed, failed.Activation);
+        Assert.Empty(composition.Refresh(startup.Active));
+        Assert.Equal(1, factory.Created.Count(item => item == SettingsAggregateId.Companion));
+
+        var retry = await coordinator.ActivateDesiredAsync(
+            SettingsAggregateId.Companion,
+            CancellationToken.None);
+        var attached = await coordinator.AttachAsync(
+            "settings-check",
+            previousEpoch: null,
+            afterSequence: null,
+            _ => { },
+            CancellationToken.None);
+        using var subscription = attached.Subscription;
+        var applied = Assert.Single(
+            attached.Snapshot.Aggregates,
+            state => state.Aggregate == SettingsAggregateId.Companion);
+
+        Assert.Equal(SettingsActivationState.Applied, retry.State);
+        Assert.Equal(SettingsActivationState.Applied, applied.Activation);
+        Assert.Equal(applied.DesiredRevision, applied.ActiveRevision);
+        Assert.Single(composition.Refresh(attached.Snapshot.Active));
+        Assert.Equal(2, factory.Created.Count(item => item == SettingsAggregateId.Companion));
+    }
+
+    [Fact]
     public async Task AggregateReplacementPreservesUnrelatedOwners()
     {
         var factory = new FakeFactory();

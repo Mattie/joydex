@@ -14,7 +14,8 @@ The first plugin release supports bundled, trusted plugins. It includes an expli
 |---|---|
 | src/Joydex.Core/Runtime/CompanionEngine.cs | Input detection, binding resolution, task-alert interception, prompt picker and map requests |
 | src/Joydex.Windows/Runtime/CompanionWorker.cs | Device polling and execution; separate acquisition from slow action dispatch |
-| src/Joydex.App/TrayApplicationContext.cs | Current composition and lifetime owner; move runtime responsibilities out in bounded steps |
+| src/Joydex.RuntimeHost/Production/ProductionRuntimeComposition.cs | Runtime aggregate composition, replacement and lifetime ownership |
+| src/Joydex.App/RuntimeTrayApplicationContext.cs | Tray and window projections over the independent runtime |
 | src/Joydex.Windows/Actions | Codex catalog, keybinding resolution, foreground guards and injected-key lifecycle |
 | src/Joydex.Windows/TaskAlerts | Hook pipe, task correlation, navigation, Guardian and LED coordination |
 | src/Joydex.DesktopBridgeHost | Existing experimental singleton Desktop broker; retain its constrained voice surface |

@@ -33,6 +33,7 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
     private readonly TaskCompletionSource _completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private SettingsBundle? _activeBundle;
+    private bool _activationAttempted;
     private bool _disposed;
 
     internal ProductionRuntimeComposition(
@@ -96,8 +97,10 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
         try
         {
             ThrowIfDisposed();
-            _activeBundle ??= activeSettings;
-            EnsureStartedAsync(activeSettings).GetAwaiter().GetResult();
+            if (!_activationAttempted)
+            {
+                EnsureStartedAsync(activeSettings).GetAwaiter().GetResult();
+            }
             _activeBundle = activeSettings;
             return _owners.TryGetValue(SettingsAggregateId.Companion, out var owner)
                 && owner is IProductionInputOwner inputs
@@ -201,6 +204,7 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
         try
         {
             ThrowIfDisposed();
+            _activationAttempted = true;
             if (aggregate == SettingsAggregateId.Voice
                 && _activeBundle is not null
                 && VoiceTargetSettings.TryApplyOnly(

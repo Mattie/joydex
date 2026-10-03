@@ -126,6 +126,8 @@ public sealed class DirectVirpilLedServiceTests
     {
         var factory = new RecordingFactory();
         var conflicts = new MutableConflict();
+        var conflictObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var options = TaskAlertLedOptions.CreateDefault() with { Mode = TaskAlertLedOutputMode.DirectHid };
         var snapshot = Snapshot([], options);
         await using var service = new DirectVirpilLedService(
@@ -134,6 +136,13 @@ public sealed class DirectVirpilLedServiceTests
             _ => { },
             snapshot,
             options);
+        service.StatusChanged += (_, status) =>
+        {
+            if (status.Contains("VPC utility active", StringComparison.Ordinal))
+            {
+                conflictObserved.TrySetResult();
+            }
+        };
 
         service.Apply(snapshot);
         Assert.True(await service.WaitForIdleAsync(TimeSpan.FromSeconds(2)));
@@ -141,7 +150,7 @@ public sealed class DirectVirpilLedServiceTests
         Assert.Single(throttle.Reports);
 
         conflicts.Value = true;
-        await Task.Delay(1100);
+        await conflictObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.False(await service.WaitForIdleAsync(TimeSpan.FromMilliseconds(100)));
         Assert.Single(throttle.Reports);
 
