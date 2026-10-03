@@ -168,6 +168,9 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         return _pickers.Select(picker => picker.ToConfig()).ToList();
     }
 
+    internal IReadOnlyList<DeviceProfile> GetDeviceProfiles() =>
+        _devices.Select(device => device.ToConfig()).ToList();
+
     protected override bool ProcessCmdKey(ref Message message, Keys keyData)
     {
         var target = _pickerOnly

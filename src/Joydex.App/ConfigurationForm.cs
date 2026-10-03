@@ -1744,24 +1744,35 @@ internal sealed class ConfigurationForm : ThemedForm
             .Select(process => process!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        var devices = _originalConfig.Devices.Select((profile, index) =>
+        {
+            var map = buttonMaps.TryGetValue(profile.Id, out var configuredMap)
+                ? configuredMap
+                : (Template: profile.ButtonMapTemplate, Hold: profile.ButtonMapHoldControl);
+            return new DeviceProfile
+            {
+                Id = profile.Id,
+                DisplayName = profile.DisplayName,
+                Selector = index == 0 ? device : profile.Selector,
+                BankSelectors = index == 0 ? bankSelectors : profile.BankSelectors,
+                ButtonMapTemplate = map.Template,
+                ButtonMapHoldControl = map.Hold,
+            };
+        }).ToList();
+        var promptPickers = _promptPickerEditor?.GetPromptPickers().ToList()
+            ?? _originalConfig.PromptPickers;
+        if (_promptPickerEditor is not null)
+        {
+            devices = MergePromptPickerDevices(
+                devices,
+                _promptPickerEditor.GetDeviceProfiles(),
+                promptPickers);
+        }
+
         var config = new CompanionConfig
         {
             Device = device,
-            Devices = _originalConfig.Devices.Select((profile, index) =>
-            {
-                var map = buttonMaps.TryGetValue(profile.Id, out var configuredMap)
-                    ? configuredMap
-                    : (Template: profile.ButtonMapTemplate, Hold: profile.ButtonMapHoldControl);
-                return new DeviceProfile
-                {
-                    Id = profile.Id,
-                    DisplayName = profile.DisplayName,
-                    Selector = index == 0 ? device : profile.Selector,
-                    BankSelectors = index == 0 ? bankSelectors : profile.BankSelectors,
-                    ButtonMapTemplate = map.Template,
-                    ButtonMapHoldControl = map.Hold,
-                };
-            }).ToList(),
+            Devices = devices,
             Polling = _originalConfig.Polling,
             Safety = new SafetyOptions
             {
@@ -1777,8 +1788,7 @@ internal sealed class ConfigurationForm : ThemedForm
             },
             BankSelectors = bankSelectors,
             Bindings = bindings,
-            PromptPickers = _promptPickerEditor?.GetPromptPickers().ToList()
-                ?? _originalConfig.PromptPickers,
+            PromptPickers = promptPickers,
         };
 
         var errors = parseErrors.Concat(ConfigValidator.Validate(config)).Distinct().ToArray();
@@ -1825,6 +1835,35 @@ internal sealed class ConfigurationForm : ThemedForm
 
     internal VoicePePreferences? RoomVoicePreferences { get; private set; }
     internal PebbleIndexPreferences? PebbleIndexPreferences { get; private set; }
+
+    internal static List<DeviceProfile> MergePromptPickerDevices(
+        IReadOnlyList<DeviceProfile> configuredDevices,
+        IReadOnlyList<DeviceProfile> editorDevices,
+        IReadOnlyList<PromptPickerConfig> promptPickers)
+    {
+        var referencedDeviceIds = promptPickers
+            .SelectMany(picker => new[]
+            {
+                picker.Controls.Up.DeviceId,
+                picker.Controls.Down.DeviceId,
+                picker.Controls.Insert.DeviceId,
+            })
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var merged = configuredDevices.ToList();
+        foreach (var device in editorDevices)
+        {
+            if (referencedDeviceIds.Contains(device.Id)
+                && !merged.Any(existing => string.Equals(
+                    existing.Id,
+                    device.Id,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                merged.Add(device);
+            }
+        }
+
+        return merged;
+    }
 
     private enum BindingCluster
     {

@@ -371,6 +371,61 @@ public sealed class LiveSettingsUiTests
         Assert.Equal("Current target", merged.VoiceTargetTaskLabel);
     }
 
+    [Fact]
+    public void SettingsSaveAddsOnlyUnconfiguredDevicesUsedByPromptPickers()
+    {
+        var configured = new DeviceProfile
+        {
+            Id = "configured",
+            DisplayName = "Configured controller",
+            Selector = new DeviceSelector { ProductNameContains = "Configured" },
+            ButtonMapTemplate = "edited-map",
+        };
+        var editorDevices = new[]
+        {
+            new DeviceProfile
+            {
+                Id = "configured",
+                DisplayName = "Configured controller",
+                Selector = configured.Selector,
+                ButtonMapTemplate = "stale-map",
+            },
+            new DeviceProfile
+            {
+                Id = "device-2",
+                DisplayName = "Picker controller",
+                Selector = new DeviceSelector { ProductNameContains = "Picker" },
+            },
+            new DeviceProfile
+            {
+                Id = "device-3",
+                DisplayName = "Unused controller",
+                Selector = new DeviceSelector { ProductNameContains = "Unused" },
+            },
+        };
+        var picker = new PromptPickerConfig
+        {
+            Id = "picker",
+            Name = "Picker",
+            Prompts = ["Prompt"],
+            Controls = new PromptPickerControls
+            {
+                Up = CompanionConfigNormalizer.Control("device-2", 1),
+                Down = CompanionConfigNormalizer.Control("configured", 2),
+                Insert = CompanionConfigNormalizer.Control("device-2", 3),
+            },
+        };
+
+        var merged = ConfigurationForm.MergePromptPickerDevices(
+            [configured],
+            editorDevices,
+            [picker]);
+
+        Assert.Equal(["configured", "device-2"], merged.Select(device => device.Id));
+        Assert.Equal("edited-map", merged[0].ButtonMapTemplate);
+        Assert.Equal("Picker controller", merged[1].DisplayName);
+    }
+
     private static InputObservation Observation(
         string sourceId,
         long sequence,
