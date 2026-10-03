@@ -342,6 +342,35 @@ public sealed class LiveSettingsUiTests
         Assert.Equal(2, pending.Sequence);
     }
 
+    [Fact]
+    public void SettingsSaveKeepsTheCurrentVoiceTargetWithOtherDraftEdits()
+    {
+        var candidate = VoicePePreferences.Default with
+        {
+            DeviceEndpoint = "http://draft-endpoint.local/",
+            RealtimeVoice = "marin",
+            VoiceTargetTaskId = "stale-task",
+            VoiceTargetHostId = "stale-host",
+            VoiceTargetTaskLabel = "Stale target",
+        };
+        var current = VoicePePreferences.Default with
+        {
+            DeviceEndpoint = "http://active-endpoint.local/",
+            RealtimeVoice = "cedar",
+            VoiceTargetTaskId = "current-task",
+            VoiceTargetHostId = "current-host",
+            VoiceTargetTaskLabel = "Current target",
+        };
+
+        var merged = TrayApplicationContext.MergeCurrentVoiceTarget(candidate, current);
+
+        Assert.Equal("http://draft-endpoint.local/", merged.DeviceEndpoint);
+        Assert.Equal("marin", merged.RealtimeVoice);
+        Assert.Equal("current-task", merged.VoiceTargetTaskId);
+        Assert.Equal("current-host", merged.VoiceTargetHostId);
+        Assert.Equal("Current target", merged.VoiceTargetTaskLabel);
+    }
+
     private static InputObservation Observation(
         string sourceId,
         long sequence,

@@ -915,7 +915,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var activeConfig = _activeConfig ?? ConfigStore.LoadOrCreate(_configPath);
         var activeVoicePreferences = _voicePePreferences.Normalize();
         var normalizedCandidate = CompanionConfigNormalizer.Normalize(candidateConfig);
-        var normalizedVoice = (candidateVoicePreferences ?? activeVoicePreferences).Normalize();
+        var normalizedVoice = MergeCurrentVoiceTarget(
+            (candidateVoicePreferences ?? activeVoicePreferences).Normalize(),
+            activeVoicePreferences);
         if (_demoMode && !normalizedCandidate.Safety.DryRun)
         {
             MessageBox.Show(
@@ -949,6 +951,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             candidatePebbleIndexPreferences?.Normalize());
         return true;
     }
+
+    internal static VoicePePreferences MergeCurrentVoiceTarget(
+        VoicePePreferences candidate,
+        VoicePePreferences current) => candidate with
+        {
+            VoiceTargetTaskId = current.VoiceTargetTaskId,
+            VoiceTargetHostId = current.VoiceTargetHostId,
+            VoiceTargetTaskLabel = current.VoiceTargetTaskLabel,
+        };
 
     private bool VoiceRuntimeChanged(
         CompanionConfig activeConfig,
