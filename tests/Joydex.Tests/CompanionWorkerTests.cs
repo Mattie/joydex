@@ -84,6 +84,66 @@ public sealed class CompanionWorkerTests
     }
 
     [Fact]
+    public async Task FailedCaptureCleanupIsRetriedBeforeInputDispatchResumes()
+    {
+        var logs = new List<string>();
+        var source = new CaptureCleanupJoystickSource();
+        var lifecycle = new RecordingKeyStateLifecycle([])
+        {
+            ReleaseFailuresRemaining = 1,
+        };
+        using var host = new RuntimeInputHost();
+        var observed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var captureFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.InputObserved += (_, _) => observed.TrySetResult();
+        host.CaptureChanged += (_, update) =>
+        {
+            if (update.Lease.Status == InputCaptureStatus.Failed)
+            {
+                captureFailed.TrySetResult();
+            }
+        };
+        var executor = new CodexActionExecutor(
+            new SafetyOptions { DryRun = true },
+            logs.Add,
+            new UnusedResolver(),
+            new OpenWorkingDirectoryOptions());
+        await using var worker = new CompanionWorker(
+            new CompanionConfig
+            {
+                Polling = new PollingOptions
+                {
+                    ConnectWarmupMs = 1,
+                    PollIntervalMs = 1,
+                    ReconnectIntervalMs = 1,
+                },
+            },
+            source,
+            executor,
+            logs.Add,
+            lifecycle,
+            inputHost: host);
+
+        worker.Start();
+        await observed.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var connected = Assert.Single(host.Sources, state => state.Connected);
+        var capture = host.BeginCapture(new InputCaptureRequest(
+            "ui-1",
+            connected.Descriptor.SourceId,
+            "binding",
+            connected.Generation));
+        source.EmitPress();
+
+        await captureFailed.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await lifecycle.ReleaseRetried.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.True(capture.Accepted);
+        Assert.Equal(lifecycle.ReleasedSources[0], lifecycle.ReleasedSources[1]);
+        Assert.DoesNotContain(logs, message => message.Contains("INPUT press", StringComparison.Ordinal));
+        await worker.StopAsync();
+    }
+
+    [Fact]
     public async Task WorkerShutdownRetriesGenerationCleanupBeforeCompleting()
     {
         var logs = new List<string>();
@@ -319,6 +379,69 @@ public sealed class CompanionWorkerTests
 
         public void Dispose()
         {
+        }
+    }
+
+    private sealed class CaptureCleanupJoystickSource : IJoystickSource
+    {
+        private readonly ManualResetEventSlim _emitPress = new(false);
+        private int _readCount;
+        private bool _pressed;
+        private IReadOnlyList<JoystickEvent> _latestBufferedButtonEvents = [];
+
+        public DirectInputDeviceInfo? ConnectedDevice { get; private set; }
+
+        public IReadOnlyList<JoystickEvent> LatestBufferedButtonEvents => _latestBufferedButtonEvents;
+
+        public bool TryConnect(DeviceSelector selector, out string message)
+        {
+            ConnectedDevice = new DirectInputDeviceInfo(
+                "Synthetic Stick",
+                "Synthetic Stick",
+                Guid.NewGuid(),
+                Guid.NewGuid());
+            message = "Connected to synthetic stick.";
+            return true;
+        }
+
+        public bool TryRead(out JoystickSnapshot? snapshot, out string? error)
+        {
+            _readCount++;
+            if (_readCount == 2)
+            {
+                _emitPress.Wait();
+                _pressed = true;
+                _latestBufferedButtonEvents =
+                [
+                    new JoystickEvent(JoystickEventKind.ButtonPressed, 0, 1),
+                ];
+            }
+            else
+            {
+                _latestBufferedButtonEvents = [];
+            }
+
+            snapshot = new JoystickSnapshot(
+                DateTimeOffset.UtcNow,
+                [_pressed, false, false, false, false, false, false, false],
+                [-1],
+                [0]);
+            error = null;
+            return true;
+        }
+
+        public void EmitPress() => _emitPress.Set();
+
+        public void Disconnect()
+        {
+            _emitPress.Set();
+            ConnectedDevice = null;
+        }
+
+        public void Dispose()
+        {
+            _emitPress.Set();
+            _emitPress.Dispose();
         }
     }
 

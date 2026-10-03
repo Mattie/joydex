@@ -24,6 +24,7 @@ public sealed class CompanionWorker(
 {
     private const int ShutdownCleanupAttempts = 3;
     private const int ShutdownCleanupRetryDelayMs = 100;
+    private static readonly EngineResult NoDispatch = new([], [], [], [], []);
     private readonly CompanionConfig _normalizedConfig = CompanionConfigNormalizer.Normalize(config);
     private readonly CompanionEngine _engine = new(config, taskAlertInputInterceptor, deviceId);
     private readonly DeviceSelector _deviceSelector = CompanionConfigNormalizer.Normalize(config).Devices
@@ -131,14 +132,15 @@ public sealed class CompanionWorker(
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            if (!RetryKeyCleanupBacklog("input dispatch"))
+            {
+                SetStatus("Waiting for injected-key cleanup");
+                await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
             if (source.ConnectedDevice is null)
             {
-                if (!RetryKeyCleanupBacklog("controller reconnect"))
-                {
-                    SetStatus("Waiting for injected-key cleanup");
-                    await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
                 if (source.TryConnect(_deviceSelector, out var connectionMessage))
                 {
                     _engine.Reset();
@@ -218,6 +220,11 @@ public sealed class CompanionWorker(
             observedEvents,
             async routedInput =>
             {
+                if (_keyCleanupBacklog.Contains(session))
+                {
+                    return NoDispatch;
+                }
+
                 var result = _engine.ProcessRouted(routedInput.Snapshot, routedInput.Events);
                 await DispatchAsync(result, session, cancellationToken).ConfigureAwait(false);
                 return result;
@@ -311,7 +318,17 @@ public sealed class CompanionWorker(
 
     private void PrepareForCapture(InputSourceSession session)
     {
-        _keyStateLifecycle.ReleaseHeldKeys(session);
+        Exception? cleanupFailure = null;
+        try
+        {
+            _keyStateLifecycle.ReleaseHeldKeys(session);
+        }
+        catch (Exception exception)
+        {
+            _keyCleanupBacklog.Add(session);
+            cleanupFailure = exception;
+        }
+
         _engine.ResetDispatchState();
         if (buttonMapHandler is not null)
         {
@@ -337,6 +354,11 @@ public sealed class CompanionWorker(
                     }
                 }
             }
+        }
+
+        if (cleanupFailure is not null)
+        {
+            throw new InvalidOperationException(cleanupFailure.Message, cleanupFailure);
         }
     }
 
