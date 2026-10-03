@@ -440,6 +440,58 @@ public sealed class LiveSettingsUiTests
         Assert.Equal("Picker controller", merged[1].DisplayName);
     }
 
+    [Fact]
+    public void PromptPickerEditorDoesNotDuplicateRuntimeSourceMappedByProductName()
+    {
+        var productGuid = Guid.NewGuid();
+        var instanceGuid = Guid.NewGuid();
+        var selector = new DeviceSelector
+        {
+            ProductNameContains = "VPC Throttle MT-50CM3",
+            ProductGuid = productGuid.ToString("D"),
+        };
+        var config = new CompanionConfig
+        {
+            Device = selector,
+            Devices =
+            [
+                new DeviceProfile
+                {
+                    Id = "configured",
+                    DisplayName = "Configured throttle",
+                    Selector = selector,
+                },
+            ],
+            Safety = new SafetyOptions { DryRun = true },
+        };
+        var runtimeSource = new RuntimeInputSourceCatalogEntry(
+            new InputSourceDescriptor("configured", "VPC Throttle MT-50CM3", instanceGuid.ToString("D")),
+            new DeviceSelector
+            {
+                ProductNameContains = "VPC Throttle MT-50CM3",
+                InstanceGuid = instanceGuid.ToString("D"),
+                ProductGuid = productGuid.ToString("D"),
+            },
+            instanceGuid,
+            productGuid,
+            ConfiguredDeviceId: "configured");
+        using var client = new StaticConfigurationInputClient([runtimeSource]);
+
+        RunSta(() =>
+        {
+            using var form = new PromptPickerEditorForm(
+                Path.Combine(Path.GetTempPath(), "unused-joydex-config.json"),
+                IntPtr.Zero,
+                pickerOnly: true,
+                initialConfig: config,
+                inputClient: client);
+
+            var device = Assert.Single(form.GetDeviceProfiles());
+            Assert.Equal("configured", device.Id);
+            Assert.Null(device.Selector.InstanceGuid);
+        });
+    }
+
     private static InputObservation Observation(
         string sourceId,
         long sequence,
@@ -694,6 +746,45 @@ public sealed class LiveSettingsUiTests
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class StaticConfigurationInputClient(
+        IReadOnlyList<RuntimeInputSourceCatalogEntry> sources) : IConfigurationInputClient
+    {
+        public string ConnectionId => "static-test-client";
+
+        public event EventHandler<InputObservationEventArgs>? InputObserved
+        {
+            add { }
+            remove { }
+        }
+
+        public event EventHandler<InputCaptureChangedEventArgs>? CaptureChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public IReadOnlyList<RuntimeInputSourceCatalogEntry> RefreshSources() => sources;
+
+        public InputSourceState? GetSourceState(string sourceId) => null;
+
+        public InputCaptureStartResult BeginCapture(
+            string sourceId,
+            string purpose,
+            long? expectedGeneration = null) => new(false, null, "Capture is not available in this test.");
+
+        public bool ObserveForCapture(string sourceId) => false;
+
+        public bool CancelCapture(Guid captureId) => false;
+
+        public void ReleaseCaptureObservation(string sourceId)
+        {
+        }
+
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class ContinuousJoystickSource(Guid instanceGuid) : IJoystickSource

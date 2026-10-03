@@ -1058,7 +1058,9 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         CompanionConfig config,
         IReadOnlyList<RuntimeInputSourceCatalogEntry> attached) => BuildDevices(
             config,
-            attached.Select(info => new AttachedDevice(info.Source.DisplayName, info.Selector)));
+            attached
+                .Where(info => string.IsNullOrWhiteSpace(info.ConfiguredDeviceId))
+                .Select(info => new AttachedDevice(info.Source.DisplayName, info.Selector)));
 
     private static List<MutableDevice> BuildDevices(
         CompanionConfig config,
