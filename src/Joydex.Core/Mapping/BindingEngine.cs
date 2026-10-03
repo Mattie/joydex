@@ -11,7 +11,8 @@ public sealed record ActionRequest(
     CodexAction Action,
     DateTimeOffset RequestedAt,
     int WheelNotches = ButtonBinding.DefaultWheelNotches,
-    string DeviceId = CompanionConfigNormalizer.PrimaryDeviceId);
+    string DeviceId = CompanionConfigNormalizer.PrimaryDeviceId,
+    long SourceGeneration = 0);
 
 public sealed class BindingEngine
 {

@@ -19,10 +19,13 @@ public sealed class CompanionWorker(
     Func<int, string, bool>? acknowledgeTerminalTaskAlert = null,
     string? deviceId = null,
     Func<PromptPickerRequest, CancellationToken, Task>? promptPickerHandler = null,
-    Action<ButtonMapVisibilityRequest>? buttonMapHandler = null) : IAsyncDisposable
+    Action<ButtonMapVisibilityRequest>? buttonMapHandler = null,
+    RuntimeInputHost? inputHost = null) : IAsyncDisposable
 {
     private const int ShutdownCleanupAttempts = 3;
     private const int ShutdownCleanupRetryDelayMs = 100;
+    private static readonly EngineResult NoDispatch = new([], [], [], [], []);
+    private readonly CompanionConfig _normalizedConfig = CompanionConfigNormalizer.Normalize(config);
     private readonly CompanionEngine _engine = new(config, taskAlertInputInterceptor, deviceId);
     private readonly DeviceSelector _deviceSelector = CompanionConfigNormalizer.Normalize(config).Devices
         .First(device => string.Equals(
@@ -30,10 +33,14 @@ public sealed class CompanionWorker(
             deviceId ?? CompanionConfigNormalizer.Normalize(config).Devices[0].Id,
             StringComparison.OrdinalIgnoreCase))
         .Selector;
+    private readonly string _deviceId = deviceId ?? CompanionConfigNormalizer.Normalize(config).Devices[0].Id;
     private readonly IInjectedKeyStateLifecycle _keyStateLifecycle = keyStateLifecycle ?? executor;
+    private readonly RuntimeInputHost _inputHost = inputHost ?? new RuntimeInputHost();
+    private readonly bool _ownsInputHost = inputHost is null;
     private CancellationTokenSource? _cancellation;
     private Task? _runTask;
-    private bool _heldInputCleanupPending;
+    private InputSourceSession? _inputSession;
+    private readonly HashSet<InputSourceSession> _keyCleanupBacklog = [];
 
     public event EventHandler<string>? StatusChanged;
 
@@ -85,6 +92,10 @@ public sealed class CompanionWorker(
     {
         await StopAsync().ConfigureAwait(false);
         source.Dispose();
+        if (_ownsInputHost)
+        {
+            _inputHost.Dispose();
+        }
         GC.SuppressFinalize(this);
     }
 
@@ -112,7 +123,8 @@ public sealed class CompanionWorker(
         }
         finally
         {
-            await ReleaseHeldKeysBeforeShutdownAsync().ConfigureAwait(false);
+            ReleaseCurrentSource("worker shutdown");
+            await RetryKeyCleanupBeforeShutdownAsync().ConfigureAwait(false);
         }
     }
 
@@ -120,14 +132,11 @@ public sealed class CompanionWorker(
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (_heldInputCleanupPending)
+            if (!RetryKeyCleanupBacklog("input dispatch"))
             {
-                _heldInputCleanupPending = !TryReleaseHeldKeys("controller disconnect retry");
-                if (_heldInputCleanupPending)
-                {
-                    await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
+                SetStatus("Waiting for injected-key cleanup");
+                await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
+                continue;
             }
 
             if (source.ConnectedDevice is null)
@@ -135,6 +144,15 @@ public sealed class CompanionWorker(
                 if (source.TryConnect(_deviceSelector, out var connectionMessage))
                 {
                     _engine.Reset();
+                    var connected = source.ConnectedDevice!;
+                    InputSourceSession session = default;
+                    session = _inputHost.ConnectSource(
+                        new InputSourceDescriptor(
+                            _deviceId,
+                            connected.ProductName,
+                            connected.InstanceGuid.ToString("D")),
+                        () => PrepareForCapture(session));
+                    _inputSession = session;
                     log(connectionMessage);
                     SetStatus(config.Safety.DryRun
                         ? $"Connected (dry run): {source.ConnectedDevice?.ProductName}"
@@ -143,7 +161,8 @@ public sealed class CompanionWorker(
 
                     if (source.TryRead(out var baseline, out _) && baseline is not null)
                     {
-                        _engine.Process(baseline, []);
+                        await ProcessSnapshotAsync(baseline, [], session, cancellationToken)
+                            .ConfigureAwait(false);
                     }
 
                     continue;
@@ -163,14 +182,60 @@ public sealed class CompanionWorker(
                     log($"DirectInput disconnected: {readError}");
                 }
 
-                _heldInputCleanupPending = !TryReleaseHeldKeys("controller disconnect");
+                ReleaseCurrentSource("controller disconnect");
+                RetryKeyCleanupBacklog("controller disconnect");
                 _engine.Reset();
                 SetStatus("Controller disconnected");
                 await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
                 continue;
             }
 
-            var result = _engine.Process(snapshot, source.LatestBufferedButtonEvents);
+            var currentSession = _inputSession;
+            if (currentSession is null)
+            {
+                throw new InvalidOperationException("The connected controller has no runtime input session.");
+            }
+
+            await ProcessSnapshotAsync(
+                    snapshot,
+                    source.LatestBufferedButtonEvents,
+                    currentSession.Value,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            await Task.Delay(config.Polling.PollIntervalMs, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private Task<EngineResult> ProcessSnapshotAsync(
+        JoystickSnapshot snapshot,
+        IReadOnlyList<JoystickEvent> bufferedButtonEvents,
+        InputSourceSession session,
+        CancellationToken cancellationToken)
+    {
+        var observedEvents = _engine.Observe(snapshot, bufferedButtonEvents);
+        return _inputHost.RouteAsync(
+            session,
+            snapshot,
+            observedEvents,
+            async routedInput =>
+            {
+                if (_keyCleanupBacklog.Contains(session))
+                {
+                    return NoDispatch;
+                }
+
+                var result = _engine.ProcessRouted(routedInput.Snapshot, routedInput.Events);
+                await DispatchAsync(result, session, cancellationToken).ConfigureAwait(false);
+                return result;
+            });
+    }
+
+    private async Task DispatchAsync(
+        EngineResult result,
+        InputSourceSession session,
+        CancellationToken cancellationToken)
+    {
             if (config.Safety.DryRun)
             {
                 foreach (var inputEvent in result.InputEvents)
@@ -234,7 +299,10 @@ public sealed class CompanionWorker(
             {
                 try
                 {
-                    await executor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+                    await executor.ExecuteAsync(
+                            request with { SourceGeneration = session.Generation },
+                            cancellationToken)
+                        .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -246,39 +314,111 @@ public sealed class CompanionWorker(
                     SetStatus("Action failed; see log");
                 }
             }
-
-            await Task.Delay(config.Polling.PollIntervalMs, cancellationToken).ConfigureAwait(false);
-        }
     }
 
-    private bool TryReleaseHeldKeys(string context)
+    private void PrepareForCapture(InputSourceSession session)
     {
+        Exception? cleanupFailure = null;
         try
         {
-            return _keyStateLifecycle.ReleaseHeldKeys();
+            _keyStateLifecycle.ReleaseHeldKeys(session);
         }
         catch (Exception exception)
         {
+            _keyCleanupBacklog.Add(session);
+            cleanupFailure = exception;
+        }
+
+        _engine.ResetDispatchState();
+        if (buttonMapHandler is not null)
+        {
+            foreach (var device in _normalizedConfig.Devices.Where(device =>
+                         string.Equals(
+                             device.ButtonMapHoldControl?.DeviceId,
+                             _deviceId,
+                             StringComparison.OrdinalIgnoreCase)))
+            {
+                try
+                {
+                    buttonMapHandler(new ButtonMapVisibilityRequest(device.Id, false));
+                }
+                catch (Exception exception)
+                {
+                    try
+                    {
+                        log($"Could not hide button map {device.Id} during capture: {exception.Message}");
+                    }
+                    catch
+                    {
+                        // A map callback and diagnostics cannot prevent safe capture preparation.
+                    }
+                }
+            }
+        }
+
+        if (cleanupFailure is not null)
+        {
+            throw new InvalidOperationException(cleanupFailure.Message, cleanupFailure);
+        }
+    }
+
+    private void ReleaseCurrentSource(string reason)
+    {
+        if (_inputSession is not { } session)
+        {
+            return;
+        }
+
+        _inputHost.DisconnectSource(session);
+        try
+        {
+            _keyStateLifecycle.ReleaseHeldKeys(session);
+        }
+        catch (Exception exception)
+        {
+            _keyCleanupBacklog.Add(session);
             try
             {
-                log($"Could not release held input during {context}: {exception.Message}");
+                log($"Could not release injected keys during {reason}: {exception.Message}");
             }
             catch
             {
                 // Cleanup must not fault the worker if the log has also become unavailable.
             }
-
-            return false;
         }
+        _inputSession = null;
     }
 
-    private async Task ReleaseHeldKeysBeforeShutdownAsync()
+    private bool RetryKeyCleanupBacklog(string reason)
+    {
+        foreach (var session in _keyCleanupBacklog.ToArray())
+        {
+            try
+            {
+                _keyStateLifecycle.ReleaseHeldKeys(session);
+                _keyCleanupBacklog.Remove(session);
+            }
+            catch (Exception exception)
+            {
+                try
+                {
+                    log($"Injected-key cleanup is still pending during {reason}: {exception.Message}");
+                }
+                catch
+                {
+                    // Cleanup retries continue even if diagnostics are unavailable.
+                }
+            }
+        }
+        return _keyCleanupBacklog.Count == 0;
+    }
+
+    private async Task RetryKeyCleanupBeforeShutdownAsync()
     {
         for (var attempt = 1; attempt <= ShutdownCleanupAttempts; attempt++)
         {
-            var context = attempt == 1 ? "worker shutdown" : "worker shutdown retry";
-            _heldInputCleanupPending = !TryReleaseHeldKeys(context);
-            if (!_heldInputCleanupPending)
+            var reason = attempt == 1 ? "worker shutdown" : "worker shutdown retry";
+            if (RetryKeyCleanupBacklog(reason))
             {
                 return;
             }

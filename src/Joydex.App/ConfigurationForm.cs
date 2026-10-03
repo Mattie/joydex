@@ -2,7 +2,7 @@ using Joydex.Core.Config;
 using Joydex.Core.Input;
 using Joydex.Core.Mapping;
 using Joydex.Core.Voice;
-using Joydex.Windows.Input;
+using Joydex.Windows.Runtime;
 
 namespace Joydex.App;
 
@@ -13,13 +13,13 @@ internal sealed class ConfigurationForm : ThemedForm
     private readonly string _windowStatePath;
     private readonly IntPtr _cooperativeWindowHandle;
     private readonly CompanionConfig _originalConfig;
-    private readonly DirectInputJoystickSource _source;
-    private readonly InputEventDetector _detector;
-    private readonly System.Windows.Forms.Timer _pollTimer;
+    private readonly IConfigurationInputClient? _inputClient;
     private readonly bool _documentationMode;
+    private readonly bool _demoMode;
     private readonly RoomVoiceSettingsControl? _roomVoiceSettings;
     private readonly PebbleIndexSettingsControl? _pebbleIndexSettings;
-    private readonly Action<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?> _saveConfiguration;
+    private readonly Func<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?, bool> _saveConfiguration;
+    private readonly InputObservationCoalescer _inputObservations = new();
     private readonly ComboBox _deviceCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label _connectionLabel = new() { AutoSize = true, Text = "Looking for controller..." };
     private readonly Label _inputLabel = new() { AutoSize = true, Text = "Held buttons: none" };
@@ -31,7 +31,12 @@ internal sealed class ConfigurationForm : ThemedForm
     private readonly Label _bindingCountLabel = new() { AutoSize = true, Tag = ThemeTone.Faint };
     private readonly Dictionary<BindingCluster, RoundedButton> _bindingClusterButtons = [];
     private BindingCluster _bindingCluster = BindingCluster.All;
-    private readonly CheckBox _dryRunCheckBox = new() { AutoSize = true, Text = "Dry run (log actions without sending them)" };
+    private readonly CheckBox _dryRunCheckBox = new()
+    {
+        AutoSize = true,
+        Name = "ConfigurationDryRun",
+        Text = "Dry run (log actions without sending them)",
+    };
     private readonly TextBox _simulatorProcessesTextBox = new() { Dock = DockStyle.Fill };
     private readonly ComboBox _openTargetCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly RoundedButton _captureBankButton = new() { Text = "Capture selector" };
@@ -41,12 +46,12 @@ internal sealed class ConfigurationForm : ThemedForm
     private readonly RoundedButton _loadDefaultsButton = new() { Text = "Load Codex Micro defaults" };
     private readonly Panel _pageHost = new() { Dock = DockStyle.Fill };
     private readonly List<NavigationPage> _navigationPages = [];
+    private IReadOnlyList<RuntimeInputSourceCatalogEntry> _availableSources = [];
     private CaptureTarget? _captureTarget;
+    private InputCaptureLease? _captureLease;
     private JoystickSnapshot? _lastSnapshot;
-    private DateTimeOffset _captureReadyAt;
-    private DateTimeOffset _nextReconnectAt;
     private string? _loadWarning;
-    private DirectInputDeviceInfo? _captureReturnDevice;
+    private RuntimeInputSourceCatalogEntry? _captureReturnDevice;
     private PromptPickerEditorForm? _promptPickerEditor;
 
     public ConfigurationForm(
@@ -56,16 +61,29 @@ internal sealed class ConfigurationForm : ThemedForm
         bool documentationMode = false,
         RoomVoiceSettingsControl? roomVoiceSettings = null,
         PebbleIndexSettingsControl? pebbleIndexSettings = null,
-        Action<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?>? saveConfiguration = null)
+        Func<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?, bool>? saveConfiguration = null,
+        CompanionConfig? initialConfig = null,
+        IConfigurationInputClient? inputClient = null,
+        bool demoMode = false)
     {
         _configPath = configPath;
         _windowStatePath = windowStatePath;
         _cooperativeWindowHandle = cooperativeWindowHandle;
         _documentationMode = documentationMode;
+        _demoMode = demoMode;
         _roomVoiceSettings = roomVoiceSettings;
         _pebbleIndexSettings = pebbleIndexSettings;
-        _saveConfiguration = saveConfiguration ?? ((config, _, _) => ConfigStore.Save(_configPath, config));
-        try
+        _inputClient = inputClient;
+        _saveConfiguration = saveConfiguration ?? ((config, _, _) =>
+        {
+            ConfigStore.Save(_configPath, config);
+            return true;
+        });
+        if (initialConfig is not null)
+        {
+            _originalConfig = CompanionConfigNormalizer.Normalize(initialConfig);
+        }
+        else try
         {
             _originalConfig = ConfigStore.LoadOrCreate(configPath);
         }
@@ -75,12 +93,7 @@ internal sealed class ConfigurationForm : ThemedForm
             _loadWarning = $"The existing configuration could not be loaded. Saving will replace it with the values shown here. {exception.Message}";
         }
 
-        _source = new DirectInputJoystickSource(cooperativeWindowHandle);
-        _detector = new InputEventDetector(_originalConfig.Polling.AxisTraceThreshold);
-        _pollTimer = new System.Windows.Forms.Timer { Interval = _originalConfig.Polling.PollIntervalMs };
-        _pollTimer.Tick += OnPoll;
-
-        Text = "Configure Joydex";
+        Text = _demoMode ? "Joydex — Demo / dry-run inspector" : "Configure Joydex";
         StartPosition = FormStartPosition.CenterScreen;
         SetLogicalMinimumSize(PreferredMinimumSize);
         Size = new Size(1500, 1000);
@@ -88,8 +101,28 @@ internal sealed class ConfigurationForm : ThemedForm
 
         RestoreWindowState();
 
+        if (!_documentationMode && _inputClient is not null)
+        {
+            _inputClient.InputObserved += OnInputObserved;
+            _inputClient.CaptureChanged += OnCaptureChanged;
+            try
+            {
+                _availableSources = _inputClient.RefreshSources();
+            }
+            catch (Exception exception)
+            {
+                _connectionLabel.Text = $"Could not enumerate devices: {exception.Message}";
+            }
+        }
+
         BuildLayout();
         PopulateFromConfig();
+        if (_demoMode)
+        {
+            _dryRunCheckBox.Checked = true;
+            _dryRunCheckBox.Enabled = false;
+            _dryRunCheckBox.Text = "Dry run (locked for this demo)";
+        }
 
         Shown += (_, _) =>
         {
@@ -99,8 +132,7 @@ internal sealed class ConfigurationForm : ThemedForm
                 return;
             }
 
-            ConnectSelectedDevice();
-            _pollTimer.Start();
+            RefreshSelectedDeviceStatus();
             if (_loadWarning is not null)
             {
                 MessageBox.Show(this, _loadWarning, "Configuration recovery", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -124,11 +156,16 @@ internal sealed class ConfigurationForm : ThemedForm
 
     protected override void OnFormClosed(FormClosedEventArgs eventArgs)
     {
-        _pollTimer.Stop();
-        _pollTimer.Dispose();
-        _source.Dispose();
+        CancelCapture();
+        _inputObservations.SelectSource(null);
         _promptPickerEditor?.Close();
         _promptPickerEditor?.Dispose();
+        if (_inputClient is not null)
+        {
+            _inputClient.InputObserved -= OnInputObserved;
+            _inputClient.CaptureChanged -= OnCaptureChanged;
+            _inputClient.Dispose();
+        }
         base.OnFormClosed(eventArgs);
     }
 
@@ -351,7 +388,12 @@ internal sealed class ConfigurationForm : ThemedForm
     private Control BuildPromptPickersPage()
     {
         var page = CreatePage(new Padding(0));
-        _promptPickerEditor = new PromptPickerEditorForm(_configPath, _cooperativeWindowHandle, pickerOnly: true);
+        _promptPickerEditor = new PromptPickerEditorForm(
+            _configPath,
+            _cooperativeWindowHandle,
+            pickerOnly: true,
+            initialConfig: _originalConfig,
+            inputClient: _inputClient);
         page.Controls.Add(_promptPickerEditor.EmbeddedPickerPage);
         return page;
     }
@@ -1019,7 +1061,17 @@ internal sealed class ConfigurationForm : ThemedForm
     {
         var save = new RoundedButton { Text = "Save and close", Variant = ButtonVariant.Primary };
         save.Click += OnSave;
-        var cancel = new RoundedButton { DialogResult = DialogResult.Cancel, Text = "Cancel" };
+        var cancel = new RoundedButton
+        {
+            DialogResult = DialogResult.Cancel,
+            Name = "ConfigurationCancel",
+            Text = "Cancel",
+        };
+        cancel.Click += (_, _) =>
+        {
+            DialogResult = DialogResult.Cancel;
+            Close();
+        };
         _cancelCaptureButton.Click += (_, _) => CancelCapture();
         var captureStatus = new FlowLayoutPanel
         {
@@ -1177,41 +1229,39 @@ internal sealed class ConfigurationForm : ThemedForm
 
     private void PopulateFromConfig()
     {
-        IReadOnlyList<DirectInputDeviceInfo> devices;
         if (_documentationMode)
         {
-            devices =
+            var selector = new DeviceSelector
+            {
+                ProductNameContains = "VPC Throttle MT-50CM3",
+                InstanceGuid = Guid.Empty.ToString(),
+                ProductGuid = Guid.Empty.ToString(),
+            };
+            _availableSources =
             [
-                new DirectInputDeviceInfo(
-                    "VPC Throttle MT-50CM3",
-                    "VPC Throttle MT-50CM3",
+                new RuntimeInputSourceCatalogEntry(
+                    new InputSourceDescriptor("documentation-cm3", "VPC Throttle MT-50CM3", Guid.Empty.ToString()),
+                    selector,
                     Guid.Empty,
-                    Guid.Empty),
+                    Guid.Empty,
+                    CompanionConfigNormalizer.PrimaryDeviceId),
             ];
         }
-        else
-        {
-            try
-            {
-                devices = _source.EnumerateDevices();
-            }
-            catch (Exception exception)
-            {
-                devices = [];
-                _connectionLabel.Text = $"Could not enumerate devices: {exception.Message}";
-            }
-        }
 
-        _deviceCombo.DisplayMember = nameof(DirectInputDeviceInfo.ProductName);
-        foreach (var device in devices)
+        _deviceCombo.Format += (_, eventArgs) =>
+        {
+            if (eventArgs.ListItem is RuntimeInputSourceCatalogEntry source)
+            {
+                eventArgs.Value = source.Source.DisplayName;
+            }
+        };
+        foreach (var device in _availableSources)
         {
             _deviceCombo.Items.Add(device);
         }
 
-        var selectedDevice = devices.FirstOrDefault(device =>
-            Guid.TryParse(_originalConfig.Device.InstanceGuid, out var configuredGuid)
-                ? device.InstanceGuid == configuredGuid
-                : device.ProductName.Contains(_originalConfig.Device.ProductNameContains, StringComparison.OrdinalIgnoreCase));
+        var selectedDevice = _availableSources.FirstOrDefault(device =>
+            Matches(device, _originalConfig.Device));
         if (selectedDevice is not null)
         {
             _deviceCombo.SelectedItem = selectedDevice;
@@ -1221,7 +1271,11 @@ internal sealed class ConfigurationForm : ThemedForm
             _deviceCombo.SelectedIndex = 0;
         }
 
-        _deviceCombo.SelectedIndexChanged += (_, _) => ConnectSelectedDevice();
+        _deviceCombo.SelectedIndexChanged += (_, _) =>
+        {
+            CancelCapture();
+            RefreshSelectedDeviceStatus();
+        };
 
         foreach (var (bank, button) in _originalConfig.BankSelectors)
         {
@@ -1261,35 +1315,21 @@ internal sealed class ConfigurationForm : ThemedForm
         }
     }
 
-    private void ConnectSelectedDevice()
+    private void RefreshSelectedDeviceStatus()
     {
-        CancelCapture();
-        _source.Disconnect();
-        _detector.Reset();
         _inputLabel.Text = "Held buttons: none";
-
-        if (_deviceCombo.SelectedItem is not DirectInputDeviceInfo selected)
+        if (_deviceCombo.SelectedItem is not RuntimeInputSourceCatalogEntry selected)
         {
+            _inputObservations.SelectSource(null);
             _connectionLabel.Text = "No DirectInput game controller is available.";
             return;
         }
 
-        var selector = new DeviceSelector
-        {
-            ProductNameContains = selected.ProductName,
-            InstanceGuid = selected.InstanceGuid.ToString(),
-            ProductGuid = selected.ProductGuid.ToString(),
-        };
-        if (_source.TryConnect(selector, out var message))
-        {
-            _connectionLabel.Text = message;
-            _captureReadyAt = DateTimeOffset.UtcNow.AddMilliseconds(_originalConfig.Polling.ConnectWarmupMs);
-        }
-        else
-        {
-            _connectionLabel.Text = message;
-            _nextReconnectAt = DateTimeOffset.UtcNow.AddMilliseconds(_originalConfig.Polling.ReconnectIntervalMs);
-        }
+        _inputObservations.SelectSource(selected.Source.SourceId);
+        var state = _inputClient?.GetSourceState(selected.Source.SourceId);
+        _connectionLabel.Text = state?.Connected == true
+            ? $"Observed by Joydex: {selected.Source.DisplayName}."
+            : $"Available: {selected.Source.DisplayName}. Capture will ask Joydex to observe this controller.";
     }
 
     private bool SelectBindingRowDeviceForCapture()
@@ -1314,10 +1354,8 @@ internal sealed class ConfigurationForm : ThemedForm
             return false;
         }
 
-        var attached = _deviceCombo.Items.Cast<DirectInputDeviceInfo>().FirstOrDefault(device =>
-            Guid.TryParse(profile.Selector.InstanceGuid, out var instanceGuid)
-                ? device.InstanceGuid == instanceGuid
-                : device.ProductName.Contains(profile.Selector.ProductNameContains, StringComparison.OrdinalIgnoreCase));
+        var attached = _deviceCombo.Items.Cast<RuntimeInputSourceCatalogEntry>().FirstOrDefault(device =>
+            Matches(device, profile.Selector));
         if (attached is null)
         {
             MessageBox.Show(this, $"{profile.DisplayName} is not attached.", "Capture control");
@@ -1326,11 +1364,11 @@ internal sealed class ConfigurationForm : ThemedForm
 
         if (ReferenceEquals(_deviceCombo.SelectedItem, attached))
         {
-            ConnectSelectedDevice();
+            RefreshSelectedDeviceStatus();
         }
         else
         {
-            var returnDevice = _deviceCombo.SelectedItem as DirectInputDeviceInfo;
+            var returnDevice = _deviceCombo.SelectedItem as RuntimeInputSourceCatalogEntry;
             _deviceCombo.SelectedItem = attached;
             _captureReturnDevice = returnDevice;
         }
@@ -1338,28 +1376,44 @@ internal sealed class ConfigurationForm : ThemedForm
         return true;
     }
 
-    private void OnPoll(object? sender, EventArgs eventArgs)
+    private void OnInputObserved(object? sender, InputObservationEventArgs eventArgs)
     {
-        if (_source.ConnectedDevice is null)
+        if (IsDisposed || Disposing || !IsHandleCreated)
         {
-            if (DateTimeOffset.UtcNow >= _nextReconnectAt)
+            return;
+        }
+
+        if (_inputObservations.TryQueue(eventArgs.Observation))
+        {
+            if (!RunOnUiThread(DrainInputObservation))
             {
-                ConnectSelectedDevice();
+                _inputObservations.CancelScheduledDispatch();
             }
-
-            return;
         }
+    }
 
-        if (!_source.TryRead(out var snapshot, out var error) || snapshot is null)
+    private void DrainInputObservation()
+    {
+        if (_inputObservations.TakePending() is { } observation)
         {
-            _connectionLabel.Text = $"Controller disconnected: {error ?? "unknown DirectInput error"}";
-            _nextReconnectAt = DateTimeOffset.UtcNow.AddMilliseconds(_originalConfig.Polling.ReconnectIntervalMs);
+            ApplyObservation(observation);
+        }
+    }
+
+    private void ApplyObservation(InputObservation observation)
+    {
+        if (_deviceCombo.SelectedItem is not RuntimeInputSourceCatalogEntry selected
+            || !string.Equals(
+                selected.Source.SourceId,
+                observation.Source.Descriptor.SourceId,
+                StringComparison.OrdinalIgnoreCase))
+        {
             return;
         }
 
-        _lastSnapshot = snapshot;
-
-        var heldButtons = snapshot.Buttons
+        _connectionLabel.Text = $"Observed by Joydex: {observation.Source.Descriptor.DisplayName}.";
+        _lastSnapshot = observation.Snapshot;
+        var heldButtons = observation.Snapshot.Buttons
             .Select((pressed, index) => (pressed, button: index + 1))
             .Where(item => item.pressed)
             .Select(item => item.button)
@@ -1369,39 +1423,64 @@ internal sealed class ConfigurationForm : ThemedForm
             ? "Held buttons: none"
             : $"Held buttons: {string.Join(", ", heldButtons)}";
 
-        if (snapshot.Timestamp < _captureReadyAt)
+        if (_captureTarget is null)
         {
-            _detector.Reset();
+            var pressed = observation.Events.LastOrDefault(input =>
+                input.Kind == JoystickEventKind.ButtonPressed);
+            if (pressed is not null)
+            {
+                _captureLabel.Text = $"Last pressed: button {pressed.DisplayIndex}.";
+            }
+        }
+    }
+
+    private void OnCaptureChanged(object? sender, InputCaptureChangedEventArgs eventArgs) =>
+        _ = RunOnUiThread(() => ApplyCaptureChange(eventArgs));
+
+    private void ApplyCaptureChange(InputCaptureChangedEventArgs eventArgs)
+    {
+        var current = _captureLease;
+        if (current is null
+            || current.CaptureId != eventArgs.Lease.CaptureId
+            || eventArgs.Lease.Revision < current.Revision)
+        {
             return;
         }
 
-        var bufferedEvents = _source.LatestBufferedButtonEvents;
-        var events = bufferedEvents
-            .Concat(_detector.Detect(snapshot).Where(detected => !bufferedEvents.Any(buffered => buffered == detected)))
-            .ToArray();
-        foreach (var inputEvent in events)
+        _captureLease = eventArgs.Lease;
+        if (eventArgs.Lease.Status == InputCaptureStatus.Active)
         {
-            if (inputEvent.Kind != JoystickEventKind.ButtonPressed)
-            {
-                continue;
-            }
-
-            if (_captureTarget is { } target
-                && target.RowIndex >= 0
-                && target.RowIndex < target.Grid.Rows.Count)
-            {
-                target.Grid.Rows[target.RowIndex].Cells[target.ColumnName].Value = inputEvent.DisplayIndex;
-                target.Grid.CurrentCell = target.Grid.Rows[target.RowIndex].Cells[target.ColumnName];
-                _captureLabel.Text = $"Captured button {inputEvent.DisplayIndex}.";
-                _captureTarget = null;
-                UpdateCaptureButtons();
-                RestoreDeviceAfterCapture();
-            }
-            else
-            {
-                _captureLabel.Text = $"Last pressed: button {inputEvent.DisplayIndex}.";
-            }
+            _captureLabel.Text = "Listening for a fresh controller button press…";
+            return;
         }
+        if (eventArgs.Lease.Status == InputCaptureStatus.Pending)
+        {
+            _captureLabel.Text = "Preparing the selected controller for capture…";
+            return;
+        }
+
+        var target = _captureTarget;
+        var capturedInput = eventArgs.CapturedInput;
+        var completed = eventArgs.Lease.Status == InputCaptureStatus.Completed
+            && capturedInput?.Kind == JoystickEventKind.ButtonPressed
+            && target is not null
+            && target.RowIndex >= 0
+            && target.RowIndex < target.Grid.Rows.Count;
+        _captureTarget = null;
+        _captureLease = null;
+        _inputClient?.ReleaseCaptureObservation(eventArgs.Lease.SourceId);
+        if (completed)
+        {
+            target!.Grid.Rows[target.RowIndex].Cells[target.ColumnName].Value = capturedInput!.DisplayIndex;
+            target.Grid.CurrentCell = target.Grid.Rows[target.RowIndex].Cells[target.ColumnName];
+            _captureLabel.Text = $"Captured button {capturedInput.DisplayIndex}.";
+        }
+        else
+        {
+            _captureLabel.Text = eventArgs.Detail ?? CaptureStatusText(eventArgs.Lease.Status);
+        }
+        UpdateCaptureButtons();
+        RestoreDeviceAfterCapture();
     }
 
     private void BeginCapture(DataGridView grid, string columnName, string instruction)
@@ -1412,20 +1491,60 @@ internal sealed class ConfigurationForm : ThemedForm
             return;
         }
 
+        if (_inputClient is null
+            || _deviceCombo.SelectedItem is not RuntimeInputSourceCatalogEntry source)
+        {
+            MessageBox.Show(this, "No Joydex input source is available.", "Capture control");
+            return;
+        }
+
         _captureTarget = new CaptureTarget(grid, grid.CurrentRow.Index, columnName);
-        _captureLabel.Text = instruction;
+        var state = _inputClient.GetSourceState(source.Source.SourceId);
+        var result = _inputClient.BeginCapture(
+            source.Source.SourceId,
+            instruction,
+            state?.Connected == true ? state.Generation : null);
+        if (!result.Accepted || result.Lease is null)
+        {
+            _captureTarget = null;
+            _captureLabel.Text = result.Error ?? "Capture could not start.";
+            UpdateCaptureButtons();
+            RestoreDeviceAfterCapture();
+            return;
+        }
+
+        _captureLease = result.Lease;
+        _captureLabel.Text = "Preparing the selected controller for capture…";
         UpdateCaptureButtons();
+        if (!_inputClient.ObserveForCapture(source.Source.SourceId))
+        {
+            var captureId = _captureLease.CaptureId;
+            _captureLease = null;
+            _captureTarget = null;
+            _inputClient.CancelCapture(captureId);
+            _captureLabel.Text = "Joydex could not observe the selected controller.";
+            UpdateCaptureButtons();
+            RestoreDeviceAfterCapture();
+        }
     }
 
     private void CancelCapture()
     {
-        if (_captureTarget is not null)
+        var capture = _captureLease;
+        var target = _captureTarget;
+        _captureLease = null;
+        _captureTarget = null;
+        if (capture is not null)
         {
-            _captureTarget = null;
-            _captureLabel.Text = "Capture cancelled.";
-            UpdateCaptureButtons();
-            RestoreDeviceAfterCapture();
+            _inputClient?.CancelCapture(capture.CaptureId);
+            _inputClient?.ReleaseCaptureObservation(capture.SourceId);
         }
+        if (capture is not null || target is not null)
+        {
+            _captureLabel.Text = "Capture cancelled.";
+        }
+        UpdateCaptureButtons();
+        RestoreDeviceAfterCapture();
     }
 
     private void RestoreDeviceAfterCapture()
@@ -1444,6 +1563,60 @@ internal sealed class ConfigurationForm : ThemedForm
         _captureBindingButton.Enabled = _captureTarget is null;
         _captureMapHoldButton.Enabled = _captureTarget is null;
         _cancelCaptureButton.Visible = _captureTarget is not null;
+    }
+
+    private bool RunOnUiThread(Action action)
+    {
+        if (IsDisposed || Disposing || !IsHandleCreated)
+        {
+            return false;
+        }
+
+        if (!InvokeRequired)
+        {
+            action();
+            return true;
+        }
+
+        try
+        {
+            BeginInvoke(() =>
+            {
+                if (!IsDisposed && !Disposing)
+                {
+                    action();
+                }
+            });
+            return true;
+        }
+        catch (InvalidOperationException) when (IsDisposed || Disposing || !IsHandleCreated)
+        {
+            return false;
+        }
+    }
+
+    private static string CaptureStatusText(InputCaptureStatus status) => status switch
+    {
+        InputCaptureStatus.Cancelled => "Capture cancelled.",
+        InputCaptureStatus.TimedOut => "Capture timed out.",
+        InputCaptureStatus.ClientDisconnected => "Capture window disconnected.",
+        InputCaptureStatus.SourceDisconnected => "The selected controller disconnected.",
+        InputCaptureStatus.GenerationChanged => "The selected controller reconnected. Start capture again.",
+        InputCaptureStatus.Failed => "Capture failed.",
+        _ => "Capture ended.",
+    };
+
+    private static bool Matches(RuntimeInputSourceCatalogEntry source, DeviceSelector selector)
+    {
+        if (Guid.TryParse(selector.InstanceGuid, out var instanceGuid))
+        {
+            return source.InstanceGuid == instanceGuid;
+        }
+
+        return string.IsNullOrWhiteSpace(selector.ProductNameContains)
+            || source.Source.DisplayName.Contains(
+                selector.ProductNameContains,
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private void RemoveCurrentRow(DataGridView grid)
@@ -1571,13 +1744,8 @@ internal sealed class ConfigurationForm : ThemedForm
             buttonMaps[deviceId] = (string.IsNullOrWhiteSpace(template) ? null : template, hold);
         }
 
-        var device = _deviceCombo.SelectedItem is DirectInputDeviceInfo selected
-            ? new DeviceSelector
-            {
-                ProductNameContains = selected.ProductName,
-                InstanceGuid = selected.InstanceGuid.ToString(),
-                ProductGuid = selected.ProductGuid.ToString(),
-            }
+        var device = _deviceCombo.SelectedItem is RuntimeInputSourceCatalogEntry selected
+            ? selected.Selector
             : _originalConfig.Device;
         var simulatorProcesses = _simulatorProcessesTextBox.Text
             .Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -1586,24 +1754,35 @@ internal sealed class ConfigurationForm : ThemedForm
             .Select(process => process!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        var devices = _originalConfig.Devices.Select((profile, index) =>
+        {
+            var map = buttonMaps.TryGetValue(profile.Id, out var configuredMap)
+                ? configuredMap
+                : (Template: profile.ButtonMapTemplate, Hold: profile.ButtonMapHoldControl);
+            return new DeviceProfile
+            {
+                Id = profile.Id,
+                DisplayName = profile.DisplayName,
+                Selector = index == 0 ? device : profile.Selector,
+                BankSelectors = index == 0 ? bankSelectors : profile.BankSelectors,
+                ButtonMapTemplate = map.Template,
+                ButtonMapHoldControl = map.Hold,
+            };
+        }).ToList();
+        var promptPickers = _promptPickerEditor?.GetPromptPickers().ToList()
+            ?? _originalConfig.PromptPickers;
+        if (_promptPickerEditor is not null)
+        {
+            devices = MergePromptPickerDevices(
+                devices,
+                _promptPickerEditor.GetDeviceProfiles(),
+                promptPickers);
+        }
+
         var config = new CompanionConfig
         {
             Device = device,
-            Devices = _originalConfig.Devices.Select((profile, index) =>
-            {
-                var map = buttonMaps.TryGetValue(profile.Id, out var configuredMap)
-                    ? configuredMap
-                    : (Template: profile.ButtonMapTemplate, Hold: profile.ButtonMapHoldControl);
-                return new DeviceProfile
-                {
-                    Id = profile.Id,
-                    DisplayName = profile.DisplayName,
-                    Selector = index == 0 ? device : profile.Selector,
-                    BankSelectors = index == 0 ? bankSelectors : profile.BankSelectors,
-                    ButtonMapTemplate = map.Template,
-                    ButtonMapHoldControl = map.Hold,
-                };
-            }).ToList(),
+            Devices = devices,
             Polling = _originalConfig.Polling,
             Safety = new SafetyOptions
             {
@@ -1619,8 +1798,7 @@ internal sealed class ConfigurationForm : ThemedForm
             },
             BankSelectors = bankSelectors,
             Bindings = bindings,
-            PromptPickers = _promptPickerEditor?.GetPromptPickers().ToList()
-                ?? _originalConfig.PromptPickers,
+            PromptPickers = promptPickers,
         };
 
         var errors = parseErrors.Concat(ConfigValidator.Validate(config)).Distinct().ToArray();
@@ -1650,7 +1828,10 @@ internal sealed class ConfigurationForm : ThemedForm
 
         try
         {
-            _saveConfiguration(config, roomVoicePreferences, pebbleIndexPreferences);
+            if (!_saveConfiguration(config, roomVoicePreferences, pebbleIndexPreferences))
+            {
+                return;
+            }
             RoomVoicePreferences = roomVoicePreferences;
             PebbleIndexPreferences = pebbleIndexPreferences;
             DialogResult = DialogResult.OK;
@@ -1664,6 +1845,35 @@ internal sealed class ConfigurationForm : ThemedForm
 
     internal VoicePePreferences? RoomVoicePreferences { get; private set; }
     internal PebbleIndexPreferences? PebbleIndexPreferences { get; private set; }
+
+    internal static List<DeviceProfile> MergePromptPickerDevices(
+        IReadOnlyList<DeviceProfile> configuredDevices,
+        IReadOnlyList<DeviceProfile> editorDevices,
+        IReadOnlyList<PromptPickerConfig> promptPickers)
+    {
+        var referencedDeviceIds = promptPickers
+            .SelectMany(picker => new[]
+            {
+                picker.Controls.Up.DeviceId,
+                picker.Controls.Down.DeviceId,
+                picker.Controls.Insert.DeviceId,
+            })
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var merged = configuredDevices.ToList();
+        foreach (var device in editorDevices)
+        {
+            if (referencedDeviceIds.Contains(device.Id)
+                && !merged.Any(existing => string.Equals(
+                    existing.Id,
+                    device.Id,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                merged.Add(device);
+            }
+        }
+
+        return merged;
+    }
 
     private enum BindingCluster
     {

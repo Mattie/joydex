@@ -60,6 +60,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
     private readonly Func<Uri, VoicePeWakeTuning, CancellationToken, Task<VoicePeWakeTuning>> _writeWakeTuning;
     private readonly Func<string, CancellationToken, Task<CodexProjectCatalog>>? _listProjects;
     private readonly Func<string, CodexVoiceWorkspaceProvisioningRequest, CancellationToken, Task<CodexVoiceWorkspaceProvisioningResult>>? _provisionWorkspace;
+    private readonly bool _allowExternalActions;
     private readonly CancellationTokenSource _tuningCancellation = new();
     private readonly CancellationToken _tuningCancellationToken;
     private readonly Button _testButton;
@@ -107,7 +108,8 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         Func<Uri, CancellationToken, Task<VoicePeWakeTuning>> readWakeTuning,
         Func<Uri, VoicePeWakeTuning, CancellationToken, Task<VoicePeWakeTuning>> writeWakeTuning,
         Func<string, CancellationToken, Task<CodexProjectCatalog>>? listProjects = null,
-        Func<string, CodexVoiceWorkspaceProvisioningRequest, CancellationToken, Task<CodexVoiceWorkspaceProvisioningResult>>? provisionWorkspace = null)
+        Func<string, CodexVoiceWorkspaceProvisioningRequest, CancellationToken, Task<CodexVoiceWorkspaceProvisioningResult>>? provisionWorkspace = null,
+        bool allowExternalActions = true)
     {
         ArgumentNullException.ThrowIfNull(initial);
         _testTarget = testTarget ?? throw new ArgumentNullException(nameof(testTarget));
@@ -115,6 +117,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         _writeWakeTuning = writeWakeTuning ?? throw new ArgumentNullException(nameof(writeWakeTuning));
         _listProjects = listProjects;
         _provisionWorkspace = provisionWorkspace;
+        _allowExternalActions = allowExternalActions;
         _tuningCancellationToken = _tuningCancellation.Token;
         _desktopBridgeHostPath = Path.Combine(AppContext.BaseDirectory, "Joydex.DesktopBridgeHost.exe");
         _desktopBridgeConfiguration = new DesktopBridgeConfigurationManager(
@@ -185,19 +188,38 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             Padding = new Padding(8, 0, 8, 4),
             WrapContents = true,
         };
-        var browseWorkspace = new RoundedButton { AutoSize = true, Text = "Browse folder…" };
+        var browseWorkspace = new RoundedButton
+        {
+            AutoSize = true,
+            Enabled = _allowExternalActions,
+            Name = "RoomVoiceBrowseWorkspace",
+            Text = "Browse folder…",
+        };
         browseWorkspace.Click += OnBrowseWorkspace;
         _provisionWorkspaceButton = new RoundedButton
         {
             AutoSize = true,
             Text = "Create fresh owned task",
+            Name = "RoomVoiceProvisionWorkspace",
             Variant = ButtonVariant.Primary,
-            Enabled = _provisionWorkspace is not null,
+            Enabled = _allowExternalActions && _provisionWorkspace is not null,
         };
         _provisionWorkspaceButton.Click += OnProvisionWorkspace;
-        var openWorkspace = new RoundedButton { AutoSize = true, Text = "Open workspace" };
+        var openWorkspace = new RoundedButton
+        {
+            AutoSize = true,
+            Enabled = _allowExternalActions,
+            Name = "RoomVoiceOpenWorkspace",
+            Text = "Open workspace",
+        };
         openWorkspace.Click += (_, _) => OpenSelectedDirectory(sessionRecords: false);
-        var openSessionRecords = new RoundedButton { AutoSize = true, Text = "Open session records" };
+        var openSessionRecords = new RoundedButton
+        {
+            AutoSize = true,
+            Enabled = _allowExternalActions,
+            Name = "RoomVoiceOpenSessionRecords",
+            Text = "Open session records",
+        };
         openSessionRecords.Click += (_, _) => OpenSelectedDirectory(sessionRecords: true);
         workspaceCommands.Controls.Add(browseWorkspace);
         workspaceCommands.Controls.Add(_provisionWorkspaceButton);
@@ -244,9 +266,21 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             Dock = DockStyle.Top,
             WrapContents = true,
         };
-        var installDesktopBridge = new RoundedButton { AutoSize = true, Text = "Install/Repair Desktop Bridge" };
+        var installDesktopBridge = new RoundedButton
+        {
+            AutoSize = true,
+            Enabled = _allowExternalActions,
+            Name = "RoomVoiceInstallDesktopBridge",
+            Text = "Install/Repair Desktop Bridge",
+        };
         installDesktopBridge.Click += (_, _) => InstallDesktopBridge();
-        var removeDesktopBridge = new RoundedButton { AutoSize = true, Text = "Remove Desktop Bridge" };
+        var removeDesktopBridge = new RoundedButton
+        {
+            AutoSize = true,
+            Enabled = _allowExternalActions,
+            Name = "RoomVoiceRemoveDesktopBridge",
+            Text = "Remove Desktop Bridge",
+        };
         removeDesktopBridge.Click += (_, _) => RemoveDesktopBridge();
         desktopBridgeCommands.Controls.Add(installDesktopBridge);
         desktopBridgeCommands.Controls.Add(removeDesktopBridge);
@@ -268,11 +302,20 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         desktopBridgeLayout.Controls.Add(desktopBridgeCommands, 0, 2);
         desktopBridgeLayout.Controls.Add(_desktopBridgeStatus, 0, 3);
         var desktopBridgeGroup = CreateGroup("Desktop task messaging (experimental)", desktopBridgeLayout);
-        RefreshDesktopBridgeStatus();
+        if (_allowExternalActions)
+        {
+            RefreshDesktopBridgeStatus();
+        }
+        else
+        {
+            _desktopBridgeStatus.Text = "Desktop Bridge actions are unavailable in the demo inspector.";
+        }
 
         _testButton = new RoundedButton
         {
             AutoSize = true,
+            Enabled = _allowExternalActions,
+            Name = "RoomVoiceTestTarget",
             Text = "Open LASTVOICE fallback task",
         };
         _testButton.Click += OnTestTarget;
@@ -291,6 +334,8 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         _loadTuningButton = new RoundedButton
         {
             AutoSize = true,
+            Enabled = _allowExternalActions,
+            Name = "RoomVoiceLoadTuning",
             Text = "Load from device",
         };
         _loadTuningButton.Click += OnLoadWakeTuning;
@@ -298,6 +343,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         {
             AutoSize = true,
             Enabled = false,
+            Name = "RoomVoiceApplyTuning",
             Text = "Apply to device",
             Variant = ButtonVariant.Primary,
         };
@@ -366,9 +412,19 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             Dock = DockStyle.Top,
             WrapContents = true,
         };
-        var openCaptures = new RoundedButton { Text = "Open legacy captures" };
+        var openCaptures = new RoundedButton
+        {
+            Enabled = _allowExternalActions,
+            Name = "RoomVoiceOpenCaptures",
+            Text = "Open legacy captures",
+        };
         openCaptures.Click += (_, _) => OpenDiagnosticsFolder();
-        var deleteCaptures = new RoundedButton { Text = "Delete legacy captures" };
+        var deleteCaptures = new RoundedButton
+        {
+            Enabled = _allowExternalActions,
+            Name = "RoomVoiceDeleteCaptures",
+            Text = "Delete legacy captures",
+        };
         deleteCaptures.Click += (_, _) => DeleteDiagnosticsCaptures();
         diagnosticsCommands.Controls.Add(openCaptures);
         diagnosticsCommands.Controls.Add(deleteCaptures);
@@ -496,6 +552,11 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private void InstallDesktopBridge()
     {
+        if (!_allowExternalActions)
+        {
+            return;
+        }
+
         try
         {
             if (!File.Exists(_desktopBridgeHostPath))
@@ -526,6 +587,11 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private void RemoveDesktopBridge()
     {
+        if (!_allowExternalActions)
+        {
+            return;
+        }
+
         try
         {
             _desktopBridgeConfiguration.Remove();
@@ -597,7 +663,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     internal async Task LoadProjectChoicesAsync()
     {
-        if (_listProjects is null)
+        if (!_allowExternalActions || _listProjects is null)
         {
             return;
         }
@@ -703,6 +769,11 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private void OnBrowseWorkspace(object? sender, EventArgs eventArgs)
     {
+        if (!_allowExternalActions)
+        {
+            return;
+        }
+
         using var dialog = new FolderBrowserDialog
         {
             Description = "Choose the working folder for the Joydex-owned Codex task.",
@@ -736,7 +807,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private async void OnProvisionWorkspace(object? sender, EventArgs eventArgs)
     {
-        if (_provisionWorkspace is null)
+        if (!_allowExternalActions || _provisionWorkspace is null)
         {
             return;
         }
@@ -819,6 +890,11 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private void OpenSelectedDirectory(bool sessionRecords)
     {
+        if (!_allowExternalActions)
+        {
+            return;
+        }
+
         try
         {
             var workspace = _agentWorkspacePath.Text.Trim();
@@ -917,6 +993,11 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private async void OnTestTarget(object? sender, EventArgs eventArgs)
     {
+        if (!_allowExternalActions)
+        {
+            return;
+        }
+
         var preferences = ReadPreferences();
         if (!CodexTaskReference.TryParse(preferences.PinnedTaskId, out _))
         {
@@ -959,6 +1040,13 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private async void OnLoaded(object? sender, EventArgs eventArgs)
     {
+        if (!_allowExternalActions)
+        {
+            _workspaceStatus.Text = "External actions are unavailable in the demo inspector.";
+            _tuningStatus.Text = "Device tuning is unavailable in the demo inspector.";
+            return;
+        }
+
         await LoadProjectChoicesAsync();
         if (VoicePeEndpoint.TryParse(_endpoint.Text, out _))
         {
@@ -971,6 +1059,12 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     internal async Task LoadWakeTuningAsync(bool showErrors)
     {
+        if (!_allowExternalActions)
+        {
+            _tuningStatus.Text = "Device tuning is unavailable in the demo inspector.";
+            return;
+        }
+
         if (!VoicePeEndpoint.TryParse(_endpoint.Text, out var endpoint))
         {
             _tuningStatus.Text = "Enter a valid Voice PE endpoint first.";
@@ -1024,6 +1118,11 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private async void OnApplyWakeTuning(object? sender, EventArgs eventArgs)
     {
+        if (!_allowExternalActions)
+        {
+            return;
+        }
+
         if (!VoicePeEndpoint.TryParse(_endpoint.Text, out var endpoint)
             || !string.Equals(endpoint.AbsoluteUri, _loadedTuningEndpoint, StringComparison.OrdinalIgnoreCase))
         {
@@ -1103,7 +1202,9 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         _codexAppServerPath.Enabled = ownerMode;
         _agentProject.Enabled = ownerMode;
         _agentWorkspacePath.Enabled = ownerMode;
-        _provisionWorkspaceButton.Enabled = ownerMode && _provisionWorkspace is not null;
+        _provisionWorkspaceButton.Enabled = _allowExternalActions
+            && ownerMode
+            && _provisionWorkspace is not null;
         _realtimeVoice.Enabled = ownerMode;
         _conversationSpeakerGain.Enabled = ownerMode;
         _desktopTaskMessaging.Enabled = ownerMode;
@@ -1149,6 +1250,11 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private void OpenDiagnosticsFolder()
     {
+        if (!_allowExternalActions)
+        {
+            return;
+        }
+
         try
         {
             var directory = DiagnosticsDirectory();
@@ -1166,6 +1272,11 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private void DeleteDiagnosticsCaptures()
     {
+        if (!_allowExternalActions)
+        {
+            return;
+        }
+
         var directory = DiagnosticsDirectory();
         if (!Directory.Exists(directory))
         {

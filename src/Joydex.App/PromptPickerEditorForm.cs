@@ -1,6 +1,7 @@
 using Joydex.Core.Config;
 using Joydex.Core.Input;
 using Joydex.Windows.Input;
+using Joydex.Windows.Runtime;
 
 namespace Joydex.App;
 
@@ -22,27 +23,47 @@ internal sealed class PromptPickerEditorForm : ThemedForm
     private readonly Dictionary<string, ComboBox> _controlBanks = [];
     private readonly Dictionary<string, NumericUpDown> _controlButtons = [];
     private readonly ModernDataGridView _deviceGrid = new();
-    private readonly DirectInputJoystickSource _captureSource;
+    private readonly DirectInputJoystickSource? _captureSource;
+    private readonly IConfigurationInputClient? _inputClient;
+    private readonly IReadOnlyList<RuntimeInputSourceCatalogEntry> _runtimeSources;
     private readonly System.Windows.Forms.Timer _captureTimer = new() { Interval = 16 };
     private readonly List<EditorNavigationPage> _navigationPages = [];
     private readonly bool _pickerOnly;
     private int _selectedNavigationPage;
     private bool _captureResourcesDisposed;
     private Action<int>? _captureTarget;
+    private InputCaptureLease? _captureLease;
+    private string? _captureSourceId;
     private DateTimeOffset _captureReadyAt;
     private int _currentPickerIndex = -1;
     private int _currentPromptIndex = -1;
     private bool _refreshingPromptSelection;
     internal Control EmbeddedPickerPage { get; }
 
-    public PromptPickerEditorForm(string configPath, IntPtr cooperativeWindowHandle, bool pickerOnly = false)
+    public PromptPickerEditorForm(
+        string configPath,
+        IntPtr cooperativeWindowHandle,
+        bool pickerOnly = false,
+        CompanionConfig? initialConfig = null,
+        IConfigurationInputClient? inputClient = null)
     {
         _pickerOnly = pickerOnly;
         _configPath = configPath;
         _cooperativeWindowHandle = cooperativeWindowHandle;
-        _original = CompanionConfigNormalizer.Normalize(ConfigStore.LoadOrCreate(configPath));
-        _captureSource = new DirectInputJoystickSource(cooperativeWindowHandle);
-        _devices = BuildDevices(_original, _captureSource.EnumerateDevices());
+        _original = CompanionConfigNormalizer.Normalize(initialConfig ?? ConfigStore.LoadOrCreate(configPath));
+        _inputClient = inputClient;
+        if (_inputClient is null)
+        {
+            _captureSource = new DirectInputJoystickSource(cooperativeWindowHandle);
+            _runtimeSources = [];
+            _devices = BuildDevices(_original, _captureSource.EnumerateDevices());
+        }
+        else
+        {
+            _runtimeSources = _inputClient.RefreshSources();
+            _devices = BuildDevices(_original, _runtimeSources);
+            _inputClient.CaptureChanged += OnRuntimeCaptureChanged;
+        }
         _pickers = _original.PromptPickers.Select(MutablePicker.FromConfig).ToList();
 
         Text = "Joydex Prompt Pickers and Device Maps";
@@ -127,9 +148,14 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         if (disposing && !_captureResourcesDisposed)
         {
             _captureResourcesDisposed = true;
+            CancelRuntimeCapture();
             _captureTimer.Stop();
             _captureTimer.Dispose();
-            _captureSource.Dispose();
+            _captureSource?.Dispose();
+            if (_inputClient is not null)
+            {
+                _inputClient.CaptureChanged -= OnRuntimeCaptureChanged;
+            }
         }
 
         base.Dispose(disposing);
@@ -141,6 +167,9 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         CommitPicker();
         return _pickers.Select(picker => picker.ToConfig()).ToList();
     }
+
+    internal IReadOnlyList<DeviceProfile> GetDeviceProfiles() =>
+        _devices.Select(device => device.ToConfig()).ToList();
 
     protected override bool ProcessCmdKey(ref Message message, Keys keyData)
     {
@@ -751,17 +780,7 @@ internal sealed class PromptPickerEditorForm : ThemedForm
             return;
         }
 
-        _captureSource.Disconnect();
-        if (!_captureSource.TryConnect(device.Selector, out var message))
-        {
-            MessageBox.Show(DialogOwner, message, "Capture control");
-            return;
-        }
-
-        _captureSource.TryRead(out _, out _);
-        _captureTarget = target;
-        _captureReadyAt = DateTimeOffset.UtcNow.AddMilliseconds(_original.Polling.ConnectWarmupMs);
-        _captureTimer.Start();
+        BeginCaptureForDevice(device, target);
     }
 
     private void OnCaptureTick(object? sender, EventArgs eventArgs)
@@ -771,7 +790,7 @@ internal sealed class PromptPickerEditorForm : ThemedForm
             return;
         }
 
-        if (!_captureSource.TryRead(out _, out _))
+        if (_captureSource is null || !_captureSource.TryRead(out _, out _))
         {
             return;
         }
@@ -822,7 +841,44 @@ internal sealed class PromptPickerEditorForm : ThemedForm
 
     private void BeginCaptureForDevice(MutableDevice device, Action<int> target)
     {
-        _captureSource.Disconnect();
+        if (_inputClient is not null)
+        {
+            CancelRuntimeCapture();
+            var source = _runtimeSources.FirstOrDefault(candidate =>
+                Matches(candidate, device.Selector));
+            if (source is null)
+            {
+                MessageBox.Show(DialogOwner, $"{device.DisplayName} is not attached.", "Capture control");
+                return;
+            }
+
+            _captureTarget = target;
+            var state = _inputClient.GetSourceState(source.Source.SourceId);
+            var result = _inputClient.BeginCapture(
+                source.Source.SourceId,
+                $"Capture a prompt-picker control for {device.DisplayName}.",
+                state?.Connected == true ? state.Generation : null);
+            if (!result.Accepted || result.Lease is null)
+            {
+                _captureTarget = null;
+                MessageBox.Show(DialogOwner, result.Error ?? "Capture could not start.", "Capture control");
+                return;
+            }
+
+            _captureLease = result.Lease;
+            _captureSourceId = source.Source.SourceId;
+            if (!_inputClient.ObserveForCapture(source.Source.SourceId))
+            {
+                CancelRuntimeCapture();
+                MessageBox.Show(
+                    DialogOwner,
+                    "Joydex could not observe the selected controller.",
+                    "Capture control");
+            }
+            return;
+        }
+
+        _captureSource!.Disconnect();
         if (!_captureSource.TryConnect(device.Selector, out var message))
         {
             MessageBox.Show(DialogOwner, message, "Capture control");
@@ -833,6 +889,96 @@ internal sealed class PromptPickerEditorForm : ThemedForm
         _captureTarget = target;
         _captureReadyAt = DateTimeOffset.UtcNow.AddMilliseconds(_original.Polling.ConnectWarmupMs);
         _captureTimer.Start();
+    }
+
+    private void OnRuntimeCaptureChanged(object? sender, InputCaptureChangedEventArgs eventArgs) =>
+        RunOnUiThread(() => ApplyRuntimeCaptureChange(eventArgs));
+
+    private void ApplyRuntimeCaptureChange(InputCaptureChangedEventArgs eventArgs)
+    {
+        var current = _captureLease;
+        if (current is null
+            || current.CaptureId != eventArgs.Lease.CaptureId
+            || eventArgs.Lease.Revision < current.Revision)
+        {
+            return;
+        }
+
+        _captureLease = eventArgs.Lease;
+        if (eventArgs.Lease.Status is InputCaptureStatus.Pending or InputCaptureStatus.Active)
+        {
+            return;
+        }
+
+        var target = _captureTarget;
+        _captureTarget = null;
+        _captureLease = null;
+        _captureSourceId = null;
+        _inputClient?.ReleaseCaptureObservation(eventArgs.Lease.SourceId);
+        if (eventArgs.Lease.Status == InputCaptureStatus.Completed
+            && eventArgs.CapturedInput is { Kind: JoystickEventKind.ButtonPressed } captured)
+        {
+            target?.Invoke(captured.DisplayIndex);
+        }
+    }
+
+    private void CancelRuntimeCapture()
+    {
+        var capture = _captureLease;
+        var sourceId = _captureSourceId;
+        _captureLease = null;
+        _captureTarget = null;
+        _captureSourceId = null;
+        if (capture is not null)
+        {
+            _inputClient?.CancelCapture(capture.CaptureId);
+        }
+        if (sourceId is not null)
+        {
+            _inputClient?.ReleaseCaptureObservation(sourceId);
+        }
+    }
+
+    private void RunOnUiThread(Action action)
+    {
+        var control = _pickerOnly ? EmbeddedPickerPage : this;
+        if (control.IsDisposed || control.Disposing || !control.IsHandleCreated)
+        {
+            return;
+        }
+
+        if (!control.InvokeRequired)
+        {
+            action();
+            return;
+        }
+
+        try
+        {
+            control.BeginInvoke(() =>
+            {
+                if (!control.IsDisposed && !control.Disposing)
+                {
+                    action();
+                }
+            });
+        }
+        catch (InvalidOperationException) when (control.IsDisposed || control.Disposing || !control.IsHandleCreated)
+        {
+        }
+    }
+
+    private static bool Matches(RuntimeInputSourceCatalogEntry source, DeviceSelector selector)
+    {
+        if (Guid.TryParse(selector.InstanceGuid, out var instanceGuid))
+        {
+            return source.InstanceGuid == instanceGuid;
+        }
+
+        return string.IsNullOrWhiteSpace(selector.ProductNameContains)
+            || source.Source.DisplayName.Contains(
+                selector.ProductNameContains,
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private void OnSave(object? sender, EventArgs eventArgs)
@@ -897,26 +1043,42 @@ internal sealed class PromptPickerEditorForm : ThemedForm
 
     private static List<MutableDevice> BuildDevices(
         CompanionConfig config,
-        IReadOnlyList<DirectInputDeviceInfo> attached)
+        IReadOnlyList<DirectInputDeviceInfo> attached) => BuildDevices(
+            config,
+            attached.Select(info => new AttachedDevice(
+                info.ProductName,
+                new DeviceSelector
+                {
+                    ProductNameContains = info.ProductName,
+                    InstanceGuid = info.InstanceGuid.ToString(),
+                    ProductGuid = info.ProductGuid.ToString(),
+                })));
+
+    private static List<MutableDevice> BuildDevices(
+        CompanionConfig config,
+        IReadOnlyList<RuntimeInputSourceCatalogEntry> attached) => BuildDevices(
+            config,
+            attached
+                .Where(info => string.IsNullOrWhiteSpace(info.ConfiguredDeviceId))
+                .Select(info => new AttachedDevice(info.Source.DisplayName, info.Selector)));
+
+    private static List<MutableDevice> BuildDevices(
+        CompanionConfig config,
+        IEnumerable<AttachedDevice> attached)
     {
         var devices = config.Devices.Select(MutableDevice.FromConfig).ToList();
         foreach (var info in attached)
         {
             if (devices.Any(device => string.Equals(
                     device.Selector.InstanceGuid,
-                    info.InstanceGuid.ToString(),
+                    info.Selector.InstanceGuid,
                     StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }
 
-            var selector = new DeviceSelector
-            {
-                ProductNameContains = info.ProductName,
-                InstanceGuid = info.InstanceGuid.ToString(),
-                ProductGuid = info.ProductGuid.ToString(),
-            };
-            var baseId = info.ProductName.Contains("WarBRD", StringComparison.OrdinalIgnoreCase)
+            var selector = info.Selector;
+            var baseId = info.DisplayName.Contains("WarBRD", StringComparison.OrdinalIgnoreCase)
                 ? "alpha-warbrd"
                 : $"device-{devices.Count + 1}";
             var id = baseId;
@@ -928,7 +1090,7 @@ internal sealed class PromptPickerEditorForm : ThemedForm
             devices.Add(new MutableDevice
             {
                 Id = id,
-                DisplayName = info.ProductName,
+                DisplayName = info.DisplayName,
                 Selector = selector,
                 Template = CompanionConfigNormalizer.InferTemplate(selector),
             });
@@ -936,6 +1098,8 @@ internal sealed class PromptPickerEditorForm : ThemedForm
 
         return devices;
     }
+
+    private sealed record AttachedDevice(string DisplayName, DeviceSelector Selector);
 
     private sealed class MutableDevice
     {

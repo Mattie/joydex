@@ -7,6 +7,79 @@ namespace Joydex.Tests;
 public sealed class RoomVoiceSettingsControlTests
 {
     [Fact]
+    public async Task DemoInspectorDisablesExternalCommandsAndSkipsTheirCallbacks()
+    {
+        var targetCalls = 0;
+        var readCalls = 0;
+        var writeCalls = 0;
+        var projectCalls = 0;
+        using var control = new RoomVoiceSettingsControl(
+            VoicePePreferences.Default with { DeviceEndpoint = "http://voice-pe.local/" },
+            _ =>
+            {
+                targetCalls++;
+                return Task.FromResult(true);
+            },
+            (_, _) =>
+            {
+                readCalls++;
+                return Task.FromResult(VoicePeWakeTuning.Default);
+            },
+            (_, tuning, _) =>
+            {
+                writeCalls++;
+                return Task.FromResult(tuning);
+            },
+            (_, _) =>
+            {
+                projectCalls++;
+                return Task.FromResult(new CodexProjectCatalog([]));
+            },
+            allowExternalActions: false);
+
+        var commandNames = new[]
+        {
+            "RoomVoiceBrowseWorkspace",
+            "RoomVoiceProvisionWorkspace",
+            "RoomVoiceOpenWorkspace",
+            "RoomVoiceOpenSessionRecords",
+            "RoomVoiceInstallDesktopBridge",
+            "RoomVoiceRemoveDesktopBridge",
+            "RoomVoiceTestTarget",
+            "RoomVoiceLoadTuning",
+            "RoomVoiceApplyTuning",
+            "RoomVoiceOpenCaptures",
+            "RoomVoiceDeleteCaptures",
+        };
+        foreach (var commandName in commandNames)
+        {
+            Assert.False(Assert.Single(control.Controls.Find(
+                commandName,
+                searchAllChildren: true)).Enabled);
+        }
+
+        await control.LoadProjectChoicesAsync();
+        await control.LoadWakeTuningAsync(showErrors: false);
+        foreach (var commandName in new[]
+                 {
+                     "RoomVoiceTestTarget",
+                     "RoomVoiceLoadTuning",
+                     "RoomVoiceApplyTuning",
+                 })
+        {
+            var button = Assert.IsAssignableFrom<Button>(Assert.Single(
+                control.Controls.Find(commandName, searchAllChildren: true)));
+            button.Enabled = true;
+            button.PerformClick();
+        }
+
+        Assert.Equal(0, targetCalls);
+        Assert.Equal(0, readCalls);
+        Assert.Equal(0, writeCalls);
+        Assert.Equal(0, projectCalls);
+    }
+
+    [Fact]
     public void ReadPreferencesPreservesProvisionedWorkspaceIdentity()
     {
         var taskId = Guid.NewGuid().ToString("D");
