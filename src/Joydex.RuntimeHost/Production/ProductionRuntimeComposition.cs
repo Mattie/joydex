@@ -55,6 +55,7 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
     public static ProductionRuntimeComposition Create(
         RuntimeInputHost inputHost,
         string companionConfigurationPath,
+        bool existingCompanionInstall,
         CancellationToken runtimeCancellationToken)
     {
         ArgumentNullException.ThrowIfNull(inputHost);
@@ -63,6 +64,7 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
             new WindowsProductionRuntimeOwnerFactory(
                 inputHost,
                 ProductionRuntimePaths.FromCompanionConfiguration(companionConfigurationPath),
+                existingCompanionInstall,
                 runtimeCancellationToken),
             runtimeCancellationToken);
     }

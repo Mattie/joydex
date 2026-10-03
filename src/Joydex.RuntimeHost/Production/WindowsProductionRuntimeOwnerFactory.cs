@@ -15,6 +15,7 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
     private readonly object _stateGate = new();
     private readonly RuntimeInputHost _inputHost;
     private readonly ProductionRuntimePaths _paths;
+    private readonly bool _existingCompanionInstall;
     private readonly FileLog _log;
     private readonly ProductionWindowsStaHost _windowsSta;
     private readonly IJoystickSourceFactory _inputSources;
@@ -31,10 +32,12 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
     public WindowsProductionRuntimeOwnerFactory(
         RuntimeInputHost inputHost,
         ProductionRuntimePaths paths,
+        bool existingCompanionInstall,
         CancellationToken runtimeCancellationToken)
     {
         _inputHost = inputHost ?? throw new ArgumentNullException(nameof(inputHost));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
+        _existingCompanionInstall = existingCompanionInstall;
         _log = new FileLog(paths.Log);
         _injectedKeys = new InjectedKeyStateOwner(_inputSender);
         _desktopBroker = new ProductionDesktopBrokerManager(
@@ -461,9 +464,7 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
             return;
         }
 
-        var existingInstallation = File.Exists(_paths.CompanionConfiguration)
-            || File.Exists(CodexKeybindingService.DefaultProvisioningStatePath);
-        var candidate = CodexKeybindingService.CreateDefault(WriteLog, existingInstallation);
+        var candidate = CodexKeybindingService.CreateDefault(WriteLog, _existingCompanionInstall);
         try
         {
             await candidate.InitializeAsync(cancellationToken).ConfigureAwait(false);

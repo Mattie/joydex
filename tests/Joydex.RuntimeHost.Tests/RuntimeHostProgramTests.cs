@@ -123,6 +123,36 @@ public sealed class RuntimeHostProgramTests : IDisposable
     }
 
     [Fact]
+    public void ProductionPolicyCapturesFreshInstallBeforeSettingsCreateConfiguration()
+    {
+        var selectedConfiguration = Path.Combine(_root, "fresh", "chosen-name.json");
+        var defaultConfiguration = Path.Combine(_root, "default", "config.json");
+        var provisioningState = Path.Combine(_root, "state", "codex-keybindings.json");
+        var policy = RuntimeHostLiveLaunchPolicy.Create(
+            RuntimeHostLaunchMode.Production,
+            selectedConfiguration,
+            pipeName: null,
+            instanceName: null,
+            deploymentDirectory: _root,
+            defaultConfigurationPath: defaultConfiguration,
+            provisioningStatePath: provisioningState);
+
+        Assert.False(policy.ExistingCompanionInstall);
+
+        ConfigStore.Save(selectedConfiguration, CompanionConfig.CreateSafeDefault());
+
+        Assert.False(policy.ExistingCompanionInstall);
+        Assert.True(RuntimeHostLiveLaunchPolicy.Create(
+            RuntimeHostLaunchMode.Production,
+            selectedConfiguration,
+            pipeName: null,
+            instanceName: null,
+            deploymentDirectory: _root,
+            defaultConfigurationPath: defaultConfiguration,
+            provisioningStatePath: provisioningState).ExistingCompanionInstall);
+    }
+
+    [Fact]
     public async Task ProductionWithoutArgumentsUsesTheDefaultConfigurationSelection()
     {
         var previous = Environment.GetEnvironmentVariable("JOYDEX_CONFIG");

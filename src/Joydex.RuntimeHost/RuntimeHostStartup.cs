@@ -4,6 +4,7 @@ using Joydex.Core.Runtime;
 using Joydex.Ipc;
 using Joydex.RuntimeHost.Production;
 using Joydex.RuntimeHost.Settings;
+using Joydex.Windows.Actions;
 
 namespace Joydex.RuntimeHost;
 
@@ -25,14 +26,17 @@ internal sealed record RuntimeHostLiveLaunchPolicy(
     RuntimeIpcEndpoint Endpoint,
     string InstanceName,
     string JoydexAppPath,
-    string RuntimeHostPath)
+    string RuntimeHostPath,
+    bool ExistingCompanionInstall)
 {
     public static RuntimeHostLiveLaunchPolicy Create(
         RuntimeHostLaunchMode mode,
         string configurationPath,
         string? pipeName,
         string? instanceName,
-        string? deploymentDirectory = null)
+        string? deploymentDirectory = null,
+        string? defaultConfigurationPath = null,
+        string? provisioningStatePath = null)
     {
         if (!Enum.IsDefined(mode))
         {
@@ -87,6 +91,14 @@ internal sealed record RuntimeHostLiveLaunchPolicy(
 
         var deploymentRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
             deploymentDirectory ?? AppContext.BaseDirectory));
+        var existingCompanionInstall = mode == RuntimeHostLaunchMode.Production
+            && HasExistingCompanionInstallation(
+                normalizedConfigurationPath,
+                defaultConfigurationPath ?? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Joydex",
+                    "config.json"),
+                provisioningStatePath ?? CodexKeybindingService.DefaultProvisioningStatePath);
         return new RuntimeHostLiveLaunchPolicy(
             mode,
             Path.TrimEndingDirectorySeparator(dataRoot),
@@ -94,8 +106,17 @@ internal sealed record RuntimeHostLiveLaunchPolicy(
             endpoint,
             normalizedInstanceName,
             Path.Combine(deploymentRoot, "Joydex.App.exe"),
-            Path.Combine(deploymentRoot, "Joydex.RuntimeHost.exe"));
+            Path.Combine(deploymentRoot, "Joydex.RuntimeHost.exe"),
+            existingCompanionInstall);
     }
+
+    private static bool HasExistingCompanionInstallation(
+        string selectedConfigurationPath,
+        string defaultConfigurationPath,
+        string provisioningStatePath) =>
+        File.Exists(selectedConfigurationPath)
+        || File.Exists(defaultConfigurationPath)
+        || File.Exists(provisioningStatePath);
 }
 
 internal interface IRuntimeHostLiveRunner
@@ -589,6 +610,7 @@ internal sealed class WindowsRuntimeHostComponentFactory : IRuntimeHostComponent
                 var composition = ProductionRuntimeComposition.Create(
                     inputHost,
                     policy.ConfigurationPath,
+                    policy.ExistingCompanionInstall,
                     runtimeCancellationToken);
                 compositionCompletion = composition.Completion;
                 return composition;
