@@ -176,11 +176,12 @@ public sealed class DemoRuntimeCompositionTests
             TimeSpan.FromMilliseconds(6500),
             snapshot => snapshot.Buttons[11]);
         var completion = await captured;
-        composition.ReleaseCaptureObservation(captureId);
-        await WaitForObservationAfterAsync(
+        var observationAfterCapture = WaitForObservationAfterAsync(
             inputHost,
             "cm3",
             capturedObservation.Sequence);
+        composition.ReleaseCaptureObservation(captureId);
+        await observationAfterCapture;
 
         Assert.Equal(12, completion.CapturedInput?.DisplayIndex);
         Assert.Equal(sources["cm3"], inputHost.Sources.Single(source =>

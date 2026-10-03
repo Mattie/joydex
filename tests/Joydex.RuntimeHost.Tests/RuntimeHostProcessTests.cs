@@ -8,7 +8,7 @@ public sealed class RuntimeHostProcessTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(20);
 
-    [Fact]
+    [NonElevatedRuntimeIpcFact]
     public async Task ActualHostUsesTheExactCustomConfigurationAndKeepsRuntimeIdentityAfterClientLoss()
     {
         using var scratch = new ScratchHostDirectory();
@@ -35,7 +35,7 @@ public sealed class RuntimeHostProcessTests
             Long(inspected, "attach", "snapshot", "input", "sources", 0, "generation"));
     }
 
-    [Fact]
+    [NonElevatedRuntimeIpcFact]
     public async Task DisconnectReleasesCaptureWithoutTransferringItToReplacementClient()
     {
         using var scratch = new ScratchHostDirectory();
@@ -54,7 +54,7 @@ public sealed class RuntimeHostProcessTests
         Assert.Equal(ResourceIdentities(captured, "snapshot"), ResourceIdentities(inspected, "attach", "snapshot"));
     }
 
-    [Fact]
+    [NonElevatedRuntimeIpcFact]
     public async Task ReconnectReplaysSettingsEventsAndRejectsAStaleRevision()
     {
         using var scratch = new ScratchHostDirectory();
@@ -78,7 +78,7 @@ public sealed class RuntimeHostProcessTests
         Assert.Equal("conflict", String(reconnect, "stale", "status"));
     }
 
-    [Fact]
+    [NonElevatedRuntimeIpcFact]
     public async Task ReplacementClientRecoversACompletedOperationAfterClientLoss()
     {
         using var scratch = new ScratchHostDirectory();

@@ -13,6 +13,10 @@ internal static partial class WindowsPipePeerVerifier
     private const uint ProcessQueryLimitedInformation = 0x1000;
     private const uint TokenQuery = 0x0008;
     private const int ErrorPipeLocal = 229;
+    private static int _treatedAsUnelevatedTestProcessId;
+
+    internal static void TreatCurrentProcessAsUnelevatedForTests() =>
+        Volatile.Write(ref _treatedAsUnelevatedTestProcessId, Environment.ProcessId);
 
     public static RuntimeIpcPeer VerifyClient(NamedPipeServerStream pipe, int expectedSessionId)
     {
@@ -67,7 +71,8 @@ internal static partial class WindowsPipePeerVerifier
             {
                 throw new RuntimeIpcAuthenticationException("The named-pipe peer belongs to another Windows user.");
             }
-            if (IsElevated(tokenHandle))
+            if (IsElevated(tokenHandle)
+                && processId != Volatile.Read(ref _treatedAsUnelevatedTestProcessId))
             {
                 throw new RuntimeIpcAuthenticationException("Elevated named-pipe peers are not accepted.");
             }
