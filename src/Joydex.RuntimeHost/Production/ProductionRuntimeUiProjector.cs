@@ -336,7 +336,7 @@ internal sealed class ProductionRuntimeUiProjector
         {
             var loaded = new VoiceTaskOutbox(preferences.AgentWorkspacePath).Load();
             truncated = loaded.Count > RuntimeUiLimits.MaximumVoiceOutboxDrafts;
-            return loaded.Take(RuntimeUiLimits.MaximumVoiceOutboxDrafts).Select(draft =>
+            return loaded.TakeLast(RuntimeUiLimits.MaximumVoiceOutboxDrafts).Select(draft =>
             {
                 var preview = Limit(draft.Message, RuntimeUiLimits.MaximumVoiceOutboxPreviewCharacters);
                 return new RuntimeVoiceOutboxDraft(
@@ -426,7 +426,7 @@ internal sealed class ProductionRuntimeUiProjector
         if (JsonSerializer.SerializeToUtf8Bytes(update, update.GetType(), JsonOptions).Length
             > RuntimeUiLimits.MaximumEncodedEventBytes)
         {
-            return;
+            update = new RuntimeUiEvent(RuntimeEventKind.UiResynchronizationRequired);
         }
         var handlers = Changed;
         if (handlers is null)

@@ -693,7 +693,8 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
             messaging.SelectedTask?.TaskId ?? string.Empty,
             messaging.SelectedTask?.HostId ?? string.Empty,
             messaging.SelectedLabel,
-            ToOutboxDrafts(messaging.Drafts));
+            ToOutboxDrafts(messaging.Drafts),
+            messaging.DraftsTruncated);
 
     private static RoomVoiceOutboxDraftSummary[] ToOutboxDrafts(
         IEnumerable<RuntimeVoiceOutboxDraft> drafts) =>

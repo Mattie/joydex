@@ -125,6 +125,7 @@ public enum RuntimeEventKind
     TaskAlertsChanged,
     VoiceChanged,
     PebbleIndexChanged,
+    UiResynchronizationRequired,
 }
 
 public sealed record RuntimeEvent(

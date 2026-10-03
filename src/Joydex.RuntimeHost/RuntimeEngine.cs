@@ -446,20 +446,36 @@ internal sealed class RuntimeEngine : IAsyncDisposable
             _sessions.Clear();
         }
 
-        _runtimeCancellation.Cancel();
-        _composition.UiChanged -= OnUiChanged;
-        _composition.ActivationBoundaryAvailable -= OnActivationBoundaryAvailable;
+        var failures = new List<Exception>();
+        void Cleanup(Action action)
+        {
+            try { action(); }
+            catch (Exception exception) { failures.Add(exception); }
+        }
+        async ValueTask CleanupAsync(Func<ValueTask> action)
+        {
+            try { await action().ConfigureAwait(false); }
+            catch (Exception exception) { failures.Add(exception); }
+        }
+
+        Cleanup(_runtimeCancellation.Cancel);
+        Cleanup(() => _composition.UiChanged -= OnUiChanged);
+        Cleanup(() => _composition.ActivationBoundaryAvailable -= OnActivationBoundaryAvailable);
         foreach (var session in sessions)
         {
-            await session.DisposeFromEngineAsync().ConfigureAwait(false);
+            await CleanupAsync(session.DisposeFromEngineAsync).ConfigureAwait(false);
         }
         await _activationBoundaryGate.WaitAsync().ConfigureAwait(false);
         _activationBoundaryGate.Release();
-        await _settings.DisposeAsync().ConfigureAwait(false);
-        await _composition.DisposeAsync().ConfigureAwait(false);
-        _inputHost.Dispose();
-        _runtimeCancellation.Dispose();
-        _ownershipLease.Dispose();
+        await CleanupAsync(_settings.DisposeAsync).ConfigureAwait(false);
+        await CleanupAsync(_composition.DisposeAsync).ConfigureAwait(false);
+        Cleanup(_inputHost.Dispose);
+        Cleanup(_runtimeCancellation.Dispose);
+        Cleanup(_ownershipLease.Dispose);
+        if (failures.Count > 0)
+        {
+            throw new AggregateException("Runtime cleanup failed.", failures);
+        }
     }
 
     private void OnUiChanged(object? sender, RuntimeUiEvent runtimeUiEvent)

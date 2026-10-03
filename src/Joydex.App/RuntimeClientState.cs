@@ -490,6 +490,9 @@ internal sealed class RuntimeClientState : IRuntimeRpcClient
         var ui = snapshot.Ui ?? new RuntimeUiSnapshot();
         switch (runtimeEvent.Kind)
         {
+            case RuntimeEventKind.UiResynchronizationRequired:
+                // The retained state is newer than the delta's wire budget could carry.
+                return false;
             case RuntimeEventKind.SettingsChanged when runtimeEvent.Settings is { } settings:
                 updated = snapshot with { Settings = settings };
                 return true;

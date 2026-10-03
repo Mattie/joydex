@@ -12,6 +12,22 @@ namespace Joydex.Tests;
 public sealed class RuntimeClientStateTests
 {
     [Fact]
+    public async Task OversizedUiEventRequiresSnapshotAndResumesAtItsCursor()
+    {
+        var client = new RuntimeClientState(new ImmediateSynchronizationContext());
+        var epoch = Guid.NewGuid();
+        client.Initialize(Attach(Snapshot(epoch, eventCursor: 2, bank: 2)));
+        await client.RuntimeEventAsync(new RuntimeEvent(epoch, 3, RuntimeEventKind.UiResynchronizationRequired), default);
+        Assert.True(client.Current.ResynchronizationRequired);
+        Assert.Equal(2, client.Current.Snapshot!.EventCursor);
+
+        client.ApplySnapshot(Snapshot(epoch, eventCursor: 3, bank: 4));
+        Assert.False(client.Current.ResynchronizationRequired);
+        Assert.Equal(3, client.Current.Snapshot!.EventCursor);
+        Assert.Equal(4, client.Current.Snapshot.Settings.Desired.TaskAlerts.Bank);
+    }
+
+    [Fact]
     public async Task AttachBuffersOnlyPostSnapshotEventsAndPublishesOneInitializedState()
     {
         var client = new RuntimeClientState(new ImmediateSynchronizationContext());

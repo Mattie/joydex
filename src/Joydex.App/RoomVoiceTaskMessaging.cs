@@ -11,7 +11,8 @@ internal sealed record RoomVoiceTaskMessagingSnapshot(
     string SelectedTaskId,
     string SelectedHostId,
     string SelectedLabel,
-    IReadOnlyList<RoomVoiceOutboxDraftSummary> Drafts)
+    IReadOnlyList<RoomVoiceOutboxDraftSummary> Drafts,
+    bool DraftsTruncated = false)
 {
     public RoomVoiceTaskMessagingSnapshot(
         bool Enabled,
@@ -281,6 +282,9 @@ internal sealed class VoiceTaskOutboxForm : ThemedForm
 
     private void ApplySnapshot(RoomVoiceTaskMessagingSnapshot snapshot)
     {
+        Text = snapshot.DraftsTruncated
+            ? $"Pending Room Voice messages — newest {snapshot.Drafts.Count}; older messages remain in the outbox"
+            : "Pending Room Voice messages";
         _availableTargets = snapshot.Tasks;
         _targets.BeginUpdate();
         _targets.Items.Clear();

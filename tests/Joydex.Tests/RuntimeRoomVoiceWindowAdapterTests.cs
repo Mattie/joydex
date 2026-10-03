@@ -23,7 +23,7 @@ public sealed class RuntimeRoomVoiceWindowAdapterTests
                 IsPartial: true)],
             Messaging(
                 tasks: [TaskContract("First task")],
-                drafts: [Draft("draft-1", "bounded preview", truncated: true)]));
+                drafts: [Draft("draft-1", "bounded preview", truncated: true)]) with { DraftsTruncated = true });
 
         Assert.True(adapter.BeginConnection(4, runner, targets, snapshot));
         var initial = adapter.Conversation.GetSnapshot();
@@ -34,6 +34,7 @@ public sealed class RuntimeRoomVoiceWindowAdapterTests
         var draft = Assert.Single(adapter.TaskMessaging.LoadDrafts());
         Assert.Equal("bounded preview", draft.MessagePreview);
         Assert.True(draft.MessageTruncated);
+        Assert.True(adapter.GetTaskMessagingSnapshot().DraftsTruncated);
 
         var stale = new RuntimeVoiceEvent(
             Session(RuntimeVoiceSessionState.Error, active: false, version: 8),

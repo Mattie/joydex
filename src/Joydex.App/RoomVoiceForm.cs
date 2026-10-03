@@ -579,7 +579,9 @@ internal sealed class RoomVoiceForm : ThemedForm
     private void UpdatePendingMessages(IReadOnlyList<RoomVoiceOutboxDraftSummary> drafts)
     {
         _pendingMessagesButton.Visible = drafts.Count > 0;
-        _pendingMessagesButton.Text = $"Pending messages ({drafts.Count})";
+        _pendingMessagesButton.Text = _taskMessagingSnapshot?.DraftsTruncated == true
+            ? $"Pending messages ({drafts.Count}+)"
+            : $"Pending messages ({drafts.Count})";
         if (_taskMessagingSnapshot is { } snapshot)
         {
             _taskMessagingSnapshot = snapshot with { Drafts = drafts };

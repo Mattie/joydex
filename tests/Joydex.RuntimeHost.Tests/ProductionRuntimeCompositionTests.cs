@@ -729,6 +729,49 @@ public sealed class ProductionRuntimeCompositionTests
     }
 
     [Fact]
+    public void VoiceProjectionIncludesNewestDraftWhenOutboxExceedsLimit()
+    {
+        using var scratch = new ScratchDirectory();
+        var outbox = new VoiceTaskOutbox(scratch.Root);
+        var target = new DesktopTaskSummary(Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 1);
+        for (var index = 0; index <= RuntimeUiLimits.MaximumVoiceOutboxDrafts; index++)
+        {
+            var draft = outbox.Hold(target, $"Message {index}", "session", "Unavailable");
+            outbox.RecordFailedAttempt(draft with { CreatedAt = DateTimeOffset.UnixEpoch.AddSeconds(index) }, "Unavailable");
+        }
+        var projector = new ProductionRuntimeUiProjector();
+        projector.SetActiveVoicePreferences(VoicePePreferences.Default with { AgentWorkspacePath = scratch.Root });
+        projector.PublishVoice(new ProductionVoiceState(
+            new RuntimeVoiceSnapshot(RuntimeVoiceSessionState.Armed, true, false, true, false, "Armed", null, 1), []));
+
+        var messaging = projector.GetSnapshot().Voice!.Messaging;
+        Assert.True(messaging.DraftsTruncated);
+        Assert.Equal(RuntimeUiLimits.MaximumVoiceOutboxDrafts, messaging.Drafts.Length);
+        Assert.Equal("Message 1", messaging.Drafts[0].MessagePreview);
+        Assert.Equal($"Message {RuntimeUiLimits.MaximumVoiceOutboxDrafts}", messaging.Drafts[^1].MessagePreview);
+    }
+
+    [Fact]
+    public void OversizedTaskAlertUpdatePublishesResynchronizationAndRetainsSnapshot()
+    {
+        var projector = new ProductionRuntimeUiProjector();
+        var updates = new List<RuntimeUiEvent>();
+        projector.Changed += (_, update) => updates.Add(update);
+        var suppressions = Enumerable.Range(0, 100).Select(index =>
+            new TaskAlertSuppressionRule(TaskAlertSuppressionScope.Workspace, $"C:\\{index}\\" + new string('a', 4000))).ToArray();
+        projector.PublishTaskAlerts(
+            new Joydex.Windows.TaskAlerts.TaskAlertSnapshot(true, [], 7, Suppressions: suppressions),
+            new RuntimeTaskAlertHookStatus(RuntimeTaskAlertHookState.Installed));
+
+        var update = Assert.Single(updates);
+        Assert.Equal(RuntimeEventKind.UiResynchronizationRequired, update.Kind);
+        Assert.Null(update.TaskAlerts);
+        var restored = projector.GetSnapshot().TaskAlerts!;
+        Assert.Equal(suppressions, restored.Suppressions);
+        Assert.Equal(7, restored.DroppedEventCount);
+    }
+
+    [Fact]
     public void DelayedVoiceStatusAndTaskCatalogKeepTheCurrentActiveTarget()
     {
         var projector = new ProductionRuntimeUiProjector();

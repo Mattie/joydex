@@ -433,7 +433,8 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
         RuntimeEventKind.ActionActivityAdded or
         RuntimeEventKind.TaskAlertsChanged or
         RuntimeEventKind.VoiceChanged or
-        RuntimeEventKind.PebbleIndexChanged;
+        RuntimeEventKind.PebbleIndexChanged or
+        RuntimeEventKind.UiResynchronizationRequired;
 
     private void OnCaptureChanged(object? sender, InputCaptureChangedEventArgs eventArgs) =>
         RecordCapture(eventArgs.Lease, eventArgs.CapturedInput, eventArgs.Detail);

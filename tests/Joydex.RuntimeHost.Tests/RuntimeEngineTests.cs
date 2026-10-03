@@ -10,6 +10,25 @@ namespace Joydex.RuntimeHost.Tests;
 public sealed class RuntimeEngineTests
 {
     [Fact]
+    public async Task CompositionCleanupFailureStillReleasesOwnership()
+    {
+        using var scratch = new ScratchDirectory();
+        var leases = new LegacyJoydexOwnershipLeaseFactory($"Local\\Joydex-cleanup-test-{Guid.NewGuid():N}");
+        var failure = new IOException("composition cleanup failed");
+        var options = Options(scratch.Root, "cleanup", new DefaultSettingsImpactPlanner(),
+            new ImmediateSettingsActivator(), compositionCreated: composition => composition.DisposalFailure = failure)
+            with { OwnershipLeaseFactory = leases };
+        var engine = await RuntimeEngine.StartAsync(options);
+        Assert.Throws<InvalidOperationException>(() => leases.Acquire());
+
+        var observed = await Assert.ThrowsAsync<AggregateException>(() => engine.DisposeAsync().AsTask());
+
+        Assert.Contains(failure, observed.InnerExceptions);
+        using var replacement = leases.Acquire();
+        await engine.DisposeAsync();
+    }
+
+    [Fact]
     public void NewSettingsCommandPreservesThePublishedShutdownOrdinal()
     {
         Assert.Equal(27, (int)RuntimeCommandKind.ShutdownRuntime);
@@ -755,6 +774,9 @@ public sealed class RuntimeEngineTests
         Assert.Equal(RuntimeEventKind.RuntimeIdentityChanged, compatibilityEvent.Kind);
         Assert.NotNull(compatibilityEvent.Identity);
         Assert.True(compatibilityEvent.Sequence > attached.Snapshot.EventCursor);
+        composition.PublishUi(new RuntimeUiEvent(RuntimeEventKind.UiResynchronizationRequired));
+        await AssertEventuallyAsync(() => Task.FromResult(client.RuntimeEvents.Count == 2));
+        Assert.All(client.RuntimeEvents, item => Assert.Equal(RuntimeEventKind.RuntimeIdentityChanged, item.Kind));
         Assert.Null((await session.GetSnapshotAsync(CancellationToken.None)).Ui);
     }
 
@@ -1221,6 +1243,8 @@ public sealed class RuntimeEngineTests
         private readonly IRuntimeCommandHandler _commands =
             commandHandler ?? new SyntheticRuntimeCommandHandler();
 
+        public Exception? DisposalFailure { get; set; }
+
         public bool VoiceSessionActive => false;
 
         public event EventHandler? ActivationBoundaryAvailable;
@@ -1266,7 +1290,14 @@ public sealed class RuntimeEngineTests
             CancellationToken runtimeCancellationToken) =>
             _commands.ExecuteAsync(request, runtimeCancellationToken);
 
-        public ValueTask DisposeAsync() => _inputs.DisposeAsync();
+        public async ValueTask DisposeAsync()
+        {
+            await _inputs.DisposeAsync();
+            if (DisposalFailure is { } failure)
+            {
+                throw failure;
+            }
+        }
     }
 
     private sealed class BlockingCommandHandler : IRuntimeCommandHandler
