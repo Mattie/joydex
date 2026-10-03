@@ -1016,7 +1016,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         var activeConfig = _activeConfig ?? ConfigStore.LoadOrCreate(_configPath);
         var savedConfig = ConfigStore.LoadOrCreate(_configPath);
-        var savedVoicePreferences = (form.RoomVoicePreferences ?? _voicePePreferences).Normalize();
+        var savedVoicePreferences = VoicePePreferencesStore
+            .LoadOrCreate(_voicePePreferencesPath)
+            .Normalize();
         var savedPebbleIndexPreferences = (form.PebbleIndexPreferences ?? _pebbleIndexPreferences).Normalize();
         var changes = ConfigurationChangeDetector.Detect(
             activeConfig,
