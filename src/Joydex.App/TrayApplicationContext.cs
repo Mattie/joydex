@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Joydex.Core.Config;
+using Joydex.Core.Input;
 using Joydex.Core.Mapping;
 using Joydex.Core.Runtime;
 using Joydex.Core.TaskAlerts;
@@ -19,6 +20,7 @@ namespace Joydex.App;
 
 internal sealed class TrayApplicationContext : ApplicationContext
 {
+    private readonly bool _demoMode;
     private readonly string _configPath;
     private readonly string _windowStatePath;
     private readonly string _buttonMapStatePath;
@@ -32,7 +34,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private PebbleIndexPreferences _pebbleIndexPreferences = PebbleIndexPreferences.Default;
     private string? _voicePePreferencesError;
     private readonly FileLog _log;
-    private readonly CodexKeybindingService _keybindingService;
+    private readonly ICodexKeybindingResolver _keybindingResolver;
+    private readonly IAsyncDisposable _keybindingResolverLifetime;
+    private readonly IForegroundProcessGuard _foregroundProcessGuard;
+    private readonly IInputSender _inputSender;
+    private readonly RuntimeInputHost _inputHost = new();
+    private readonly InjectedKeyStateOwner _injectedKeyStateOwner;
+    private readonly IJoystickSourceFactory _inputSourceFactory;
+    private RuntimeInputSourceProvider? _inputSourceProvider;
     private readonly CooperativeWindow _cooperativeWindow;
     private readonly Icon _appIcon;
     private readonly NotifyIcon _notifyIcon;
@@ -90,18 +99,46 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private PromptPickerCoordinator? _promptPicker;
     private PromptPickerOverlayForm? _promptOverlay;
     private TaskAlertsForm? _taskAlertsForm;
+    private ConfigurationForm? _configurationForm;
     private bool _taskAlertsShowPending;
     private bool _configuring;
     private bool _guardianRecoveryReady;
     private bool _exitStarted;
     private bool _exitCompleted;
 
-    public TrayApplicationContext(string configPath)
+    internal ConfigurationForm? ConfigurationFormForTesting => _configurationForm;
+
+    internal IReadOnlyList<InputSourceState> InputSourcesForTesting => _inputHost.Sources;
+
+    internal IReadOnlyDictionary<string, CompanionWorker> WorkersForTesting => _workers;
+
+    internal bool ExitCompletedForTesting => _exitCompleted;
+
+    internal void BeginExitForTesting() => BeginExit();
+
+    public TrayApplicationContext(
+        string configPath,
+        bool demoMode = false,
+        IJoystickSourceFactory? demoInputSourceFactory = null)
     {
+        _demoMode = demoMode;
+        if (_demoMode && demoInputSourceFactory is null)
+        {
+            throw new ArgumentNullException(
+                nameof(demoInputSourceFactory),
+                "Demo mode requires a simulated input source factory.");
+        }
+        if (!_demoMode && demoInputSourceFactory is not null)
+        {
+            throw new ArgumentException(
+                "A demo input source factory can only be supplied in demo mode.",
+                nameof(demoInputSourceFactory));
+        }
         _configPath = configPath;
-        var existingCompanionInstall = ConfigPathResolver.HasExistingInstallation(
-            configPath,
-            CodexKeybindingService.DefaultProvisioningStatePath);
+        var existingCompanionInstall = !_demoMode
+            && ConfigPathResolver.HasExistingInstallation(
+                configPath,
+                CodexKeybindingService.DefaultProvisioningStatePath);
         var dataDirectory = Path.GetDirectoryName(Path.GetFullPath(configPath))
             ?? throw new InvalidOperationException("The configuration path has no parent directory.");
         _windowStatePath = Path.Combine(dataDirectory, "configuration-window.json");
@@ -140,23 +177,42 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Environment.ProcessPath ?? Application.ExecutablePath,
             "Joydex",
             ["--config", Path.GetFullPath(_configPath)]);
-        var linkToolExecutablePath = VirpilLinkToolLocator.FindInstalledPath();
+        var linkToolExecutablePath = _demoMode ? null : VirpilLinkToolLocator.FindInstalledPath();
         _linkToolLoginStartup = linkToolExecutablePath is null
             ? null
             : new LoginStartupRegistration(
                 linkToolExecutablePath,
                 "Joydex.VirpilLinkTool");
-        _keybindingService = CodexKeybindingService.CreateDefault(_log.Write, existingCompanionInstall);
-        _keybindingService.InitializeAsync().GetAwaiter().GetResult();
+        if (_demoMode)
+        {
+            var resolver = new DemoCodexKeybindingResolver();
+            _keybindingResolver = resolver;
+            _keybindingResolverLifetime = resolver;
+            _foregroundProcessGuard = new DemoForegroundProcessGuard();
+        }
+        else
+        {
+            var resolver = CodexKeybindingService.CreateDefault(_log.Write, existingCompanionInstall);
+            resolver.InitializeAsync().GetAwaiter().GetResult();
+            _keybindingResolver = resolver;
+            _keybindingResolverLifetime = resolver;
+            _foregroundProcessGuard = new ForegroundProcessGuard();
+        }
         _cooperativeWindow = new CooperativeWindow("Joydex");
+        _inputSourceFactory = demoInputSourceFactory
+            ?? new DirectInputJoystickSourceFactory(_cooperativeWindow.Handle);
+        _inputSender = _demoMode ? new DemoInputSender() : new WindowsInputSender();
+        _injectedKeyStateOwner = new InjectedKeyStateOwner(_inputSender);
         _appIcon = AppIconFactory.Create();
         _uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         _taskAlerts = new TaskAlertCoordinator(
             Path.Combine(dataDirectory, "task-alerts.json"),
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Joydex",
-                "task-alert-state.json"),
+            _demoMode
+                ? Path.Combine(dataDirectory, "task-alert-state.json")
+                : Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Joydex",
+                    "task-alert-state.json"),
             _log.Write);
         _taskAlertPipe = new TaskAlertPipeServer(_taskAlerts, _log.Write);
         ConfigureRoomVoiceTaskAlertExclusion(_voicePePreferences);
@@ -166,7 +222,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _log.Write);
         var initialTaskAlerts = _taskAlerts.GetSnapshot();
         _linkToolProfilePath = Path.Combine(dataDirectory, "joydex-linktool.led.json");
-        if (initialTaskAlerts.EffectiveLedOutput.Mode == TaskAlertLedOutputMode.LinkTool)
+        if (!_demoMode && initialTaskAlerts.EffectiveLedOutput.Mode == TaskAlertLedOutputMode.LinkTool)
         {
             try
             {
@@ -179,7 +235,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
         }
 
-        _ledService = CreateLedOutput(initialTaskAlerts, initialTaskAlerts.EffectiveLedOutput);
+        _ledService = _demoMode
+            ? new DemoTaskAlertLedOutput()
+            : CreateLedOutput(initialTaskAlerts, initialTaskAlerts.EffectiveLedOutput);
         _hookManager = new CodexHookManager(Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".codex",
@@ -189,7 +247,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Path.Combine(AppContext.BaseDirectory, "Joydex.Guardian.exe"),
             _log.Write,
             Path.Combine(dataDirectory, "led-guardian-recovery.json"));
-        _guardianRecoveryReady = TryUpdateGuardianRecovery(initialTaskAlerts);
+        _guardianRecoveryReady = !_demoMode && TryUpdateGuardianRecovery(initialTaskAlerts);
         _deviceChangeMonitor = new DeviceChangeMonitor();
         _deviceChangeMonitor.DevicesChanged += OnDevicesChanged;
 
@@ -200,8 +258,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Enabled = false,
         };
         _testControlsItem = new ToolStripMenuItem("Test controls…", image: null, OnTestControls);
-        _configureItem = new ToolStripMenuItem("Configure…", image: null, OnConfigure);
-        _promptPickersItem = new ToolStripMenuItem("Prompt pickers...", image: null, OnPromptPickers);
+        _configureItem = new ToolStripMenuItem(
+            _demoMode ? "Demo inspector…" : "Configure…",
+            image: null,
+            OnConfigure);
+        _promptPickersItem = new ToolStripMenuItem("Prompt pickers...", image: null, OnPromptPickers)
+        {
+            Enabled = !_demoMode,
+        };
         _startAtLoginItem = new ToolStripMenuItem(
             "Start Joydex when I sign in",
             image: null,
@@ -209,7 +273,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             CheckOnClick = false,
         };
-        InitializeLoginStartupItem(_startAtLoginItem, _joydexLoginStartup, "Joydex");
+        if (_demoMode)
+        {
+            _startAtLoginItem.Text += " (unavailable in demo)";
+            _startAtLoginItem.Enabled = false;
+        }
+        else
+        {
+            InitializeLoginStartupItem(_startAtLoginItem, _joydexLoginStartup, "Joydex");
+        }
         _startLinkToolAtLoginItem = new ToolStripMenuItem(
             "Start VIRPIL LinkTool when I sign in",
             image: null,
@@ -217,7 +289,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             CheckOnClick = false,
         };
-        if (_linkToolLoginStartup is null)
+        if (_demoMode)
+        {
+            _startLinkToolAtLoginItem.Text += " (unavailable in demo)";
+            _startLinkToolAtLoginItem.Enabled = false;
+        }
+        else if (_linkToolLoginStartup is null)
         {
             _startLinkToolAtLoginItem.Text += " (not installed)";
             _startLinkToolAtLoginItem.Enabled = false;
@@ -235,15 +312,32 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             CheckOnClick = false,
             Checked = _taskAlerts.GetSnapshot().Enabled,
+            Enabled = !_demoMode,
         };
-        _taskAlertsStatusItem = new ToolStripMenuItem("Task alerts / ignored tasks...", image: null, OnTaskAlertsStatus);
+        _taskAlertsStatusItem = new ToolStripMenuItem("Task alerts / ignored tasks...", image: null, OnTaskAlertsStatus)
+        {
+            Enabled = !_demoMode,
+        };
         _voicePeItem = new ToolStripMenuItem("Room Voice", image: null, OnToggleRoomVoice)
         {
             CheckOnClick = false,
+            Enabled = !_demoMode,
         };
         var reloadItem = new ToolStripMenuItem("Reload configuration", image: null, OnReloadConfig);
-        var openConfigItem = new ToolStripMenuItem("Open config JSON...", image: null, (_, _) => OpenPath(_configPath));
-        var openLogItem = new ToolStripMenuItem("Open log", image: null, (_, _) => OpenPath(_log.Path));
+        var openConfigItem = new ToolStripMenuItem(
+            "Open config JSON...",
+            image: null,
+            (_, _) => OpenPathOutsideDemo(_configPath))
+        {
+            Enabled = !_demoMode,
+        };
+        var openLogItem = new ToolStripMenuItem(
+            "Open log",
+            image: null,
+            (_, _) => OpenPathOutsideDemo(_log.Path))
+        {
+            Enabled = !_demoMode,
+        };
         var exitItem = new ToolStripMenuItem("Exit", image: null, (_, _) => BeginExit());
         _testingAdvancedMenu = new ToolStripMenuItem("Advanced");
         _testingAdvancedMenu.DropDownItems.AddRange([
@@ -277,7 +371,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 },
             },
             Icon = _appIcon,
-            Text = "Joydex",
+            Text = _demoMode ? "Joydex — Demo" : "Joydex",
             Visible = true,
         };
         _notifyIcon.DoubleClick += OnConfigure;
@@ -286,26 +380,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _roomVoiceConversation.RuntimeStateChanged += OnRoomVoiceRuntimeStateChanged;
         _ledService.StatusChanged += OnLedStatusChanged;
         _ledService.ProfileDirtyChanged += OnProfileDirtyChanged;
-        if (initialTaskAlerts.Enabled && initialTaskAlerts.Assignments.Count > 0)
+        if (!_demoMode && initialTaskAlerts.Enabled && initialTaskAlerts.Assignments.Count > 0)
         {
             _guardian.Start();
             _guardian.SetRestoreRequired(_guardianRecoveryReady);
             _ledService.RestoreAndReplay(replay: true);
         }
-        else
+        else if (!_demoMode)
         {
             _ledService.Apply(initialTaskAlerts);
         }
 
-        _shiftModeMonitor.Start();
-        _taskAlertPipe.Start();
-        if (DesktopTaskBrokerNeeded) StartDesktopTaskBroker();
+        if (!_demoMode)
+        {
+            _shiftModeMonitor.Start();
+            _taskAlertPipe.Start();
+            if (DesktopTaskBrokerNeeded) StartDesktopTaskBroker();
+        }
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         SystemEvents.SessionEnding += OnSessionEnding;
 
         var firstRun = !File.Exists(_configPath);
         StartWorker(showFirstRunNotice: firstRun);
-        if (firstRun)
+        if (_demoMode)
+        {
+            _uiContext.Post(_ => OnConfigure(this, EventArgs.Empty), null);
+        }
+        else if (firstRun)
         {
             _uiContext.Post(_ => OnConfigure(this, EventArgs.Empty), null);
         }
@@ -371,6 +472,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         _taskAlertsForm?.Close();
         _taskAlertsForm = null;
+        if (_configurationForm is { } configurationForm)
+        {
+            configurationForm.FormClosed -= OnConfigurationFormClosed;
+            _configurationForm = null;
+            configurationForm.Close();
+            configurationForm.Dispose();
+        }
         _roomVoiceForm?.CloseWorkspace();
         _roomVoiceForm?.Dispose();
         _roomVoiceForm = null;
@@ -386,6 +494,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _promptOverlay = null;
 
         await StopWorkersAsync();
+
+        if (_inputSourceProvider is not null)
+        {
+            await _inputSourceProvider.DisposeAsync().ConfigureAwait(false);
+            _inputSourceProvider = null;
+        }
+        _inputHost.Dispose();
+        try
+        {
+            _injectedKeyStateOwner.ReleaseAll();
+        }
+        catch (Exception exception)
+        {
+            _log.Write($"Could not release all injected keys during shutdown: {exception.Message}");
+        }
 
         await StopPebbleIndexReceiverAsync().ConfigureAwait(false);
 
@@ -407,7 +530,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _ledService.StatusChanged -= OnLedStatusChanged;
         _ledService.ProfileDirtyChanged -= OnProfileDirtyChanged;
         await _ledService.DisposeAsync();
-        if (!_ledService.RestorePending)
+        if (!_demoMode && !_ledService.RestorePending)
         {
             _guardian.SignalCleanExit();
         }
@@ -416,7 +539,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _ledSwitch.Dispose();
         await _taskAlerts.DisposeAsync();
 
-        await _keybindingService.DisposeAsync();
+        await _keybindingResolverLifetime.DisposeAsync();
 
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
@@ -449,7 +572,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async void OnToggleDryRun(object? sender, EventArgs eventArgs)
     {
-        if (_configuring || _activeConfig is null)
+        if (_demoMode || _configuring || _activeConfig is null)
         {
             return;
         }
@@ -516,17 +639,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void OnToggleStartAtLogin(object? sender, EventArgs eventArgs) =>
+    private void OnToggleStartAtLogin(object? sender, EventArgs eventArgs)
+    {
+        if (_demoMode)
+        {
+            return;
+        }
+
         ToggleLoginStartup(
             _startAtLoginItem,
             _joydexLoginStartup,
             "Joydex",
             "Joydex will start after you sign in to Windows.",
             "Joydex will no longer start automatically after sign-in.");
+    }
 
     private void OnToggleStartLinkToolAtLogin(object? sender, EventArgs eventArgs)
     {
-        if (_linkToolLoginStartup is null)
+        if (_demoMode || _linkToolLoginStartup is null)
         {
             return;
         }
@@ -582,90 +712,67 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private void EnsureExternalActionsAllowed()
+    {
+        if (_demoMode)
+        {
+            throw new InvalidOperationException("External actions are unavailable in the demo inspector.");
+        }
+    }
+
+    private void OpenPathOutsideDemo(string path)
+    {
+        if (!_demoMode)
+        {
+            OpenPath(path);
+        }
+    }
+
     private async void OnConfigure(object? sender, EventArgs eventArgs) =>
         await ShowConfigurationAsync(initialPage: null);
 
     private async void OnVoicePeSettings(object? sender, EventArgs eventArgs) =>
         await ShowConfigurationAsync("Room Voice");
 
-    private async Task ShowConfigurationAsync(string? initialPage)
+    private Task ShowConfigurationAsync(string? initialPage)
     {
-        if (_configuring)
+        if (_configurationForm is { IsDisposed: false } existing)
         {
-            return;
+            if (initialPage is not null)
+            {
+                existing.SelectPage(initialPage);
+            }
+            if (existing.WindowState == FormWindowState.Minimized)
+            {
+                existing.WindowState = FormWindowState.Normal;
+            }
+            existing.Show();
+            existing.BringToFront();
+            existing.Activate();
+            return Task.CompletedTask;
         }
 
-        var activeVoiceSession = _roomVoiceConversation.GetSnapshot().SessionActive;
-        if (activeVoiceSession
-            && MessageBox.Show(
-                _roomVoiceForm,
-                "Room Voice is active. End the session and open Configuration?",
-                "End session and configure",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        if (_configuring)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         _configuring = true;
-        _configureItem.Enabled = false;
-        _modeItem.Enabled = false;
-        StartDesktopTaskBroker();
+        ConfigurationInputClient? inputClient = null;
+        RoomVoiceSettingsControl? roomVoiceSettings = null;
+        PebbleIndexSettingsControl? pebbleIndexSettings = null;
         try
         {
-            if (activeVoiceSession && _voicePeRuntime is not null)
-            {
-                await _voicePeRuntime.StopSessionAsync().ConfigureAwait(true);
-            }
-
-            var originalVoicePreferences = LoadRoomVoicePreferences(
-                _voicePePreferencesPath,
-                _log.Write,
-                out var preferencesError);
-            _voicePePreferences = originalVoicePreferences;
-            var originalPebbleIndexPreferences = LoadPebbleIndexPreferences(
-                _pebbleIndexPreferencesPath,
-                _log.Write,
-                out var pebbleIndexPreferencesError);
-            _pebbleIndexPreferences = originalPebbleIndexPreferences;
-            _voicePePreferencesError = preferencesError;
-            if (preferencesError is not null)
-            {
-                MessageBox.Show(
-                    _roomVoiceForm,
-                    "Room Voice settings could not be read. Disabled defaults are shown; saving will replace the invalid Room Voice settings file."
-                    + Environment.NewLine + Environment.NewLine + preferencesError,
-                    "Room Voice settings need attention",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
-            if (pebbleIndexPreferencesError is not null)
-            {
-                MessageBox.Show(
-                    _roomVoiceForm,
-                    "Pebble Index settings could not be read. Disabled defaults are shown; saving will replace the invalid Pebble Index settings file."
-                    + Environment.NewLine + Environment.NewLine + pebbleIndexPreferencesError,
-                    "Pebble Index settings need attention",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
-            CloseActivityForm();
-            HideAllButtonMaps();
-            _promptPicker?.Dismiss();
-            _recentActivity.Clear();
-            _roomVoiceConversation.SetRuntimeState(
-                VoicePeSessionState.Armed,
-                ownerReady: false,
-                sessionActive: false,
-                "Room Voice is paused while Configuration is open.",
-                stale: true);
-            await StopWorkersAsync();
-
-            using var roomVoiceSettings = new RoomVoiceSettingsControl(
+            var originalConfig = _activeConfig is null
+                ? ConfigStore.LoadOrCreate(_configPath)
+                : CompanionConfigNormalizer.Normalize(_activeConfig);
+            var originalVoicePreferences = _voicePePreferences.Normalize();
+            var originalPebbleIndexPreferences = _pebbleIndexPreferences.Normalize();
+            roomVoiceSettings = new RoomVoiceSettingsControl(
                 originalVoicePreferences,
                 async candidate =>
                 {
+                    EnsureExternalActionsAllowed();
                     var config = _activeConfig
                         ?? ConfigStore.LoadOrCreate(_configPath);
                     var navigator = new PinnedVoiceTargetNavigator(config.Safety, WriteActivity);
@@ -675,30 +782,36 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 },
                 async (endpoint, cancellationToken) =>
                 {
+                    EnsureExternalActionsAllowed();
                     using var client = new EspHomeVoicePeTuningClient(endpoint);
                     return await client.GetAsync(cancellationToken).ConfigureAwait(true);
                 },
                 async (endpoint, tuning, cancellationToken) =>
                 {
+                    EnsureExternalActionsAllowed();
                     using var client = new EspHomeVoicePeTuningClient(endpoint);
                     return await client.SetAsync(tuning, cancellationToken).ConfigureAwait(true);
                 },
                 async (appServerPath, cancellationToken) =>
                 {
+                    EnsureExternalActionsAllowed();
                     var workspace = new CodexVoiceWorkspaceService(appServerPath, _log.Write);
                     return await workspace.ListProjectRootsAsync(cancellationToken).ConfigureAwait(true);
                 },
                 async (appServerPath, request, cancellationToken) =>
                 {
+                    EnsureExternalActionsAllowed();
                     var workspace = new CodexVoiceWorkspaceService(appServerPath, _log.Write);
                     return await workspace.ProvisionAsync(request, cancellationToken).ConfigureAwait(true);
-                });
-            using var pebbleIndexSettings = new PebbleIndexSettingsControl(
+                },
+                allowExternalActions: !_demoMode);
+            pebbleIndexSettings = new PebbleIndexSettingsControl(
                 originalPebbleIndexPreferences,
                 _pebbleIndexSecretPath,
                 _pebbleIndexInboxDirectory,
                 async (candidateSourceTaskId, cancellationToken) =>
                 {
+                    EnsureExternalActionsAllowed();
                     var sourceTaskId = ResolvePebbleIndexSourceTaskId(
                         candidateSourceTaskId,
                         originalPebbleIndexPreferences,
@@ -708,56 +821,57 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         .ListTasksAsync(sourceTaskId, cancellationToken: cancellationToken)
                         .ConfigureAwait(true);
                 },
-                _pebbleIndexStatus);
-            using var form = new ConfigurationForm(
+                _pebbleIndexStatus,
+                allowExternalActions: !_demoMode);
+            _inputSourceProvider ??= new RuntimeInputSourceProvider(
+                _inputHost,
+                _inputSourceFactory,
+                originalConfig.Polling,
+                WriteActivity);
+            inputClient = new ConfigurationInputClient(
+                _inputHost,
+                _inputSourceProvider,
+                originalConfig);
+            var form = new ConfigurationForm(
                 _configPath,
                 _windowStatePath,
                 _cooperativeWindow.Handle,
                 roomVoiceSettings: roomVoiceSettings,
                 pebbleIndexSettings: pebbleIndexSettings,
                 saveConfiguration: (config, voicePreferences, pebbleIndexPreferences) =>
-                    SaveConfigurationFiles(
-                        _configPath,
-                        _voicePePreferencesPath,
-                        _pebbleIndexPreferencesPath,
+                    TrySaveConfiguration(
                         config,
                         voicePreferences,
-                        pebbleIndexPreferences));
+                        pebbleIndexPreferences),
+                initialConfig: originalConfig,
+                inputClient: inputClient,
+                demoMode: _demoMode);
+            inputClient = null;
+            roomVoiceSettings = null;
+            pebbleIndexSettings = null;
             if (initialPage is not null)
             {
                 form.SelectPage(initialPage);
             }
 
-            var result = form.ShowDialog();
-            if (result == DialogResult.OK && form.RoomVoicePreferences is { } savedVoicePreferences)
+            _configurationForm = form;
+            form.FormClosed += OnConfigurationFormClosed;
+            _promptPickersItem.Enabled = false;
+            if (!_demoMode)
             {
-                _voicePePreferences = savedVoicePreferences;
-                _voicePePreferencesError = null;
-                ConfigureRoomVoiceTaskAlertExclusion(savedVoicePreferences);
+                StartDesktopTaskBroker();
             }
-            if (result == DialogResult.OK && form.PebbleIndexPreferences is { } savedPebbleIndexPreferences)
-            {
-                _pebbleIndexPreferences = savedPebbleIndexPreferences.Normalize();
-                await StopPebbleIndexReceiverAsync().ConfigureAwait(true);
-            }
-
-            StartWorker(showFirstRunNotice: false);
-            if (result == DialogResult.OK)
-            {
-                _notifyIcon.ShowBalloonTip(
-                    4000,
-                    "Joydex configuration saved",
-                    "Joydex reloaded the saved settings.",
-                    ToolTipIcon.Info);
-
-                if (_activeConfig?.Safety.DryRun == true)
-                {
-                    OnTestControls(this, EventArgs.Empty);
-                }
-            }
+            form.Show();
         }
         catch (Exception exception)
         {
+            if (_configurationForm is { } failedForm)
+            {
+                failedForm.FormClosed -= OnConfigurationFormClosed;
+                _configurationForm = null;
+                failedForm.Dispose();
+            }
+            _promptPickersItem.Enabled = !_demoMode;
             _log.Write($"Configuration window error: {exception}");
             _notifyIcon.ShowBalloonTip(
                 5000,
@@ -767,21 +881,185 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         finally
         {
-            if (_workers.Count == 0)
-            {
-                StartWorker(showFirstRunNotice: false);
-            }
-
+            inputClient?.Dispose();
+            roomVoiceSettings?.Dispose();
+            pebbleIndexSettings?.Dispose();
             _configuring = false;
-            await StopDesktopTaskBrokerIfUnusedAsync().ConfigureAwait(true);
-            _configureItem.Enabled = true;
-            _modeItem.Enabled = _activeConfig is not null;
-            RefreshVoicePeMenu();
         }
+
+        return Task.CompletedTask;
+    }
+
+    private bool TrySaveConfiguration(
+        CompanionConfig candidateConfig,
+        VoicePePreferences? candidateVoicePreferences,
+        PebbleIndexPreferences? candidatePebbleIndexPreferences)
+    {
+        var activeConfig = _activeConfig ?? ConfigStore.LoadOrCreate(_configPath);
+        var activeVoicePreferences = _voicePePreferences.Normalize();
+        var normalizedCandidate = CompanionConfigNormalizer.Normalize(candidateConfig);
+        var normalizedVoice = (candidateVoicePreferences ?? activeVoicePreferences).Normalize();
+        if (_demoMode && !normalizedCandidate.Safety.DryRun)
+        {
+            MessageBox.Show(
+                _configurationForm,
+                "The demo inspector stays in dry-run mode.",
+                "Joydex demo",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return false;
+        }
+
+        if (_roomVoiceConversation.GetSnapshot().SessionActive
+            && VoiceRuntimeChanged(activeConfig, normalizedCandidate, activeVoicePreferences, normalizedVoice)
+            && MessageBox.Show(
+                _configurationForm,
+                "These settings restart Room Voice and end the active call. Save and apply them now?",
+                "End call and apply settings",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        {
+            return false;
+        }
+
+        SaveConfigurationFiles(
+            _configPath,
+            _voicePePreferencesPath,
+            _pebbleIndexPreferencesPath,
+            normalizedCandidate,
+            normalizedVoice,
+            candidatePebbleIndexPreferences?.Normalize());
+        return true;
+    }
+
+    private bool VoiceRuntimeChanged(
+        CompanionConfig activeConfig,
+        CompanionConfig candidateConfig,
+        VoicePePreferences activeVoice,
+        VoicePePreferences candidateVoice) => ConfigurationChangeDetector.Detect(
+            activeConfig,
+            candidateConfig,
+            activeVoice,
+            candidateVoice,
+            _pebbleIndexPreferences,
+            _pebbleIndexPreferences).VoiceRuntimeChanged;
+
+    private async void OnConfigurationFormClosed(object? sender, FormClosedEventArgs eventArgs)
+    {
+        if (sender is not ConfigurationForm form
+            || !ReferenceEquals(_configurationForm, form))
+        {
+            return;
+        }
+
+        form.FormClosed -= OnConfigurationFormClosed;
+        _configurationForm = null;
+        _configuring = true;
+        try
+        {
+            if (form.DialogResult == DialogResult.OK)
+            {
+                await ApplySavedConfigurationAsync(form).ConfigureAwait(true);
+            }
+        }
+        catch (Exception exception)
+        {
+            HandleConfigurationError(exception);
+        }
+        finally
+        {
+            try
+            {
+                form.Dispose();
+                await StopDesktopTaskBrokerIfUnusedAsync().ConfigureAwait(true);
+            }
+            finally
+            {
+                _configuring = false;
+                _promptPickersItem.Enabled = !_demoMode;
+                RefreshVoicePeMenu();
+            }
+        }
+    }
+
+    private async Task ApplySavedConfigurationAsync(ConfigurationForm form)
+    {
+        var activeConfig = _activeConfig ?? ConfigStore.LoadOrCreate(_configPath);
+        var savedConfig = ConfigStore.LoadOrCreate(_configPath);
+        var savedVoicePreferences = (form.RoomVoicePreferences ?? _voicePePreferences).Normalize();
+        var savedPebbleIndexPreferences = (form.PebbleIndexPreferences ?? _pebbleIndexPreferences).Normalize();
+        var changes = ConfigurationChangeDetector.Detect(
+            activeConfig,
+            savedConfig,
+            _voicePePreferences,
+            savedVoicePreferences,
+            _pebbleIndexPreferences,
+            savedPebbleIndexPreferences);
+
+        if (changes.VoiceRuntimeChanged)
+        {
+            await StopVoicePeBridgeAsync().ConfigureAwait(true);
+            _voiceCoordinator = null;
+        }
+        if (changes.PebbleIndexPreferencesChanged)
+        {
+            await StopPebbleIndexReceiverAsync().ConfigureAwait(true);
+        }
+        if (changes.CompanionChanged)
+        {
+            _promptPicker?.Dismiss();
+            await StopControllerWorkersAsync().ConfigureAwait(true);
+            if (_inputSourceProvider is not null)
+            {
+                await _inputSourceProvider.DisposeAsync().ConfigureAwait(true);
+                _inputSourceProvider = null;
+            }
+        }
+
+        _voicePePreferences = savedVoicePreferences;
+        _voicePePreferencesError = null;
+        _pebbleIndexPreferences = savedPebbleIndexPreferences;
+        if (changes.VoicePreferencesChanged)
+        {
+            ConfigureRoomVoiceTaskAlertExclusion(savedVoicePreferences);
+        }
+
+        if (changes.CompanionChanged)
+        {
+            StartWorker(
+                showFirstRunNotice: false,
+                startVoiceRuntime: changes.VoiceRuntimeChanged,
+                startPebbleReceiver: false,
+                startWirelessPanel: true);
+        }
+        else if (changes.VoiceRuntimeChanged)
+        {
+            StartVoiceRuntime(activeConfig);
+        }
+
+        if (changes.PebbleIndexPreferencesChanged && savedPebbleIndexPreferences.Enabled)
+        {
+            StartDesktopTaskBroker();
+            StartPebbleIndexReceiver();
+        }
+
+        _notifyIcon.ShowBalloonTip(
+            4000,
+            "Joydex configuration saved",
+            changes.CompanionChanged || changes.VoiceRuntimeChanged || changes.PebbleIndexPreferencesChanged
+                ? "Joydex saved and applied the changed settings."
+                : "Joydex saved the settings; active integrations were unchanged.",
+            ToolTipIcon.Info);
     }
 
     private void OnToggleRoomVoice(object? sender, EventArgs eventArgs)
     {
+        if (_demoMode)
+        {
+            return;
+        }
+
         var form = EnsureRoomVoiceForm();
         if (form.Visible)
         {
@@ -1083,7 +1361,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async void StartDesktopTaskBroker()
     {
-        if (!DesktopTaskBrokerNeeded || _desktopTaskBrokerCancellation.IsCancellationRequested) return;
+        if (_demoMode
+            || !DesktopTaskBrokerNeeded
+            || _desktopTaskBrokerCancellation.IsCancellationRequested) return;
         if (_desktopTaskBroker is not null || _desktopTaskBrokerStartup is not null) return;
         Task<DesktopTaskBridgeBrokerProcess>? startup = null;
         DesktopTaskBridgeBrokerProcess? broker = null;
@@ -1211,26 +1491,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch { }
     }
 
-    private bool DesktopTaskBrokerNeeded => ShouldStartDesktopTaskBroker(
-        _configuring,
+    private bool DesktopTaskBrokerNeeded => !_demoMode && ShouldStartDesktopTaskBroker(
+        _configurationForm is { IsDisposed: false },
         _voicePePreferences,
         _pebbleIndexPreferences);
 
     internal static bool ShouldStartDesktopTaskBroker(
-        bool configuring,
+        bool configurationWindowOpen,
         VoicePePreferences voicePreferences,
         PebbleIndexPreferences pebbleIndexPreferences)
     {
         ArgumentNullException.ThrowIfNull(voicePreferences);
         ArgumentNullException.ThrowIfNull(pebbleIndexPreferences);
-        return configuring
+        return configurationWindowOpen
             || voicePreferences.DesktopTaskMessagingEnabled
             || pebbleIndexPreferences.Enabled;
     }
 
     private void StartPebbleIndexReceiver()
     {
-        if (_exitStarted || _desktopTaskBrokerCancellation.IsCancellationRequested) return;
+        if (_demoMode || _exitStarted || _desktopTaskBrokerCancellation.IsCancellationRequested) return;
         PebbleIndexPreferences preferences;
         try
         {
@@ -1290,22 +1570,38 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch { }
     }
 
-    private void StartWorker(bool showFirstRunNotice)
+    private void StartWorker(
+        bool showFirstRunNotice,
+        bool startVoiceRuntime = true,
+        bool startPebbleReceiver = true,
+        bool startWirelessPanel = true)
     {
         try
         {
             var config = ConfigStore.LoadOrCreate(_configPath);
+            if (_demoMode && !config.Safety.DryRun)
+            {
+                throw new InvalidDataException("The demo configuration must keep dry-run enabled.");
+            }
             DisposeStaleButtonMaps(_activeConfig, config);
             _activeConfig = config;
-            _modeItem.Text = "Dry run";
+            _modeItem.Text = _demoMode ? "Dry run (locked for demo)" : "Dry run";
             _modeItem.Checked = config.Safety.DryRun;
-            _modeItem.Enabled = true;
+            _modeItem.Enabled = !_demoMode;
             _modeItem.ForeColor = SystemColors.ControlText;
             _testControlsItem.Enabled = config.Safety.DryRun;
-            _testingAdvancedMenu.Text = config.Safety.DryRun
-                ? "Advanced (DRY RUN)"
-                : "Advanced";
+            _testingAdvancedMenu.Text = _demoMode
+                ? "Advanced (DEMO / SIMULATED)"
+                : config.Safety.DryRun
+                    ? "Advanced (DRY RUN)"
+                    : "Advanced";
             ConfigureControllersMenu(config);
+            _inputSourceProvider ??= new RuntimeInputSourceProvider(
+                _inputHost,
+                _inputSourceFactory,
+                config.Polling,
+                WriteActivity);
+            _inputSourceProvider.Refresh(config);
             foreach (var form in _buttonMapForms.Values)
             {
                 form.UpdateConfig(config);
@@ -1316,12 +1612,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var promptSubmitExecutor = new CodexActionExecutor(
                 config.Safety,
                 WriteActivity,
-                _keybindingService,
-                config.OpenWorkingDirectory);
+                _keybindingResolver,
+                config.OpenWorkingDirectory,
+                foregroundGuard: _foregroundProcessGuard,
+                inputSender: _inputSender);
             _promptPicker = new PromptPickerCoordinator(
                 config,
                 WriteActivity,
                 _uiContext,
+                foreground: _foregroundProcessGuard,
+                input: _inputSender,
                 submit: async (request, cancellationToken) =>
                 {
                     await promptSubmitExecutor.ExecuteAsync(
@@ -1340,30 +1640,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _promptOverlay.DismissRequested += OnPromptOverlayDismissRequested;
             _promptPicker.Changed += (_, snapshot) => _promptOverlay.Apply(snapshot);
 
-            var taskAlertNavigator = new TaskDeepLinkNavigator(config.Safety, WriteActivity);
-            var voiceNavigator = new PinnedVoiceTargetNavigator(config.Safety, WriteActivity);
-            var voiceExecutor = new CodexActionExecutor(
+            var taskAlertNavigator = new TaskDeepLinkNavigator(
                 config.Safety,
                 WriteActivity,
-                _keybindingService,
-                config.OpenWorkingDirectory);
-            _voiceCoordinator = new PinnedVoiceCoordinator(
-                config.Safety,
-                WriteActivity,
-                voiceNavigator,
-                voiceExecutor.ExecuteAsync);
-            RefreshVoicePeMenu();
-            StartVoicePeBridge();
-            StartPebbleIndexReceiver();
+                _foregroundProcessGuard);
+            if (!_demoMode && startVoiceRuntime)
+            {
+                StartVoiceRuntime(config);
+            }
+            if (!_demoMode && startPebbleReceiver)
+            {
+                StartPebbleIndexReceiver();
+            }
             foreach (var device in config.Devices)
             {
-                var source = new DirectInputJoystickSource(_cooperativeWindow.Handle);
+                var source = _inputSourceFactory.Create();
                 var executor = new CodexActionExecutor(
                     config.Safety,
                     WriteActivity,
-                    _keybindingService,
+                    _keybindingResolver,
                     config.OpenWorkingDirectory,
-                    internalAction: OnInternalAction);
+                    foregroundGuard: _foregroundProcessGuard,
+                    inputSender: _inputSender,
+                    internalAction: OnInternalAction,
+                    injectedKeyStateOwner: _injectedKeyStateOwner);
                 var isCm3 = string.Equals(device.ButtonMapTemplate, "cm3", StringComparison.OrdinalIgnoreCase);
                 var taskAlertInput = isCm3
                     ? new TaskAlertInputInterceptor(() => _taskAlerts.GetSnapshot().Assignments)
@@ -1378,13 +1678,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     acknowledgeTerminalTaskAlert: isCm3 ? _taskAlerts.AcknowledgeTerminal : null,
                     deviceId: device.Id,
                     promptPickerHandler: _promptPicker.HandleAsync,
-                    buttonMapHandler: OnButtonMapVisibility);
+                    buttonMapHandler: OnButtonMapVisibility,
+                    inputHost: _inputHost);
                 worker.StatusChanged += (_, status) => OnDeviceStatusChanged(device.Id, status);
                 _workers[device.Id] = worker;
                 worker.Start();
             }
 
-            StartWirelessPanel(config);
+            if (!_demoMode && startWirelessPanel)
+            {
+                StartWirelessPanel(config);
+            }
 
             if (showFirstRunNotice)
             {
@@ -1399,6 +1703,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             HandleConfigurationError(exception);
         }
+    }
+
+    private void StartVoiceRuntime(CompanionConfig config)
+    {
+        if (_demoMode)
+        {
+            return;
+        }
+
+        var voiceNavigator = new PinnedVoiceTargetNavigator(config.Safety, WriteActivity);
+        var voiceExecutor = new CodexActionExecutor(
+            config.Safety,
+            WriteActivity,
+            _keybindingResolver,
+            config.OpenWorkingDirectory,
+            foregroundGuard: _foregroundProcessGuard,
+            inputSender: _inputSender);
+        _voiceCoordinator = new PinnedVoiceCoordinator(
+            config.Safety,
+            WriteActivity,
+            voiceNavigator,
+            voiceExecutor.ExecuteAsync);
+        RefreshVoicePeMenu();
+        StartVoicePeBridge();
     }
 
     private void OnDeviceStatusChanged(string deviceId, string status)
@@ -1437,7 +1765,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        _activityForm = new DryRunActivityForm(_activeConfig);
+        _activityForm = new DryRunActivityForm(_activeConfig, simulatedInput: _demoMode);
         _activityForm.FormClosed += (_, _) => _activityForm = null;
         foreach (var message in _recentActivity)
         {
@@ -1665,7 +1993,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async void OnPromptPickers(object? sender, EventArgs eventArgs)
     {
-        if (_configuring)
+        if (_demoMode || _configuring || _configurationForm is { IsDisposed: false })
         {
             return;
         }
@@ -1695,7 +2023,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 StartWorker(showFirstRunNotice: false);
             }
             _configuring = false;
-            _promptPickersItem.Enabled = true;
+            _promptPickersItem.Enabled = !_demoMode;
         }
     }
 
@@ -1704,6 +2032,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         await StopVoicePeBridgeAsync().ConfigureAwait(false);
 
         _voiceCoordinator = null;
+        await StopControllerWorkersAsync().ConfigureAwait(false);
+    }
+
+    private async Task StopControllerWorkersAsync()
+    {
         var wirelessPanelAdapter = Interlocked.Exchange(ref _wirelessPanelAdapter, null);
         if (wirelessPanelAdapter is not null)
         {
@@ -1765,6 +2098,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async void StartVoicePeBridge()
     {
+        if (_demoMode)
+        {
+            return;
+        }
+
         CancelVoicePeStartupRetry();
         CancellationTokenSource? cancellation = null;
         Task<VoicePeBridgeRuntime>? startup = null;
@@ -2073,6 +2411,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void StartWirelessPanel(CompanionConfig config)
     {
+        if (_demoMode)
+        {
+            return;
+        }
+
         EspHomePanelAdapter? adapter = null;
         try
         {
@@ -2093,8 +2436,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var executor = new CodexActionExecutor(
                 config.Safety,
                 WriteActivity,
-                _keybindingService,
+                _keybindingResolver,
                 config.OpenWorkingDirectory,
+                foregroundGuard: _foregroundProcessGuard,
+                inputSender: _inputSender,
                 internalAction: OnInternalAction);
             var transport = new EspHomePanelTransport(
                 panelConfiguration.Endpoint,
@@ -2367,6 +2712,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async void OnToggleTaskAlerts(object? sender, EventArgs eventArgs)
     {
+        if (_demoMode)
+        {
+            return;
+        }
+
         _taskAlertsItem.Enabled = false;
         try
         {
@@ -2386,7 +2736,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnTaskAlertsStatus(object? sender, EventArgs eventArgs)
     {
-        if (_taskAlertsShowPending)
+        if (_demoMode || _taskAlertsShowPending)
         {
             return;
         }
@@ -2406,6 +2756,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private bool ShowTaskAlertsStatus()
     {
+        if (_demoMode)
+        {
+            return false;
+        }
+
         try
         {
             var form = _taskAlertsForm;
@@ -2556,15 +2911,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
             $"Task-alert snapshot enabled={snapshot.Enabled}; bank=M{snapshot.Bank}; assignments={assignmentSummary}; " +
             $"dropped={snapshot.DroppedEventCount}.");
 
-        _guardianRecoveryReady = TryUpdateGuardianRecovery(snapshot);
-        if (snapshot.Enabled && snapshot.Assignments.Count > 0)
+        _guardianRecoveryReady = !_demoMode && TryUpdateGuardianRecovery(snapshot);
+        if (!_demoMode && snapshot.Enabled && snapshot.Assignments.Count > 0)
         {
             _guardian.Start();
             _guardian.SetRestoreRequired(_guardianRecoveryReady);
         }
 
-        UseLedOutput(output => output.Apply(snapshot));
-        Volatile.Read(ref _wirelessPanelAdapter)?.Apply(snapshot);
+        if (!_demoMode)
+        {
+            UseLedOutput(output => output.Apply(snapshot));
+            Volatile.Read(ref _wirelessPanelAdapter)?.Apply(snapshot);
+        }
         _uiContext.Post(_ =>
         {
             _taskAlertsItem.Checked = snapshot.Enabled;
@@ -2575,8 +2933,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }, null);
     }
 
-    private void OnProfileDirtyChanged(object? sender, bool dirty) =>
-        _guardian.SetRestoreRequired(dirty && _guardianRecoveryReady);
+    private void OnProfileDirtyChanged(object? sender, bool dirty)
+    {
+        if (!_demoMode)
+        {
+            _guardian.SetRestoreRequired(dirty && _guardianRecoveryReady);
+        }
+    }
 
     private void OnLedStatusChanged(object? sender, string status)
     {
@@ -2597,6 +2960,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs eventArgs)
     {
+        if (_demoMode)
+        {
+            return;
+        }
+
         if (eventArgs.Mode == PowerModes.Suspend)
         {
             UseLedOutput(output => output.SetPaused(true));
@@ -2611,17 +2979,32 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private void OnSessionEnding(object sender, SessionEndingEventArgs eventArgs) =>
-        UseLedOutput(output => output.SetPaused(true));
+    private void OnSessionEnding(object sender, SessionEndingEventArgs eventArgs)
+    {
+        if (!_demoMode)
+        {
+            UseLedOutput(output => output.SetPaused(true));
+        }
+    }
 
     private void OnDevicesChanged(object? sender, EventArgs eventArgs)
     {
+        if (_demoMode)
+        {
+            return;
+        }
+
         _log.Write("Device-change notification; task-alert profile restore/replay requested.");
         UseLedOutput(output => output.RestoreAndReplay(_taskAlerts.GetSnapshot().Enabled));
     }
 
     private Task SetTaskAlertsEnabledAsync(bool enabled)
     {
+        if (_demoMode)
+        {
+            return Task.CompletedTask;
+        }
+
         if (_taskAlerts.GetSnapshot().Enabled == enabled)
         {
             return Task.CompletedTask;
@@ -2656,6 +3039,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task SetLedOutputAsync(TaskAlertLedOptions options)
     {
+        if (_demoMode)
+        {
+            return;
+        }
+
         options = options.Normalize();
         await _ledSwitch.WaitAsync().ConfigureAwait(true);
         try
@@ -2737,6 +3125,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void UpdateLedModeUi(TaskAlertLedOutputMode mode)
     {
+        if (_demoMode)
+        {
+            _startLinkToolAtLoginItem.Visible = false;
+            _startLinkToolAtLoginItem.Enabled = false;
+            return;
+        }
+
         var linkToolMode = mode == TaskAlertLedOutputMode.LinkTool;
         _startLinkToolAtLoginItem.Visible = linkToolMode;
         _startLinkToolAtLoginItem.Enabled = linkToolMode && _linkToolLoginStartup is not null;

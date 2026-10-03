@@ -5,6 +5,7 @@ namespace Joydex.App;
 internal sealed class DryRunActivityForm : ThemedForm
 {
     private readonly CompanionConfig _config;
+    private readonly bool _simulatedInput;
     private readonly HashSet<int> _expectedButtons;
     private readonly HashSet<int> _seenButtons = [];
     private readonly Label _statusLabel = new() { AutoSize = true, Text = "Connecting to throttle..." };
@@ -27,15 +28,16 @@ internal sealed class DryRunActivityForm : ThemedForm
         AccessibleName = "Dry-run activity",
     };
 
-    public DryRunActivityForm(CompanionConfig config)
+    public DryRunActivityForm(CompanionConfig config, bool simulatedInput = false)
     {
         _config = config;
+        _simulatedInput = simulatedInput;
         _expectedButtons = config.Bindings
             .Where(binding => string.Equals(binding.Trigger, "press", StringComparison.OrdinalIgnoreCase))
             .Select(binding => binding.Button)
             .ToHashSet();
 
-        Text = "Test Joydex";
+        Text = _simulatedInput ? "Joydex Demo — simulated controls" : "Test Joydex";
         StartPosition = FormStartPosition.CenterScreen;
         SetLogicalMinimumSize(new Size(760, 520));
         Size = new Size(920, 640);
@@ -181,14 +183,18 @@ internal sealed class DryRunActivityForm : ThemedForm
         {
             AutoSize = true,
             Font = JoydexTheme.UiSemiboldFont,
-            Text = "Dry run is ON. Throttle presses and releases appear here without being sent to Codex.",
+            Text = _simulatedInput
+                ? "Demo input is simulated. Generated presses appear here without being sent to Codex."
+                : "Dry run is ON. Throttle presses and releases appear here without being sent to Codex.",
         }, 0, 0);
         summaryLayout.Controls.Add(new Label
         {
             AutoSize = true,
             MaximumSize = new Size(850, 0),
             Padding = new Padding(0, 6, 0, 6),
-            Text = "Each row includes the raw logical button number.\r\n1. M2: press B1-B6.   2. M3: press B1-B6.   3. M4: press B1-B6.\r\n4. Press E1, then turn it one detent right and left.   5. Toggle T4 on and off to inspect button 37 press/release.",
+            Text = _simulatedInput
+                ? "The simulated CM3 and WarBRD generate staggered button pulses automatically. Each row includes the generated logical button number."
+                : "Each row includes the raw logical button number.\r\n1. M2: press B1-B6.   2. M3: press B1-B6.   3. M4: press B1-B6.\r\n4. Press E1, then turn it one detent right and left.   5. Toggle T4 on and off to inspect button 37 press/release.",
         }, 0, 1);
         summaryLayout.Controls.Add(_statusLabel, 0, 2);
         summaryLayout.Controls.Add(_summaryLabel, 0, 3);

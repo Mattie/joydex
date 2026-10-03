@@ -1,4 +1,5 @@
 using Joydex.Core.Config;
+using Joydex.Core.Input;
 using Joydex.Core.Mapping;
 using Joydex.Windows.Actions;
 
@@ -314,6 +315,30 @@ public sealed class CodexActionExecutorTests
         Assert.False(firstCleanup);
         Assert.True(secondCleanup);
         Assert.Equal([dictation.WindowHandle, dictation.WindowHandle], dictation.StopWindows);
+    }
+
+    [Fact]
+    public async Task FailedSourceCleanupKeepsInAppDictationForTheGenerationRetry()
+    {
+        var dictation = new RecordingDictationControl();
+        dictation.StopResults.Enqueue(
+            CodexDictationControlResult.Failed(dictation.WindowHandle, "Dictation startup is still settling."));
+        var executor = CreateExecutor(
+            new RecordingResolver("Ctrl+Shift+D"),
+            new RecordingInputSender(),
+            dictationControl: dictation);
+        var request = Request(CodexAction.InAppPushToTalk, deviceId: "Stick-A") with
+        {
+            SourceGeneration = 7,
+        };
+        await executor.ExecuteAsync(request, CancellationToken.None);
+
+        var source = new InputSourceSession("stick-a", 7);
+        Assert.Throws<InvalidOperationException>(() => executor.ReleaseHeldKeys(source));
+        executor.ReleaseHeldKeys(source);
+
+        Assert.Equal([dictation.WindowHandle, dictation.WindowHandle], dictation.StopWindows);
+        Assert.True(executor.ReleaseHeldKeys());
     }
 
     [Fact]

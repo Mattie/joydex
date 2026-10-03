@@ -151,7 +151,7 @@ public sealed class DirectInputJoystickSource : IJoystickSource
         GC.SuppressFinalize(this);
     }
 
-    private static bool Matches(DirectInputDeviceInfo candidate, DeviceSelector selector)
+    internal static bool Matches(DirectInputDeviceInfo candidate, DeviceSelector selector)
     {
         if (Guid.TryParse(selector.InstanceGuid, out var instanceGuid)
             && candidate.InstanceGuid != instanceGuid)
