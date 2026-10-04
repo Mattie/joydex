@@ -865,18 +865,24 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
                 new SettingsPatch(Companion: candidate),
                 cancellationToken)
             .ConfigureAwait(true);
-        if (result.Outcome == RuntimeSettingsWriteOutcome.Conflict
+        var reconciled = PromptPickerCandidateAfter(candidate, result);
+        if (!ReferenceEquals(reconciled, candidate)
             && _promptPickerEditor is { IsDisposed: false } editor)
         {
-            editor.ReplaceConfiguration(RebasePromptPickerCandidate(
-                candidate,
-                result.Snapshot.Desired.Companion));
+            editor.ReplaceConfiguration(reconciled);
         }
         _promptPickerEditorBaseRevision = PromptPickerBaseRevisionAfter(baseRevision, result);
         return result;
     }
 
-    internal static CompanionConfig RebasePromptPickerCandidate(
+    internal static CompanionConfig PromptPickerCandidateAfter(
+        CompanionConfig candidate,
+        RuntimeSettingsWriteResult result) =>
+        IsTerminal(result.Outcome)
+            ? RebasePromptPickerCandidate(candidate, result.Snapshot.Desired.Companion)
+            : candidate;
+
+    private static CompanionConfig RebasePromptPickerCandidate(
         CompanionConfig candidate,
         CompanionConfig authoritative) => new()
     {

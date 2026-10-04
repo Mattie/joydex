@@ -72,9 +72,9 @@ internal sealed class SyntheticRuntimeCommandHandler : IRuntimeCommandHandler
 
 /// <summary>
 /// Keeps accepted commands running when one caller stops waiting and binds operation IDs to exact
-/// request payloads. Non-sensitive entries live for the engine generation so a reconnect can use
-/// the high-entropy operation ID to recover a lost reply. Secret-bearing or full-message reads
-/// stay live-call scoped.
+/// request payloads. Full completed results are bounded; evicted non-sensitive operations retain
+/// only their ID and kind for the engine generation so recovery can terminate without replaying
+/// an action. Secret-bearing or full-message reads stay live-call scoped.
 /// </summary>
 internal sealed class RuntimeCommandExecutor(
     IRuntimeCommandRouter router,
@@ -87,6 +87,7 @@ internal sealed class RuntimeCommandExecutor(
     private readonly IRuntimeCommandRouter _router = router ?? throw new ArgumentNullException(nameof(router));
     private readonly CancellationToken _runtimeCancellationToken = runtimeCancellationToken;
     private readonly Dictionary<Guid, CommandOperation> _operations = [];
+    private readonly Dictionary<Guid, RuntimeCommandKind> _evictedOperations = [];
     private readonly Queue<Guid> _completedOrder = new();
     private int _runningOperations;
 
@@ -119,6 +120,14 @@ internal sealed class RuntimeCommandExecutor(
         Task<RuntimeCommandResult> operationTask;
         lock (_gate)
         {
+            if (_evictedOperations.ContainsKey(request.OperationId))
+            {
+                return Task.FromResult(new RuntimeCommandResult(
+                    request.OperationId,
+                    request.Kind,
+                    RuntimeCommandStatus.Rejected,
+                    "This operation already finished, but its result expired. Check its effect before submitting a new action."));
+            }
             if (_operations.TryGetValue(request.OperationId, out var existing))
             {
                 if (!payload.AsSpan().SequenceEqual(existing.RequestPayload)
@@ -155,6 +164,7 @@ internal sealed class RuntimeCommandExecutor(
                         connectionId,
                         payload,
                         operationTask,
+                        request.Kind,
                         IsSensitive(request.Kind)));
             }
         }
@@ -167,6 +177,14 @@ internal sealed class RuntimeCommandExecutor(
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionId);
         lock (_gate)
         {
+            if (_evictedOperations.TryGetValue(operationId, out var evictedKind))
+            {
+                return new RuntimeCommandOperationResult(
+                    operationId,
+                    RuntimeCommandOperationState.Completed,
+                    new RuntimeCommandResult(operationId, evictedKind, RuntimeCommandStatus.Failed,
+                        "This operation finished, but its result expired. Check its effect before choosing the action again."));
+            }
             if (!_operations.TryGetValue(operationId, out var operation)
                 || (operation.Sensitive
                     && !string.Equals(operation.ConnectionId, connectionId, StringComparison.Ordinal)))
@@ -252,6 +270,10 @@ internal sealed class RuntimeCommandExecutor(
                 if (_operations.TryGetValue(stale, out var operation)
                     && operation.Task.IsCompleted)
                 {
+                    if (!operation.Sensitive)
+                    {
+                        _evictedOperations[stale] = operation.Kind;
+                    }
                     _operations.Remove(stale);
                 }
             }
@@ -268,5 +290,6 @@ internal sealed class RuntimeCommandExecutor(
         string ConnectionId,
         byte[] RequestPayload,
         Task<RuntimeCommandResult> Task,
+        RuntimeCommandKind Kind,
         bool Sensitive);
 }

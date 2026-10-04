@@ -60,16 +60,19 @@ public sealed class LiveSettingsUiTests
             RuntimeTrayApplicationContext.PromptPickerBaseRevisionAfter(4, result));
     }
 
-    [Fact]
-    public void PromptPickerKeepsItsBaseWhileAWriteIsUncertain()
+    [Theory]
+    [InlineData((int)RuntimeSettingsWriteOutcome.Uncertain)]
+    [InlineData((int)RuntimeSettingsWriteOutcome.Running)]
+    public void PromptPickerKeepsItsBaseWhileAWriteIsUncertain(int outcomeValue)
     {
+        var outcome = (RuntimeSettingsWriteOutcome)outcomeValue;
         var settings = new SettingsBundle(
             CompanionConfig.CreateSafeDefault(),
             VoicePePreferences.Default,
             PebbleIndexPreferences.Default,
             TaskAlertPreferences.Default);
         var result = new RuntimeSettingsWriteResult(
-            RuntimeSettingsWriteOutcome.Uncertain,
+            outcome,
             Guid.NewGuid(),
             new SettingsSnapshot(11, settings, settings, [], []),
             ApplyResult: null,
@@ -78,11 +81,20 @@ public sealed class LiveSettingsUiTests
         Assert.Equal(
             4,
             RuntimeTrayApplicationContext.PromptPickerBaseRevisionAfter(4, result));
+        var candidate = CompanionConfig.CreateSafeDefault();
+        Assert.Same(candidate, RuntimeTrayApplicationContext.PromptPickerCandidateAfter(candidate, result));
     }
 
-    [Fact]
-    public void PromptPickerConflictRebasesOnlyFieldsOwnedByTheEditor()
+    [Theory]
+    [InlineData((int)RuntimeSettingsWriteOutcome.Conflict)]
+    [InlineData((int)RuntimeSettingsWriteOutcome.Failed)]
+    [InlineData((int)RuntimeSettingsWriteOutcome.Rejected)]
+    [InlineData((int)RuntimeSettingsWriteOutcome.Applied)]
+    [InlineData((int)RuntimeSettingsWriteOutcome.PendingIdle)]
+    [InlineData((int)RuntimeSettingsWriteOutcome.NoChanges)]
+    public void TerminalPromptPickerResultRebasesBeforeAdvancingRevision(int outcomeValue)
     {
+        var outcome = (RuntimeSettingsWriteOutcome)outcomeValue;
         var candidateDevice = new DeviceSelector { ProductNameContains = "editor device" };
         var candidateDevices = new List<DeviceProfile>();
         var candidateBanks = new Dictionary<string, int> { ["editor"] = 4 };
@@ -110,10 +122,13 @@ public sealed class LiveSettingsUiTests
             Bindings = authoritativeBindings,
         };
 
-        var rebased = RuntimeTrayApplicationContext.RebasePromptPickerCandidate(
-            candidate,
-            authoritative);
+        var bundle = new SettingsBundle(authoritative, VoicePePreferences.Default,
+            PebbleIndexPreferences.Default, TaskAlertPreferences.Default);
+        var result = new RuntimeSettingsWriteResult(outcome, Guid.NewGuid(),
+            new SettingsSnapshot(11, bundle, bundle, [], []), null, "recovered result");
+        var rebased = RuntimeTrayApplicationContext.PromptPickerCandidateAfter(candidate, result);
 
+        Assert.Equal(11, RuntimeTrayApplicationContext.PromptPickerBaseRevisionAfter(4, result));
         Assert.Same(candidateDevice, rebased.Device);
         Assert.Same(candidateDevices, rebased.Devices);
         Assert.Same(candidateBanks, rebased.BankSelectors);
