@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Joydex.Contracts;
 
 namespace Joydex.App;
@@ -45,6 +46,7 @@ internal sealed class RuntimeSettingsWriter : IRuntimeSettingsWriter
     private readonly Guid _engineEpoch;
     private readonly Func<bool> _isCurrentConnection;
     private readonly Func<RuntimeSnapshot> _currentSnapshot;
+    private readonly ConcurrentDictionary<Guid, byte> _submittedOperations = new();
 
     public RuntimeSettingsWriter(
         IRuntimeRpcServer rpc,
@@ -152,6 +154,7 @@ internal sealed class RuntimeSettingsWriter : IRuntimeSettingsWriter
 
         try
         {
+            _submittedOperations.TryAdd(operationId, 0);
             var applied = await _rpc.ApplySettingsAsync(
                     new ApplySettingsRequest(operationId, prepared.PreparationToken),
                     cancellationToken)
@@ -230,6 +233,17 @@ internal sealed class RuntimeSettingsWriter : IRuntimeSettingsWriter
                 CurrentSnapshotOrThrow(),
                 applyResult: null,
                 $"Settings operation {operationId:D} is still running.");
+        }
+
+        if (operation.State == SettingsOperationState.NotFound
+            && !_submittedOperations.ContainsKey(operationId))
+        {
+            return Result(
+                RuntimeSettingsWriteOutcome.Failed,
+                operationId,
+                CurrentSnapshotOrThrow(),
+                applyResult: null,
+                "The previous connection's settings operation was not found. Your draft is preserved; review the latest settings before applying again.");
         }
 
         return Result(

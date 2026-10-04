@@ -118,6 +118,40 @@ public sealed class RuntimeSettingsWriterTests
     }
 
     [Fact]
+    public async Task MissingOperationOnReplacementConnectionReleasesDraftWithoutResubmitting()
+    {
+        var initial = Snapshot(revision: 11);
+        var candidate = initial.Settings.Desired with
+        {
+            TaskAlerts = initial.Settings.Desired.TaskAlerts with { Bank = 3 },
+        };
+        var rpc = new FakeRpc
+        {
+            Prepare = (_, _) => Task.FromResult(Prepared(initial)),
+            Apply = (_, _) => throw new TimeoutException("reply lost"),
+            Lookup = (id, _) => Task.FromResult(new SettingsOperationResult(id, SettingsOperationState.NotFound)),
+        };
+        var writer = Writer(rpc, initial);
+        var controller = new RuntimeSettingsDraftController(writer, initial);
+        Assert.Equal(RuntimeSettingsWriteOutcome.Uncertain,
+            (await controller.ApplyAsync(candidate, default)).Outcome);
+        var operationId = Assert.IsType<Guid>(controller.Current.PendingOperationId);
+        Assert.Equal(RuntimeSettingsWriteOutcome.Uncertain,
+            (await writer.RecoverAsync(operationId, default)).Outcome);
+
+        controller.BeginConnection(Writer(rpc, initial), initial);
+        Assert.Equal(RuntimeSettingsWriteOutcome.Failed,
+            (await controller.RecoverAsync(default))?.Outcome);
+
+        Assert.Null(controller.Current.PendingOperationId);
+        Assert.Equal(candidate, controller.Current.DraftSettings);
+        Assert.True(controller.Current.IsDirty);
+        Assert.Equal(1, rpc.ApplyCount);
+        controller.DiscardDraft();
+        Assert.False(controller.Current.IsDirty);
+    }
+
+    [Fact]
     public async Task ConnectionChangeWhilePrepareIsInFlightCannotApplyToReplacementEditor()
     {
         var initial = Snapshot(revision: 1);

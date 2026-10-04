@@ -264,7 +264,7 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
     {
         var (outbox, draft) = FindOutboxDraft(request, activeSettings.Voice);
         var sourceTaskId = RequireVoiceSourceTaskId(activeSettings.Voice);
-        var draftRemoved = false;
+        var deliveryStarted = false;
         var deliveryConfirmed = false;
         try
         {
@@ -276,8 +276,8 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
                     draft.TargetHostId,
                     cancellationToken)
                 .ConfigureAwait(false);
-            outbox.Remove(draft.Id);
-            draftRemoved = true;
+            draft = outbox.BeginDelivery(draft);
+            deliveryStarted = true;
             var result = await client.SendMessageAsync(
                     sourceTaskId,
                     target,
@@ -285,12 +285,13 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
                     cancellationToken)
                 .ConfigureAwait(false);
             deliveryConfirmed = true;
+            outbox.ConfirmDelivery(draft);
             RefreshVoiceMessaging(activeSettings.Voice);
             return Completed(request, result.Queued ? "Queued to the running task." : "Delivered.");
         }
         catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
         {
-            if (draftRemoved)
+            if (deliveryStarted)
             {
                 RecordUnconfirmedOutboxFailure(outbox, draft, deliveryConfirmed, exception);
                 RefreshVoiceMessaging(activeSettings.Voice);

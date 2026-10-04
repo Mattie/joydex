@@ -188,6 +188,36 @@ public sealed class DesktopTaskBridgeTests : IDisposable
     }
 
     [Fact]
+    public void InterruptedOutboxDeliveryRemainsRecoverableAfterRestart()
+    {
+        var outbox = new VoiceTaskOutbox(_root);
+        var draft = outbox.Hold(Summary("Target"), "preserve this message", "session", "offline");
+        outbox.BeginDelivery(draft);
+
+        var recovered = Assert.Single(new VoiceTaskOutbox(_root).Load());
+        Assert.Equal(draft.Id, recovered.Id);
+        Assert.Equal(draft.Message, recovered.Message);
+        Assert.Contains("Check the target task", recovered.LatestError, StringComparison.Ordinal);
+
+        outbox.ConfirmDelivery(recovered);
+        Assert.Empty(new VoiceTaskOutbox(_root).Load());
+    }
+
+    [Fact]
+    public void ConfirmedOutboxFileLeftByInterruptedCleanupIsNotRetryable()
+    {
+        var outbox = new VoiceTaskOutbox(_root);
+        var draft = outbox.Hold(Summary("Target"), "delivered message", "session", "offline");
+        var path = Path.Combine(outbox.DirectoryPath, draft.Id + ".json");
+        File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(
+            draft with { DeliveryConfirmed = true },
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)));
+
+        Assert.Empty(new VoiceTaskOutbox(_root).Load());
+        Assert.True(File.Exists(path));
+    }
+
+    [Fact]
     public void ManagedConfigurationPreservesUnrelatedContentAndRefusesUnmanagedConflict()
     {
         Directory.CreateDirectory(_root);
