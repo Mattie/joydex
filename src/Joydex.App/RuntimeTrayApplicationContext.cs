@@ -1454,27 +1454,29 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
         }
     }
 
-    private static async Task<bool> TryRequestRuntimeShutdownAsync(
+    private static Task<bool> TryRequestRuntimeShutdownAsync(
         RuntimeClientConnection connection,
+        CancellationToken cancellationToken) => TryRequestRuntimeShutdownAsync(
+            (request, token) => connection.Rpc.ExecuteCommandAsync(request, token),
+            cancellationToken);
+
+    internal static async Task<bool> TryRequestRuntimeShutdownAsync(
+        Func<RuntimeCommandRequest, CancellationToken, Task<RuntimeCommandResult>> execute,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(execute);
         try
         {
             var request = new RuntimeCommandRequest(
                 Guid.NewGuid(),
                 RuntimeCommandKind.ShutdownRuntime);
-            var result = await connection.Rpc.ExecuteCommandAsync(request, cancellationToken)
+            var result = await execute(request, cancellationToken)
                 .ConfigureAwait(true);
             return result.OperationId == request.OperationId
                 && result.Kind == request.Kind
                 && result.Status == RuntimeCommandStatus.Completed;
         }
-        catch (Exception exception) when (exception is IOException
-                                          or TimeoutException
-                                          or RuntimeIpcAuthenticationException
-                                          or InvalidDataException
-                                          or InvalidOperationException
-                                          or OperationCanceledException)
+        catch (Exception)
         {
             return false;
         }

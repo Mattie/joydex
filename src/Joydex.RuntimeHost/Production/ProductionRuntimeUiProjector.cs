@@ -380,6 +380,14 @@ internal sealed class ProductionRuntimeUiProjector
             snapshot = snapshot with { TaskAlerts = alerts with { RecentEvents = [] } };
         }
         if (JsonSerializer.SerializeToUtf8Bytes(snapshot, JsonOptions).Length
+            > RuntimeUiLimits.MaximumEncodedSnapshotBytes
+            && snapshot.TaskAlerts is { Suppressions.Length: > 0 } boundedAlerts)
+        {
+            // Settings carries the complete suppression list, so the UI projection can omit its
+            // duplicate copy when non-ASCII workspace paths exhaust the snapshot wire budget.
+            snapshot = snapshot with { TaskAlerts = boundedAlerts with { Suppressions = [] } };
+        }
+        if (JsonSerializer.SerializeToUtf8Bytes(snapshot, JsonOptions).Length
             > RuntimeUiLimits.MaximumEncodedSnapshotBytes)
         {
             throw new InvalidDataException("The bounded runtime UI snapshot exceeded its wire budget.");

@@ -1,4 +1,5 @@
 using Joydex.Contracts;
+using Joydex.Core.Voice;
 using Joydex.RuntimeHost.Production;
 
 namespace Joydex.RuntimeHost.Tests;
@@ -55,6 +56,52 @@ public sealed class WindowsProductionRuntimeCommandsTests
             var exception = Assert.Throws<InvalidDataException>(() =>
                 WindowsProductionRuntimeOwnerFactory.CreateDesktopTaskNavigationRequest(request));
             Assert.Equal("A valid local Desktop task target is required.", exception.Message);
+        }
+    }
+
+    [Fact]
+    public void OutboxFailureRecordsOnlyAnUnconfirmedDelivery()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "Joydex-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var outbox = new VoiceTaskOutbox(root);
+            var target = new DesktopTaskSummary(
+                Guid.NewGuid().ToString("D"),
+                "local",
+                "Target",
+                "idle",
+                null,
+                null,
+                1);
+            var confirmed = outbox.Hold(target, "Confirmed", "session", "Unavailable");
+            outbox.Remove(confirmed.Id);
+
+            WindowsProductionRuntimeOwnerFactory.RecordUnconfirmedOutboxFailure(
+                outbox,
+                confirmed,
+                deliveryConfirmed: true,
+                exception: new IOException("Cleanup failed."));
+
+            Assert.Empty(outbox.Load());
+
+            var unconfirmed = outbox.Hold(target, "Unconfirmed", "session", "Unavailable");
+            outbox.Remove(unconfirmed.Id);
+            WindowsProductionRuntimeOwnerFactory.RecordUnconfirmedOutboxFailure(
+                outbox,
+                unconfirmed,
+                deliveryConfirmed: false,
+                exception: new IOException("Delivery failed."));
+
+            var restored = Assert.Single(outbox.Load());
+            Assert.Equal(unconfirmed.Id, restored.Id);
+            Assert.Equal(2, restored.Attempts);
+            Assert.Equal("Delivery failed.", restored.LatestError);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
         }
     }
 }

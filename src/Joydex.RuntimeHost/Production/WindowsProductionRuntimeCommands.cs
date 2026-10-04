@@ -264,6 +264,8 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
     {
         var (outbox, draft) = FindOutboxDraft(request, activeSettings.Voice);
         var sourceTaskId = RequireVoiceSourceTaskId(activeSettings.Voice);
+        var draftRemoved = false;
+        var deliveryConfirmed = false;
         try
         {
             await using var lease = await _desktopBroker.AcquireAsync(cancellationToken).ConfigureAwait(false);
@@ -274,25 +276,44 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
                     draft.TargetHostId,
                     cancellationToken)
                 .ConfigureAwait(false);
+            outbox.Remove(draft.Id);
+            draftRemoved = true;
             var result = await client.SendMessageAsync(
                     sourceTaskId,
                     target,
                     draft.Message,
                     cancellationToken)
                 .ConfigureAwait(false);
-            outbox.Remove(draft.Id);
+            deliveryConfirmed = true;
             RefreshVoiceMessaging(activeSettings.Voice);
             return Completed(request, result.Queued ? "Queued to the running task." : "Delivered.");
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
         {
+            if (draftRemoved)
+            {
+                RecordUnconfirmedOutboxFailure(outbox, draft, deliveryConfirmed, exception);
+                RefreshVoiceMessaging(activeSettings.Voice);
+            }
             throw;
         }
         catch (Exception exception)
         {
-            outbox.RecordFailedAttempt(draft, exception.Message);
+            RecordUnconfirmedOutboxFailure(outbox, draft, deliveryConfirmed, exception);
             RefreshVoiceMessaging(activeSettings.Voice);
             throw;
+        }
+    }
+
+    internal static void RecordUnconfirmedOutboxFailure(
+        VoiceTaskOutbox outbox,
+        VoiceTaskOutboxDraft draft,
+        bool deliveryConfirmed,
+        Exception exception)
+    {
+        if (!deliveryConfirmed)
+        {
+            outbox.RecordFailedAttempt(draft, exception.Message);
         }
     }
 

@@ -7,6 +7,7 @@ using Joydex.Core.Voice;
 using Joydex.RuntimeHost.Production;
 using Joydex.RuntimeHost.Settings;
 using Joydex.Windows.Voice;
+using System.Text.Json;
 using System.Windows.Forms;
 
 namespace Joydex.RuntimeHost.Tests;
@@ -769,6 +770,28 @@ public sealed class ProductionRuntimeCompositionTests
         var restored = projector.GetSnapshot().TaskAlerts!;
         Assert.Equal(suppressions, restored.Suppressions);
         Assert.Equal(7, restored.DroppedEventCount);
+    }
+
+    [Fact]
+    public void SnapshotOmitsDuplicateTaskAlertSuppressionsWhenNonAsciiPathsExceedWireBudget()
+    {
+        var projector = new ProductionRuntimeUiProjector();
+        var suppressions = Enumerable.Range(0, 100).Select(index =>
+            new TaskAlertSuppressionRule(
+                TaskAlertSuppressionScope.Workspace,
+                $"C:\\{index}\\" + new string('\u754c', 4_000))).ToArray();
+        projector.PublishTaskAlerts(
+            new Joydex.Windows.TaskAlerts.TaskAlertSnapshot(true, [], 9, Suppressions: suppressions),
+            new RuntimeTaskAlertHookStatus(RuntimeTaskAlertHookState.Installed));
+
+        var restored = projector.GetSnapshot().TaskAlerts!;
+
+        Assert.Empty(restored.Suppressions);
+        Assert.Equal(9, restored.DroppedEventCount);
+        var encoded = JsonSerializer.SerializeToUtf8Bytes(
+            projector.GetSnapshot(),
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.True(encoded.Length <= RuntimeUiLimits.MaximumEncodedSnapshotBytes);
     }
 
     [Fact]
