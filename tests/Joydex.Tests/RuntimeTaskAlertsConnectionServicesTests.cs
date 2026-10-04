@@ -456,13 +456,14 @@ public sealed class RuntimeTaskAlertsConnectionServicesTests
             LookupHandler = (_, _) => Task.FromResult(recoveryResults.Dequeue()),
         };
         var settings = Settings(Preferences());
+        var snapshot = Snapshot(settings, Alerts());
         using var services = new RuntimeTaskAlertsConnectionServices(
             new ImmediateSynchronizationContext());
         Assert.True(services.BeginConnection(
             1,
             new FakeSettingsWriter(),
             firstRunner,
-            State(Snapshot(settings, Alerts()))));
+            State(snapshot)));
 
         var uncertain = await services.InstallHooksAsync(operationId);
         Assert.Equal(RuntimeTaskAlertsActionOutcome.Uncertain, uncertain.Outcome);
@@ -473,7 +474,7 @@ public sealed class RuntimeTaskAlertsConnectionServicesTests
             2,
             new FakeSettingsWriter(),
             replacementRunner,
-            State(Snapshot(settings, Alerts()))));
+            State(snapshot)));
 
         var firstRecovery = Assert.Single(await services.RecoverPendingOperationsAsync());
         var secondRecovery = Assert.Single(await services.RecoverPendingOperationsAsync());
@@ -484,6 +485,51 @@ public sealed class RuntimeTaskAlertsConnectionServicesTests
         Assert.Equal([operationId, operationId], replacementRunner.LookupIds);
         Assert.Equal(RuntimeTaskAlertHookState.Installed, services.Current.Hooks.State);
         Assert.Empty(await services.RecoverPendingOperationsAsync());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingHookCommandReleasesForExplicitRetryOnlyAfterEngineRestart(bool restarted)
+    {
+        var operationId = Guid.NewGuid();
+        var firstRunner = new FakeCommandRunner
+        {
+            ExecuteHandler = (_, _) => Task.FromException<RuntimeCommandResult>(new IOException("reply lost")),
+        };
+        var replacementRunner = new FakeCommandRunner
+        {
+            ExecuteHandler = (request, _) => Task.FromResult(new RuntimeCommandResult(
+                request.OperationId, request.Kind, RuntimeCommandStatus.Completed,
+                Payload: new RuntimeCommandPayload(TaskAlertHooks:
+                    new RuntimeTaskAlertHookStatus(RuntimeTaskAlertHookState.Installed)))),
+        };
+        var snapshot = Snapshot(Settings(Preferences()), Alerts());
+        using var services = new RuntimeTaskAlertsConnectionServices(new ImmediateSynchronizationContext());
+        Assert.True(services.BeginConnection(1, new FakeSettingsWriter(), firstRunner, State(snapshot)));
+        Assert.Equal(RuntimeTaskAlertsActionOutcome.Uncertain,
+            (await services.InstallHooksAsync(operationId)).Outcome);
+        Assert.True(services.BeginConnection(2, new FakeSettingsWriter(), replacementRunner,
+            State(restarted ? snapshot with { EngineEpoch = Guid.NewGuid() } : snapshot)));
+
+        var recovered = Assert.Single(await services.RecoverPendingOperationsAsync());
+
+        Assert.Empty(replacementRunner.ExecuteRequests);
+        Assert.Equal(operationId, Assert.Single(replacementRunner.LookupIds));
+        if (restarted)
+        {
+            Assert.Equal(RuntimeTaskAlertsActionOutcome.Failed, recovered.Outcome);
+            Assert.Empty(await services.RecoverPendingOperationsAsync());
+            var retryId = Guid.NewGuid();
+            Assert.True((await services.InspectHooksAsync(retryId)).Succeeded);
+            Assert.Equal(retryId, Assert.Single(replacementRunner.ExecuteRequests).OperationId);
+        }
+        else
+        {
+            Assert.Equal(RuntimeTaskAlertsActionOutcome.Uncertain, recovered.Outcome);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => services.InspectHooksAsync(Guid.NewGuid()));
+            Assert.Empty(replacementRunner.ExecuteRequests);
+        }
     }
 
     [Fact]

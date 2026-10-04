@@ -650,6 +650,7 @@ internal sealed class RuntimeSettingsApplicationContext : ApplicationContext
         var generation = _connectionGeneration;
         EnsureCurrentConnection(connection, state, rpc, generation);
         var fingerprint = CommandFingerprint(arguments);
+        var engineEpoch = state.Current.Snapshot!.EngineEpoch;
         if (_pendingCommands.TryGetValue(kind, out var pending))
         {
             var sameRequest = string.Equals(
@@ -673,6 +674,14 @@ internal sealed class RuntimeSettingsApplicationContext : ApplicationContext
                 }
                 return completed;
             }
+            if (recovered.OperationId == pending.OperationId
+                && recovered.State == RuntimeCommandOperationState.NotFound
+                && pending.EngineEpoch != engineEpoch)
+            {
+                RemovePendingCommand(kind, pending.OperationId);
+                throw new InvalidOperationException(
+                    $"The runtime restarted and the earlier {kind} outcome is unavailable. Check its effect before choosing the action again.");
+            }
             throw new InvalidOperationException(
                 recovered.State == RuntimeCommandOperationState.Running
                     ? sameRequest
@@ -682,7 +691,7 @@ internal sealed class RuntimeSettingsApplicationContext : ApplicationContext
         }
 
         var operationId = Guid.NewGuid();
-        _pendingCommands[kind] = new PendingCommand(operationId, fingerprint);
+        _pendingCommands[kind] = new PendingCommand(operationId, fingerprint, engineEpoch);
         try
         {
             var result = await rpc.ExecuteCommandAsync(
@@ -885,5 +894,5 @@ internal sealed class RuntimeSettingsApplicationContext : ApplicationContext
         ? int.MinValue + 1
         : generation + 1;
 
-    private sealed record PendingCommand(Guid OperationId, string Fingerprint);
+    private sealed record PendingCommand(Guid OperationId, string Fingerprint, Guid EngineEpoch);
 }

@@ -133,7 +133,7 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
 
             previous = _connection;
             _latestGeneration = generation;
-            _connection = new Connection(generation, settingsWriter, commandRunner);
+            _connection = new Connection(generation, settingsWriter, commandRunner, state);
             _settings = null;
             _taskAlerts = null;
             _hooks = new RuntimeTaskAlertHookStatus(
@@ -510,7 +510,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
                     throw new InvalidOperationException(
                         "A previous Task Alerts hook command must be reconciled before another is submitted.");
                 }
-                pending = new PendingCommandAction(operationId, actionKind, commandKind);
+                pending = new PendingCommandAction(operationId, actionKind, commandKind,
+                    connection.State.Current.Snapshot?.EngineEpoch);
                 _pendingCommands.Add(operationId, pending);
             }
             BeginOperationLocked(operationId);
@@ -629,6 +630,18 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
                 pending,
                 RuntimeTaskAlertsActionOutcome.Running,
                 $"Hook operation {pending.OperationId:D} is still running.");
+        }
+        if (operation.State == RuntimeCommandOperationState.NotFound
+            && pending.EngineEpoch is { } submittedEpoch
+            && connection.State.Current.Snapshot?.EngineEpoch is { } currentEpoch
+            && submittedEpoch != currentEpoch)
+        {
+            return PublishCommandState(
+                connection,
+                pending,
+                RuntimeTaskAlertsActionOutcome.Failed,
+                "The runtime restarted and the earlier hook command outcome is unavailable. "
+                + "Inspect hook status before choosing another action.");
         }
         return PublishCommandState(
             connection,
@@ -1070,7 +1083,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
     private sealed record Connection(
         long Generation,
         IRuntimeSettingsWriter SettingsWriter,
-        IRuntimeCommandRunner CommandRunner)
+        IRuntimeCommandRunner CommandRunner,
+        RuntimeClientState State)
     {
         public CancellationTokenSource Cancellation { get; } = new();
     }
@@ -1086,7 +1100,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
     private sealed record PendingCommandAction(
         Guid OperationId,
         RuntimeTaskAlertsActionKind ActionKind,
-        RuntimeCommandKind CommandKind);
+        RuntimeCommandKind CommandKind,
+        Guid? EngineEpoch);
 }
 
 /// <summary>
