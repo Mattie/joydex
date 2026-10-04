@@ -619,6 +619,81 @@ public sealed class RuntimeRoomVoiceWindowAdapterTests
         Assert.Single(runner.Lookups);
     }
 
+    [Theory]
+    [InlineData(RuntimeCommandOperationState.Running)]
+    [InlineData(RuntimeCommandOperationState.NotFound)]
+    public async Task ReconnectRetainsOutboxIdentityUntilItsTerminalResult(RuntimeCommandOperationState state)
+    {
+        using var adapter = new RuntimeRoomVoiceWindowAdapter();
+        var epoch = Guid.NewGuid();
+        var oldRunner = new FakeCommandRunner
+        {
+            ExecuteHandler = async (_, token) =>
+            {
+                await Task.Delay(Timeout.Infinite, token);
+                throw new InvalidOperationException("unreachable");
+            },
+        };
+        adapter.BeginConnection(1, oldRunner, new FakeVoiceTargetWriter(), engineEpoch: epoch);
+        var draft = Summary("draft-1", "message", truncated: false);
+        var original = adapter.TaskMessaging.Retry(draft, default);
+        var request = Assert.Single(oldRunner.Requests);
+        adapter.EndConnection(1);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => original);
+
+        var completed = false;
+        var runner = new FakeCommandRunner
+        {
+            LookupHandler = (id, _) => Task.FromResult(new RuntimeCommandOperationResult(
+                id, completed ? RuntimeCommandOperationState.Completed : state,
+                completed ? Completed(request, detail: "Recovered delivery.") : null)),
+        };
+        adapter.BeginConnection(2, runner, new FakeVoiceTargetWriter(), engineEpoch: epoch);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => adapter.TaskMessaging.Retry(draft, default));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            adapter.TaskMessaging.Retarget(draft, ToDesktopTask(TaskContract("Other")), default));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            adapter.TaskMessaging.DiscardOutboxDeliveryAsync!(draft.Id, default));
+        Assert.Empty(runner.Requests);
+        Assert.Equal(3, runner.Lookups.Count);
+        Assert.All(runner.Lookups, id => Assert.Equal(request.OperationId, id));
+
+        completed = true;
+        Assert.Equal("Recovered delivery.", await adapter.TaskMessaging.Retry(draft, default));
+        Assert.Empty(runner.Requests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TerminalFailureOrRestartRequiresAnotherExplicitOutboxAction(bool restarted)
+    {
+        using var adapter = new RuntimeRoomVoiceWindowAdapter();
+        var epoch = Guid.NewGuid();
+        var oldRunner = new FakeCommandRunner
+        {
+            ExecuteHandler = (_, _) => throw new IOException("lost reply"),
+        };
+        adapter.BeginConnection(1, oldRunner, new FakeVoiceTargetWriter(), engineEpoch: epoch);
+        var draft = Summary("draft-1", "message", truncated: false);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => adapter.TaskMessaging.Retry(draft, default));
+        var request = Assert.Single(oldRunner.Requests);
+        var runner = new FakeCommandRunner
+        {
+            LookupHandler = (id, _) => Task.FromResult(restarted
+                ? new RuntimeCommandOperationResult(id, RuntimeCommandOperationState.NotFound)
+                : new RuntimeCommandOperationResult(id, RuntimeCommandOperationState.Completed,
+                    new RuntimeCommandResult(id, request.Kind, RuntimeCommandStatus.Failed, "Delivery failed."))),
+        };
+        adapter.BeginConnection(2, runner, new FakeVoiceTargetWriter(), engineEpoch: restarted ? Guid.NewGuid() : epoch);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => adapter.TaskMessaging.Retry(draft, default));
+        Assert.Empty(runner.Requests);
+        Assert.Equal(request.OperationId, Assert.Single(runner.Lookups));
+
+        await adapter.TaskMessaging.Retry(draft, default);
+        Assert.NotEqual(request.OperationId, Assert.Single(runner.Requests).OperationId);
+    }
+
     [Fact]
     public async Task ReconnectRejectsAnOldCompletionAndKeepsTheNewProjection()
     {

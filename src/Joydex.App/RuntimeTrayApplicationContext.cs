@@ -508,7 +508,8 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             generation,
             new RuntimeRpcCommandRunner(connection.Rpc),
             new RuntimeVoiceTargetWriter(connection.Rpc, connection.State),
-            snapshot.Ui?.Voice);
+            snapshot.Ui?.Voice,
+            snapshot.EngineEpoch);
         ApplySnapshot(snapshot);
         SetConnectionStatus("Runtime: Connected", null);
         _configureItem.Enabled = true;

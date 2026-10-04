@@ -60,6 +60,8 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
     private readonly RoomVoiceConversationModel _conversation = new();
     private Connection? _connection;
     private PendingVoiceTargetWrite? _pendingTargetWrite;
+    private readonly Dictionary<string, PendingOutboxCommand> _pendingOutboxCommands =
+        new(StringComparer.OrdinalIgnoreCase);
     private RuntimeVoiceMessagingSnapshot _messaging = EmptyMessaging();
     private long _latestConnectionGeneration = long.MinValue;
     private bool _disposed;
@@ -97,7 +99,8 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
         long connectionGeneration,
         IRuntimeCommandRunner commands,
         IRuntimeVoiceTargetWriter targetWriter,
-        RuntimeVoiceUiSnapshot? snapshot = null)
+        RuntimeVoiceUiSnapshot? snapshot = null,
+        Guid engineEpoch = default)
     {
         ArgumentNullException.ThrowIfNull(commands);
         ArgumentNullException.ThrowIfNull(targetWriter);
@@ -112,7 +115,7 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
 
             previous = _connection;
             _latestConnectionGeneration = connectionGeneration;
-            _connection = new Connection(connectionGeneration, commands, targetWriter);
+            _connection = new Connection(connectionGeneration, commands, targetWriter, engineEpoch);
             if (snapshot is not null)
             {
                 ApplySnapshotCore(snapshot);
@@ -439,7 +442,7 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
     {
         ArgumentNullException.ThrowIfNull(draft);
         var connection = GetConnection();
-        var result = await ExecuteRequiredAsync(
+        var result = await ExecuteOutboxMutationAsync(
                 connection,
                 DeliveryRequest(RuntimeCommandKind.RetryVoiceOutboxDelivery, draft.Id),
                 cancellationToken)
@@ -462,7 +465,7 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
             new RuntimeCommandArguments(
                 Task: new RuntimeTaskReference(target.Id, target.HostId),
                 DeliveryId: draft.Id));
-        _ = await ExecuteRequiredAsync(connection, request, cancellationToken).ConfigureAwait(false);
+        _ = await ExecuteOutboxMutationAsync(connection, request, cancellationToken).ConfigureAwait(false);
         lock (_gate)
         {
             EnsureCurrent(connection);
@@ -487,12 +490,91 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(deliveryId);
         var connection = GetConnection();
-        _ = await ExecuteRequiredAsync(
+        _ = await ExecuteOutboxMutationAsync(
                 connection,
                 DeliveryRequest(RuntimeCommandKind.DiscardVoiceOutboxDelivery, deliveryId),
                 cancellationToken)
             .ConfigureAwait(false);
         RemoveOutboxDraft(connection, deliveryId);
+    }
+
+    private async Task<RuntimeCommandResult> ExecuteOutboxMutationAsync(
+        Connection connection,
+        RuntimeCommandRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var deliveryId = request.Arguments!.DeliveryId!;
+        PendingOutboxCommand pending;
+        bool submit;
+        lock (_gate)
+        {
+            EnsureCurrent(connection);
+            submit = !_pendingOutboxCommands.TryGetValue(deliveryId, out pending!);
+            if (submit)
+            {
+                pending = new PendingOutboxCommand(request, connection.EngineEpoch);
+                _pendingOutboxCommands.Add(deliveryId, pending);
+            }
+        }
+
+        // The host owns accepted work. Cancellation, a lost reply, or a replacement pipe must
+        // leave this identity available before any other mutation of the same draft can run.
+        RuntimeCommandResult result;
+        if (submit)
+        {
+            result = await ExecuteRequiredAsync(connection, request, cancellationToken, requireCompleted: false)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken, connection.Cancellation.Token);
+            var operation = await connection.Commands.GetOperationAsync(pending.Request.OperationId, linked.Token)
+                .ConfigureAwait(false);
+            lock (_gate)
+            {
+                EnsureCurrent(connection);
+                if (operation.OperationId != pending.Request.OperationId)
+                {
+                    throw new InvalidDataException("The runtime returned a mismatched command operation identity.");
+                }
+                if (operation.State == RuntimeCommandOperationState.NotFound
+                    && pending.EngineEpoch != connection.EngineEpoch)
+                {
+                    if (_pendingOutboxCommands.GetValueOrDefault(deliveryId) == pending)
+                    {
+                        _pendingOutboxCommands.Remove(deliveryId);
+                    }
+                    throw new InvalidOperationException(
+                        "The runtime restarted before the outbox result could be recovered. Check the delivery before choosing another action.");
+                }
+            }
+            result = operation.State == RuntimeCommandOperationState.Completed && operation.Result is not null
+                ? operation.Result
+                : throw new InvalidOperationException(
+                    "The previous outbox operation is still running or uncertain. Its side effect was not resubmitted.");
+        }
+
+        lock (_gate)
+        {
+            EnsureCurrent(connection);
+            if (result.OperationId != pending.Request.OperationId || result.Kind != pending.Request.Kind)
+            {
+                throw new InvalidDataException("The runtime returned a mismatched command result identity.");
+            }
+            if (_pendingOutboxCommands.GetValueOrDefault(deliveryId) == pending)
+            {
+                _pendingOutboxCommands.Remove(deliveryId);
+            }
+        }
+        _ = ValidateCompletedResult(pending.Request, result);
+        if (pending.Request.Kind != request.Kind || pending.Request.Arguments != request.Arguments)
+        {
+            throw new InvalidOperationException(
+                "The previous outbox action completed. Review the draft before choosing another action.");
+        }
+        return result;
     }
 
     private IReadOnlyList<RoomVoiceOutboxDraftSummary> LoadOutboxDrafts()
@@ -532,7 +614,8 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
     private async Task<RuntimeCommandResult> ExecuteRequiredAsync(
         Connection connection,
         RuntimeCommandRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireCompleted = true)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
@@ -561,7 +644,7 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
         {
             EnsureCurrent(connection);
         }
-        return ValidateCompletedResult(request, result);
+        return requireCompleted ? ValidateCompletedResult(request, result) : result;
     }
 
     private async Task<RuntimeCommandResult> ReconcileAsync(
@@ -805,8 +888,11 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
     private sealed class Connection(
         long generation,
         IRuntimeCommandRunner commands,
-        IRuntimeVoiceTargetWriter targetWriter)
+        IRuntimeVoiceTargetWriter targetWriter,
+        Guid engineEpoch)
     {
+        public Guid EngineEpoch { get; } = engineEpoch;
+
         public long Generation { get; } = generation;
 
         public IRuntimeCommandRunner Commands { get; } = commands;
@@ -819,4 +905,6 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
     }
 
     private sealed record PendingVoiceTargetWrite(Guid OperationId, RuntimeTaskReference Target);
+
+    private sealed record PendingOutboxCommand(RuntimeCommandRequest Request, Guid EngineEpoch);
 }
