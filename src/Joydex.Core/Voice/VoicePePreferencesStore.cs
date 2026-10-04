@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -6,6 +7,8 @@ namespace Joydex.Core.Voice;
 public static class VoicePePreferencesStore
 {
     private const int MaximumDocumentBytes = 64 * 1024;
+    private static readonly TimeSpan ExistingOpenRetryTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ExistingOpenRetryDelay = TimeSpan.FromMilliseconds(5);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -70,8 +73,8 @@ public static class VoicePePreferencesStore
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var fullPath = Path.GetFullPath(path);
-        const int maximumOpenAttempts = 12;
-        for (var attempt = 1; attempt <= maximumOpenAttempts; attempt++)
+        var retryWindow = Stopwatch.StartNew();
+        while (true)
         {
             try
             {
@@ -92,16 +95,15 @@ public static class VoicePePreferencesStore
                 stream.ReadExactly(documentBytes);
                 return ParseDocument(documentBytes).Preferences;
             }
-            catch (IOException) when (attempt < maximumOpenAttempts)
+            catch (IOException) when (retryWindow.Elapsed < ExistingOpenRetryTimeout)
             {
-                Thread.Sleep(1);
+                Thread.Sleep(ExistingOpenRetryDelay);
             }
             catch (IOException exception)
             {
                 throw new InvalidDataException("The Voice PE settings file could not be read.", exception);
             }
         }
-        throw new InvalidDataException("The Voice PE settings file could not be read.");
     }
 
     internal static VoicePePreferences ParseExisting(byte[] documentBytes) =>

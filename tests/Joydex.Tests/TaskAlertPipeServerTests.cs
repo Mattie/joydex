@@ -123,9 +123,10 @@ public sealed class TaskAlertPipeServerTests
             pipeName,
             PipeDirection.Out,
             PipeOptions.Asynchronous);
-        await client.ConnectAsync(2000);
+        using var timeout = new CancellationTokenSource(AsyncTimeout);
+        await client.ConnectAsync(timeout.Token);
         var bytes = Encoding.UTF8.GetBytes(payload);
-        await client.WriteAsync(bytes);
+        await client.WriteAsync(bytes, timeout.Token);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)

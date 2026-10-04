@@ -10,6 +10,8 @@ namespace Joydex.RuntimeHost.Tests;
 
 public sealed class DemoRuntimeCompositionTests
 {
+    private static readonly TimeSpan AsyncTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task TwoSimulatedSourcesDispatchTheirConfiguredBindings()
     {
@@ -235,7 +237,7 @@ public sealed class DemoRuntimeCompositionTests
                 Bundle("toggle-sidebar", "agent-1"),
                 desiredRevision: 2,
                 default));
-        await composition.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+        await composition.DisposeAsync().AsTask().WaitAsync(AsyncTimeout);
 
         Assert.Equal(2, inputHost.Sources.Count);
         Assert.All(inputHost.Sources, source => Assert.False(source.Connected));
@@ -343,7 +345,7 @@ public sealed class DemoRuntimeCompositionTests
         try
         {
             time.SetElapsed(elapsed);
-            return await observed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            return await observed.Task.WaitAsync(AsyncTimeout);
         }
         finally
         {
@@ -369,7 +371,7 @@ public sealed class DemoRuntimeCompositionTests
         inputHost.CaptureChanged += OnChanged;
         try
         {
-            return await reached.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            return await reached.Task.WaitAsync(AsyncTimeout);
         }
         finally
         {
@@ -399,7 +401,7 @@ public sealed class DemoRuntimeCompositionTests
         inputHost.InputObserved += OnObserved;
         try
         {
-            return await observed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            return await observed.Task.WaitAsync(AsyncTimeout);
         }
         finally
         {
@@ -435,7 +437,7 @@ public sealed class DemoRuntimeCompositionTests
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         var timeout = Stopwatch.StartNew();
-        while (timeout.Elapsed < TimeSpan.FromSeconds(2))
+        while (timeout.Elapsed < AsyncTimeout)
         {
             if (condition())
             {

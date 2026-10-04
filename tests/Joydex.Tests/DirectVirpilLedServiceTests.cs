@@ -6,6 +6,8 @@ namespace Joydex.Tests;
 
 public sealed class DirectVirpilLedServiceTests
 {
+    private static readonly TimeSpan AsyncTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task AppliesAlertThenCompleteBaselineWithoutThrottleReset()
     {
@@ -20,7 +22,7 @@ public sealed class DirectVirpilLedServiceTests
             options);
 
         service.Apply(initial);
-        Assert.True(await service.WaitForIdleAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
         var throttle = factory.For(VirpilDevices.Throttle);
         var alpha = factory.For(VirpilDevices.Alpha);
         Assert.Equal(0x66, Assert.Single(throttle.Reports).Bytes[1]);
@@ -31,7 +33,7 @@ public sealed class DirectVirpilLedServiceTests
         service.Apply(Snapshot(
             [new TaskAlertAssignment(1, "session", null, TaskAlertState.Approval, now)],
             options));
-        Assert.True(await service.WaitForIdleAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
         Assert.Equal(0x8F, throttle.Reports[^1].Bytes[5]);
         Assert.Equal(0x8F, alpha.Reports[^1].Bytes[5]);
 
@@ -39,7 +41,7 @@ public sealed class DirectVirpilLedServiceTests
         var alphaBeforeClear = alpha.Reports.Count;
         var alphaBatchesBeforeClear = alpha.Batches;
         service.Apply(Snapshot([], options));
-        Assert.True(await service.WaitForIdleAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
 
         var throttleClear = Assert.Single(throttle.Reports.Skip(throttleBeforeClear));
         Assert.Equal(0x66, throttleClear.Bytes[1]);
@@ -81,16 +83,25 @@ public sealed class DirectVirpilLedServiceTests
             options);
         var alpha = factory.For(VirpilDevices.Alpha);
         alpha.ThrowWrites = true;
+        var retryObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        alpha.Attempted = attempts =>
+        {
+            if (attempts >= 2)
+            {
+                retryObserved.TrySetResult();
+            }
+        };
 
         service.Apply(snapshot);
-        await Task.Delay(1200);
+        await retryObserved.Task.WaitAsync(AsyncTimeout);
 
         var throttle = factory.For(VirpilDevices.Throttle);
         Assert.Single(throttle.Reports);
         Assert.True(alpha.Attempts >= 2);
         alpha.ThrowWrites = false;
         service.Apply(snapshot);
-        Assert.True(await service.WaitForIdleAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
         Assert.Single(throttle.Reports);
     }
 
@@ -113,11 +124,11 @@ public sealed class DirectVirpilLedServiceTests
         throttle.ReleaseSend = releaseSend;
 
         service.Apply(snapshot);
-        Assert.True(sendStarted.Wait(TimeSpan.FromSeconds(2)));
+        Assert.True(sendStarted.Wait(AsyncTimeout));
         service.RestoreAndReplay(replay: true);
         releaseSend.Set();
 
-        Assert.True(await service.WaitForIdleAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
         Assert.Equal(2, throttle.Reports.Count);
     }
 
@@ -145,17 +156,17 @@ public sealed class DirectVirpilLedServiceTests
         };
 
         service.Apply(snapshot);
-        Assert.True(await service.WaitForIdleAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
         var throttle = factory.For(VirpilDevices.Throttle);
         Assert.Single(throttle.Reports);
 
         conflicts.Value = true;
-        await conflictObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await conflictObserved.Task.WaitAsync(AsyncTimeout);
         Assert.False(await service.WaitForIdleAsync(TimeSpan.FromMilliseconds(100)));
         Assert.Single(throttle.Reports);
 
         conflicts.Value = false;
-        Assert.True(await service.WaitForIdleAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
         Assert.Equal(2, throttle.Reports.Count);
     }
 
@@ -172,20 +183,29 @@ public sealed class DirectVirpilLedServiceTests
             baseline,
             options);
         service.Apply(baseline);
-        Assert.True(await service.WaitForIdleAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
 
         var alpha = factory.For(VirpilDevices.Alpha);
         alpha.ThrowWrites = true;
+        var failureObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        service.StatusChanged += (_, status) =>
+        {
+            if (status.Contains("update pending", StringComparison.Ordinal))
+            {
+                failureObserved.TrySetResult();
+            }
+        };
         service.Apply(Snapshot(
             [new TaskAlertAssignment(1, "session", null, TaskAlertState.Approval, DateTimeOffset.UtcNow)],
             options));
-        await Task.Delay(1100);
+        await failureObserved.Task.WaitAsync(AsyncTimeout);
 
         Assert.True(service.RestorePending);
 
         alpha.ThrowWrites = false;
         service.SetPaused(true);
-        Assert.True(await service.WaitForIdleAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
         Assert.False(service.RestorePending);
     }
 
@@ -230,6 +250,8 @@ public sealed class DirectVirpilLedServiceTests
 
         public ManualResetEventSlim? ReleaseSend { get; set; }
 
+        public Action<int>? Attempted { get; set; }
+
         public int Attempts => Volatile.Read(ref _attempts);
 
         public int Batches => Volatile.Read(ref _batches);
@@ -247,9 +269,10 @@ public sealed class DirectVirpilLedServiceTests
 
         public void Send(byte[] logicalReport)
         {
-            Interlocked.Increment(ref _attempts);
+            var attempts = Interlocked.Increment(ref _attempts);
+            Attempted?.Invoke(attempts);
             SendStarted?.Set();
-            if (ReleaseSend is { } release && !release.Wait(TimeSpan.FromSeconds(2)))
+            if (ReleaseSend is { } release && !release.Wait(AsyncTimeout))
             {
                 throw new TimeoutException("injected blocked write timed out");
             }

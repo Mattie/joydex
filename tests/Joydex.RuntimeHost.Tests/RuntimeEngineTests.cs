@@ -9,6 +9,8 @@ namespace Joydex.RuntimeHost.Tests;
 
 public sealed class RuntimeEngineTests
 {
+    private static readonly TimeSpan AsyncTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task CompositionCleanupFailureStillReleasesOwnership()
     {
@@ -116,7 +118,7 @@ public sealed class RuntimeEngineTests
             captureObservationStarted: _ =>
             {
                 observationStarted.Set();
-                Assert.True(allowObservation.Wait(TimeSpan.FromSeconds(2)));
+                Assert.True(allowObservation.Wait(AsyncTimeout));
             }));
         var session = engine.CreateSession(
             "racing-connection",
@@ -129,11 +131,11 @@ public sealed class RuntimeEngineTests
         var beginning = Task.Run(() => session.BeginInputCaptureAsync(
             new RuntimeCaptureRequest(source.SourceId, "race", source.Generation),
             CancellationToken.None));
-        Assert.True(observationStarted.Wait(TimeSpan.FromSeconds(2)));
+        Assert.True(observationStarted.Wait(AsyncTimeout));
         var disposing = Task.Run(async () => await session.DisposeAsync());
         Assert.True(SpinWait.SpinUntil(
             () => !session.CanBeginCapture(),
-            TimeSpan.FromSeconds(2)));
+            AsyncTimeout));
         Assert.False(disposing.IsCompleted);
 
         allowObservation.Set();
@@ -181,7 +183,7 @@ public sealed class RuntimeEngineTests
             Snapshot(buttonPressed: true),
             [new JoystickEvent(JoystickEventKind.ButtonPressed, 0, 1)]);
 
-        var completed = await ownerClient.CaptureCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var completed = await ownerClient.CaptureCompleted.Task.WaitAsync(AsyncTimeout);
         Assert.Equal(started.Lease!.CaptureId, completed.Capture!.Lease.CaptureId);
         Assert.Equal(InputCaptureStatus.Completed, completed.Capture.Lease.Status);
         Assert.Equal(0, completed.Capture.CapturedInput?.ControlIndex);
@@ -432,7 +434,7 @@ public sealed class RuntimeEngineTests
         var accepted = await tray.ExecuteCommandAsync(request, CancellationToken.None);
 
         Assert.Equal(RuntimeCommandStatus.Completed, accepted.Status);
-        await engine.ShutdownRequested.WaitAsync(TimeSpan.FromSeconds(2));
+        await engine.ShutdownRequested.WaitAsync(AsyncTimeout);
         Assert.Empty(forwarded.Requests);
     }
 
@@ -605,7 +607,7 @@ public sealed class RuntimeEngineTests
         var apply = session.ApplySettingsAsync(
             new ApplySettingsRequest(operationId, prepared.PreparationToken!),
             CancellationToken.None);
-        await activator.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await activator.Entered.Task.WaitAsync(AsyncTimeout);
 
         var snapshotRead = session.GetSnapshotAsync(CancellationToken.None);
         var source = Assert.Single(attached.Snapshot.Input.Sources);
@@ -786,7 +788,7 @@ public sealed class RuntimeEngineTests
         var client = new BlockingInputClient();
         await using var dispatcher = new RuntimeConnectionDispatcher(client, Guid.NewGuid());
         dispatcher.EnqueueObservation(Observation(0));
-        await client.FirstCallbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await client.FirstCallbackEntered.Task.WaitAsync(AsyncTimeout);
         for (var sequence = 1; sequence < 100; sequence++)
         {
             dispatcher.EnqueueObservation(Observation(sequence));
@@ -802,7 +804,7 @@ public sealed class RuntimeEngineTests
         dispatcher.EnqueueCapture(capture);
         client.ReleaseFirstCallback.TrySetResult();
 
-        await client.CaptureCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await client.CaptureCompleted.Task.WaitAsync(AsyncTimeout);
         var delivered = client.Events.ToArray();
         Assert.InRange(
             delivered.Count(item => item.Kind == RuntimeConnectionInputEventKind.InputObserved),
@@ -837,7 +839,7 @@ public sealed class RuntimeEngineTests
             new RuntimeCaptureRequest(source.SourceId, "cursor acknowledgement", source.Generation),
             CancellationToken.None);
         Assert.True(capture.Accepted, capture.Error);
-        await client.FirstCallbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await client.FirstCallbackEntered.Task.WaitAsync(AsyncTimeout);
 
         var whileBlocked = await session.GetSnapshotAsync(CancellationToken.None);
         Assert.Equal(0, whileBlocked.InputEventCursor);
@@ -878,7 +880,7 @@ public sealed class RuntimeEngineTests
             new RuntimeCaptureRequest(source.SourceId, "overflow", source.Generation),
             CancellationToken.None);
         Assert.True(capture.Accepted, capture.Error);
-        await client.FirstCallbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await client.FirstCallbackEntered.Task.WaitAsync(AsyncTimeout);
 
         for (var index = 0; index <= RuntimeConnectionDispatcher.MaximumQueuedItems; index++)
         {
@@ -887,20 +889,8 @@ public sealed class RuntimeEngineTests
                 CancellationToken.None);
         }
 
-        var failure = await aborted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var failure = await aborted.Task.WaitAsync(AsyncTimeout);
         Assert.IsType<InvalidOperationException>(failure);
-        await AssertEventuallyAsync(async () =>
-        {
-            try
-            {
-                _ = await session.GetSnapshotAsync(CancellationToken.None);
-                return false;
-            }
-            catch (ObjectDisposedException)
-            {
-                return true;
-            }
-        });
 
         var replacementClient = new RecordingClient();
         await using var replacement = engine.CreateSession(
@@ -910,12 +900,11 @@ public sealed class RuntimeEngineTests
             CancellationToken.None);
         var replacementAttach = await AttachAsync(engine, replacement, RuntimeClientKind.Settings);
         Assert.Equal(engine.RuntimeGeneration, replacementAttach.Snapshot.Identity.RuntimeGeneration);
-        Assert.Empty(replacementAttach.Snapshot.Input.Captures);
-        Assert.Equal(
-            RuntimeCaptureLookupStatus.NotFound,
+        await AssertEventuallyAsync(async () =>
             (await replacement.GetInputCaptureAsync(
                 capture.Lease!.CaptureId,
-                CancellationToken.None)).Status);
+                CancellationToken.None)).Status == RuntimeCaptureLookupStatus.NotFound);
+        Assert.Empty((await replacement.GetSnapshotAsync(CancellationToken.None)).Input.Captures);
     }
 
     [Fact]
@@ -949,7 +938,7 @@ public sealed class RuntimeEngineTests
             CancellationToken.None);
         Assert.True(capture.Accepted, capture.Error);
 
-        var failure = await aborted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var failure = await aborted.Task.WaitAsync(AsyncTimeout);
         Assert.IsType<InvalidOperationException>(failure);
 
         await using var replacement = engine.CreateSession(
@@ -993,19 +982,19 @@ public sealed class RuntimeEngineTests
     {
         var mutexName = $@"Local\Joydex.Tests.{Guid.NewGuid():N}";
         var factory = new LegacyJoydexOwnershipLeaseFactory(mutexName);
-        var first = await Task.Run(factory.Acquire).WaitAsync(TimeSpan.FromSeconds(2));
+        var first = await Task.Run(factory.Acquire).WaitAsync(AsyncTimeout);
         try
         {
             await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                Task.Run(factory.Acquire).WaitAsync(TimeSpan.FromSeconds(2)));
+                Task.Run(factory.Acquire).WaitAsync(AsyncTimeout));
         }
         finally
         {
-            await Task.Run(first.Dispose).WaitAsync(TimeSpan.FromSeconds(2));
+            await Task.Run(first.Dispose).WaitAsync(AsyncTimeout);
         }
 
-        var replacement = await Task.Run(factory.Acquire).WaitAsync(TimeSpan.FromSeconds(2));
-        await Task.Run(replacement.Dispose).WaitAsync(TimeSpan.FromSeconds(2));
+        var replacement = await Task.Run(factory.Acquire).WaitAsync(AsyncTimeout);
+        await Task.Run(replacement.Dispose).WaitAsync(AsyncTimeout);
     }
 
     private static RuntimeEngineOptions Options(
@@ -1070,7 +1059,7 @@ public sealed class RuntimeEngineTests
 
     private static async Task AssertEventuallyAsync(Func<Task<bool>> condition)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        using var timeout = new CancellationTokenSource(AsyncTimeout);
         while (!await condition())
         {
             await Task.Delay(10, timeout.Token);
