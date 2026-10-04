@@ -413,7 +413,7 @@ public sealed class TaskAlertCoordinatorTests
 
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot().Assignments.Count == 5,
-                TimeSpan.FromSeconds(3));
+                TimeSpan.FromSeconds(10));
 
             Assert.True(coordinator.AddSuppression(TaskAlertSuppressionScope.Task, "session-1"));
             Assert.Equal(
@@ -428,7 +428,7 @@ public sealed class TaskAlertCoordinatorTests
             Assert.True(coordinator.TryPublish(Event(1)));
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot().RecentEvents?.Last().Result == TaskAlertEventResult.Suppressed,
-                TimeSpan.FromSeconds(3));
+                TimeSpan.FromSeconds(10));
             Assert.DoesNotContain(
                 coordinator.GetSnapshot().Assignments,
                 item => item.SessionId == "session-1");

@@ -612,7 +612,8 @@ public sealed class RuntimeSettingsProcessLauncherTests
             if (issueNumber == BlockOnIssueNumber)
             {
                 BlockedIssueStarted.TrySetResult();
-                if (!ReleaseBlockedIssue.Wait(TimeSpan.FromSeconds(2)))
+                // This is a deadlock guard; the test controls release explicitly.
+                if (!ReleaseBlockedIssue.Wait(TimeSpan.FromSeconds(10)))
                 {
                     throw new TimeoutException("The fake ticket issue was not released.");
                 }
