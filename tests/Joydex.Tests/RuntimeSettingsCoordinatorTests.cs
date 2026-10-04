@@ -495,6 +495,52 @@ public sealed class RuntimeSettingsCoordinatorTests
     }
 
     [Fact]
+    public async Task FailedRollbackPreservesRecoveryJournalAndBlocksMutationUntilRestart()
+    {
+        using var store = new TemporarySettingsStore();
+        var io = new FailOnceDocumentIo();
+        var coordinator = store.CreateCoordinator(io: io);
+        using var client = await AttachAsync(coordinator, "settings-1");
+        var previousVoice = File.ReadAllBytes(store.Paths.Voice);
+        var previousTaskAlerts = File.ReadAllBytes(store.Paths.TaskAlerts);
+        var prepared = await coordinator.PrepareAsync(
+            client.ConnectionId,
+            new PrepareSettingsRequest(
+                client.State.Snapshot.Revision,
+                new SettingsPatch(
+                    Voice: client.State.Snapshot.Desired.Voice with { PinnedTaskLabel = "changed" },
+                    TaskAlerts: client.State.Snapshot.Desired.TaskAlerts with { Bank = 4 })),
+            CancellationToken.None);
+        var operationId = Guid.NewGuid();
+        io.FailNextReplace(store.Paths.TaskAlerts);
+        io.FailNextReplace(store.Paths.Voice);
+        await Assert.ThrowsAsync<AggregateException>(() => coordinator.ApplyAsync(
+            client.ConnectionId,
+            new ApplySettingsRequest(operationId, prepared.PreparationToken!),
+            CancellationToken.None));
+        var recoveryJournal = File.ReadAllBytes(store.Paths.Journal);
+
+        var snapshot = await coordinator.GetSnapshotAsync(client.ConnectionId, CancellationToken.None);
+        _ = await coordinator.GetOperationAsync(client.ConnectionId, operationId, CancellationToken.None);
+        var blocked = await coordinator.PrepareAsync(
+            client.ConnectionId,
+            new PrepareSettingsRequest(snapshot.Revision,
+                new SettingsPatch(TaskAlerts: snapshot.Desired.TaskAlerts with { Bank = 3 })),
+            CancellationToken.None);
+        Assert.Equal(recoveryJournal, File.ReadAllBytes(store.Paths.Journal));
+        Assert.Equal(SettingsPrepareStatus.Rejected, blocked.Status);
+        await coordinator.DisposeAsync();
+
+        await using var recovered = store.CreateCoordinator();
+        using var recoveredClient = await AttachAsync(recovered, "settings-2");
+        Assert.Equal(previousVoice, File.ReadAllBytes(store.Paths.Voice));
+        Assert.Equal(previousTaskAlerts, File.ReadAllBytes(store.Paths.TaskAlerts));
+        var operation = await recovered.GetOperationAsync(
+            recoveredClient.ConnectionId, operationId, CancellationToken.None);
+        Assert.Equal(SettingsApplyStatus.FailedRolledBack, operation.Result?.Status);
+    }
+
+    [Fact]
     public async Task RolledBackCompletionJournalFailureBlocksMutationAndRecoversOutcomeOnRestart()
     {
         using var store = new TemporarySettingsStore();

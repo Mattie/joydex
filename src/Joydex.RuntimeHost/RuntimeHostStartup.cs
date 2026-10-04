@@ -369,6 +369,9 @@ internal sealed class RuntimeHostLiveRunner(IRuntimeHostComponentFactory compone
             }
         }
 
+        // Session cleanup can wait for a settings activation that only runtime cancellation can
+        // stop. Signal that work before waiting for the listeners to drain their connections.
+        await CancelAsync(hostLifetime, cleanupFailures).ConfigureAwait(false);
         await DisposeAsync(rendezvous, cleanupFailures).ConfigureAwait(false);
         await DisposeAsync(runtimeListener, cleanupFailures).ConfigureAwait(false);
         await DisposeAsync(engine, cleanupFailures).ConfigureAwait(false);

@@ -333,10 +333,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
                             cancellationToken: _lifetime.Token)
                         .ConfigureAwait(true);
                 }
-                catch (Exception exception) when (exception is IOException
-                                                  or TimeoutException
-                                                  or RuntimeIpcAuthenticationException
-                                                  or OperationCanceledException)
+                catch (Exception exception)
                 {
                     if (_lifetime.IsCancellationRequested)
                     {
@@ -1451,12 +1448,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             return await TryRequestRuntimeShutdownAsync(connection, timeout.Token)
                 .ConfigureAwait(true);
         }
-        catch (Exception exception) when (exception is IOException
-                                          or TimeoutException
-                                          or RuntimeIpcAuthenticationException
-                                          or InvalidDataException
-                                          or InvalidOperationException
-                                          or OperationCanceledException)
+        catch (Exception)
         {
             return false;
         }

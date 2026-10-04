@@ -100,6 +100,25 @@ public sealed class RuntimeHostLiveRunnerTests
     }
 
     [Fact]
+    public async Task ShutdownCancelsRuntimeWorkBeforeDrainingListenerConnections()
+    {
+        var components = new FakeComponents(CreateProductionPolicy());
+        var run = new RuntimeHostLiveRunner(components).RunAsync(components.Policy, CancellationToken.None);
+        await components.EngineStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var pendingActivationStopped = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = components.EngineLifetime.Register(() => pendingActivationStopped.TrySetResult());
+        components.Listener.BeforeDispose = () => pendingActivationStopped.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        components.CompleteEngineStartup();
+
+        components.Engine.RequestShutdown();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(pendingActivationStopped.Task.IsCompletedSuccessfully);
+        Assert.Contains("engine-dispose", components.Log);
+    }
+
+    [Fact]
     public async Task UnexpectedListenerCompletionIsTerminalAndCleansUpInOrder()
     {
         var components = new FakeComponents(CreateProductionPolicy());
@@ -263,6 +282,7 @@ public sealed class RuntimeHostLiveRunnerTests
         public FakeRendezvous Rendezvous { get; private set; } = null!;
         public FakeEngine Engine { get; } = new();
         public FakeSettingsLauncher SettingsLauncher { get; } = new();
+        public CancellationToken EngineLifetime { get; private set; }
 
         public IRuntimeOwnershipLeaseFactory PrepareOwnership(RuntimeHostLiveLaunchPolicy _)
         {
@@ -308,12 +328,15 @@ public sealed class RuntimeHostLiveRunnerTests
             _engineLease = ownershipLeaseFactory.Acquire();
             Log.Enqueue("engine-claim-guard");
             Engine.SetOwnership(_engineLease, Log);
+            EngineLifetime = startupCancellationToken;
             EngineStarted.TrySetResult();
             startupCancellationToken.Register(() =>
             {
-                Interlocked.Exchange(ref _engineLease, null)?.Dispose();
                 EngineStartupCancelled.TrySetResult();
-                _engineStartup.TrySetCanceled(startupCancellationToken);
+                if (_engineStartup.TrySetCanceled(startupCancellationToken))
+                {
+                    Interlocked.Exchange(ref _engineLease, null)?.Dispose();
+                }
             });
             return _engineStartup.Task;
         }
@@ -348,6 +371,7 @@ public sealed class RuntimeHostLiveRunnerTests
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task Completion => _completion.Task;
+        public Func<Task>? BeforeDispose { get; set; }
 
         public ValueTask<IRuntimeRpcServer> ConnectAsync(
             RuntimeIpcConnectionContext context,
@@ -362,11 +386,14 @@ public sealed class RuntimeHostLiveRunnerTests
 
         public void StopUnexpectedly() => _completion.TrySetResult();
 
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
             log.Enqueue("listener-dispose");
+            if (BeforeDispose is { } beforeDispose)
+            {
+                await beforeDispose();
+            }
             _completion.TrySetResult();
-            return ValueTask.CompletedTask;
         }
     }
 

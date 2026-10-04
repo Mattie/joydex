@@ -901,6 +901,9 @@ public sealed class RuntimeSettingsCoordinator : IAsyncDisposable
                 }
                 catch (Exception rollbackException)
                 {
+                    _ = LatchAuthorityFailureLocked(
+                        "The settings save and exact-byte rollback failed. Settings mutations are disabled "
+                        + "until the runtime restarts and recovers its journal: " + rollbackException.Message);
                     throw new AggregateException(
                         "The settings save failed and exact-byte rollback also failed; journal recovery is required.",
                         persistenceException,
