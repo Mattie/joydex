@@ -79,6 +79,70 @@ public sealed class LiveSettingsUiTests
             4,
             RuntimeTrayApplicationContext.PromptPickerBaseRevisionAfter(4, result));
     }
+
+    [Fact]
+    public void PromptPickerConflictRebasesOnlyFieldsOwnedByTheEditor()
+    {
+        var candidateDevice = new DeviceSelector { ProductNameContains = "editor device" };
+        var candidateDevices = new List<DeviceProfile>();
+        var candidateBanks = new Dictionary<string, int> { ["editor"] = 4 };
+        var candidatePickers = new List<PromptPickerConfig>();
+        var candidate = new CompanionConfig
+        {
+            Device = candidateDevice,
+            Devices = candidateDevices,
+            Polling = new PollingOptions { PollIntervalMs = 5 },
+            Safety = new SafetyOptions { DryRun = true },
+            OpenWorkingDirectory = new OpenWorkingDirectoryOptions { Target = "editor" },
+            BankSelectors = candidateBanks,
+            Bindings = [],
+            PromptPickers = candidatePickers,
+        };
+        var authoritativePolling = new PollingOptions { PollIntervalMs = 29 };
+        var authoritativeSafety = new SafetyOptions { DryRun = false };
+        var authoritativeDirectory = new OpenWorkingDirectoryOptions { Target = "runtime" };
+        var authoritativeBindings = new List<ButtonBinding>();
+        var authoritative = new CompanionConfig
+        {
+            Polling = authoritativePolling,
+            Safety = authoritativeSafety,
+            OpenWorkingDirectory = authoritativeDirectory,
+            Bindings = authoritativeBindings,
+        };
+
+        var rebased = RuntimeTrayApplicationContext.RebasePromptPickerCandidate(
+            candidate,
+            authoritative);
+
+        Assert.Same(candidateDevice, rebased.Device);
+        Assert.Same(candidateDevices, rebased.Devices);
+        Assert.Same(candidateBanks, rebased.BankSelectors);
+        Assert.Same(candidatePickers, rebased.PromptPickers);
+        Assert.Same(authoritativePolling, rebased.Polling);
+        Assert.Same(authoritativeSafety, rebased.Safety);
+        Assert.Same(authoritativeDirectory, rebased.OpenWorkingDirectory);
+        Assert.Same(authoritativeBindings, rebased.Bindings);
+    }
+
+    [Fact]
+    public void SettingsStateChangeCanRefreshAStateMarkedForResynchronization()
+    {
+        var state = new RuntimeClientConnectionState(
+            Snapshot: null,
+            InputEventCursor: 0,
+            IsInitialized: true,
+            ResynchronizationRequired: true,
+            IsDisconnected: false,
+            DisconnectFailure: null);
+
+        Assert.True(RuntimeSettingsApplicationContext.ShouldProcessStateChange(
+            RuntimeClientChangeKind.ResynchronizationRequired,
+            state));
+        Assert.False(RuntimeSettingsApplicationContext.ShouldProcessStateChange(
+            RuntimeClientChangeKind.RuntimeEvent,
+            state));
+    }
+
     [Fact]
     public void SeparatelyLoadedUnchangedPreferencesDoNotRequestRuntimeRestarts()
     {

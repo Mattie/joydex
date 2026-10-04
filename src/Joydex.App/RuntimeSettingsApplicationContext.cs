@@ -239,7 +239,8 @@ internal sealed class RuntimeSettingsApplicationContext : ApplicationContext
         await _presentationGate.WaitAsync().ConfigureAwait(true);
         try
         {
-            if (!IsCurrentConnection(generation, connection, state, rpc))
+            if (!IsCurrentConnectionIdentity(generation, connection, state, rpc)
+                || !ShouldProcessStateChange(change.Kind, state.Current))
             {
                 return;
             }
@@ -247,7 +248,7 @@ internal sealed class RuntimeSettingsApplicationContext : ApplicationContext
             {
                 var refreshed = await rpc.GetSnapshotAsync(CancellationToken.None)
                     .ConfigureAwait(true);
-                if (IsCurrentConnection(generation, connection, state, rpc))
+                if (IsCurrentConnectionIdentity(generation, connection, state, rpc))
                 {
                     state.ApplySnapshot(refreshed);
                 }
@@ -750,22 +751,34 @@ internal sealed class RuntimeSettingsApplicationContext : ApplicationContext
         long generation,
         RuntimeClientConnection connection,
         RuntimeClientState state,
+        IRuntimeRpcServer rpc) =>
+        IsCurrentConnectionIdentity(generation, connection, state, rpc)
+        && IsUsableConnectionState(state.Current);
+
+    private bool IsCurrentConnectionIdentity(
+        long generation,
+        RuntimeClientConnection connection,
+        RuntimeClientState state,
         IRuntimeRpcServer rpc)
     {
-        if (_exitStarted
-            || generation != _connectionGeneration
-            || !ReferenceEquals(_connection, connection)
-            || !ReferenceEquals(_state, state)
-            || !ReferenceEquals(_rpc, rpc))
-        {
-            return false;
-        }
-        var current = state.Current;
-        return current.IsInitialized
-            && !current.IsDisconnected
-            && !current.ResynchronizationRequired
-            && current.Snapshot is not null;
+        return !_exitStarted
+            && generation == _connectionGeneration
+            && ReferenceEquals(_connection, connection)
+            && ReferenceEquals(_state, state)
+            && ReferenceEquals(_rpc, rpc);
     }
+
+    internal static bool ShouldProcessStateChange(
+        RuntimeClientChangeKind kind,
+        RuntimeClientConnectionState current) =>
+        kind == RuntimeClientChangeKind.ResynchronizationRequired
+        || IsUsableConnectionState(current);
+
+    private static bool IsUsableConnectionState(RuntimeClientConnectionState current) =>
+        current.IsInitialized
+        && !current.IsDisconnected
+        && !current.ResynchronizationRequired
+        && current.Snapshot is not null;
 
     private static RuntimeSnapshot GetCheckedSnapshot(RuntimeClientState state)
     {
