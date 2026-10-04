@@ -387,7 +387,6 @@ public sealed class LiveSettingsUiTests
     private static void RunSta(Action action, TimeSpan? timeout = null)
     {
         Exception? failure = null;
-        using var complete = new ManualResetEventSlim();
         var thread = new Thread(() =>
         {
             try
@@ -398,18 +397,16 @@ public sealed class LiveSettingsUiTests
             {
                 failure = exception;
             }
-            finally
-            {
-                complete.Set();
-            }
         })
         {
             IsBackground = true,
         };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
+        // Cold WinForms initialization can exceed five seconds on the shared CI runner.
+        // Joining also avoids disposing a completion signal that a late worker still needs.
         Assert.True(
-            complete.Wait(timeout ?? TimeSpan.FromSeconds(5)),
+            thread.Join(timeout ?? TimeSpan.FromSeconds(15)),
             "The settings form did not close.");
         if (failure is not null)
         {
