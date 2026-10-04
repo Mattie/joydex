@@ -8,6 +8,26 @@ namespace Joydex.Tests;
 public sealed class RuntimeRoomVoiceWindowAdapterTests
 {
     [Fact]
+    public void MissingVoiceProjectionClearsAnAlreadyOpenConversation()
+    {
+        using var adapter = new RuntimeRoomVoiceWindowAdapter();
+        Assert.True(adapter.BeginConnection(1, new FakeCommandRunner(), new FakeVoiceTargetWriter(),
+            VoiceUi(Session(RuntimeVoiceSessionState.Listening, active: true, version: 1),
+                [new RuntimeVoiceTimelineEntry("entry", DateTimeOffset.UnixEpoch, RuntimeVoiceTimelineKind.User, "old")],
+                Messaging())));
+
+        Assert.False(adapter.ApplySnapshot(0, null));
+        Assert.True(adapter.Conversation.GetSnapshot().SessionActive);
+        Assert.True(adapter.ApplySnapshot(1, null));
+
+        var snapshot = adapter.Conversation.GetSnapshot();
+        Assert.False(snapshot.OwnerReady);
+        Assert.False(snapshot.SessionActive);
+        Assert.Empty(snapshot.Entries);
+        Assert.Contains("disabled", snapshot.Status);
+    }
+
+    [Fact]
     public void MatchingSnapshotsAndEventsDriveTheExistingWindowModels()
     {
         using var adapter = new RuntimeRoomVoiceWindowAdapter();

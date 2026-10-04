@@ -45,6 +45,28 @@ internal sealed class ProductionRuntimeUiProjector
         }
     }
 
+    /// <summary>Drops retired owner state and asks connected clients to replace their snapshot.</summary>
+    public void ResetCompanion()
+    {
+        lock (_gate)
+        {
+            _controllers.Clear();
+            _buttonMaps.Clear();
+            _promptPicker = null;
+        }
+        Raise(new RuntimeUiEvent(RuntimeEventKind.UiResynchronizationRequired));
+    }
+
+    /// <summary>Removes the disabled Voice owner from retained state and connected clients.</summary>
+    public void ClearVoice()
+    {
+        lock (_gate)
+        {
+            _voice = null;
+        }
+        Raise(new RuntimeUiEvent(RuntimeEventKind.UiResynchronizationRequired));
+    }
+
     public void PublishPromptPicker(PromptPickerSnapshot snapshot)
     {
         var projected = new RuntimePromptPickerSnapshot(

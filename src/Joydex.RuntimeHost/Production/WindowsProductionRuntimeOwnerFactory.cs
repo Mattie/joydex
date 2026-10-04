@@ -341,6 +341,9 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
         CancellationToken cancellationToken)
     {
         await EnsureKeybindingsAsync(cancellationToken).ConfigureAwait(false);
+        // The previous owner has drained; none of its retained device/UI state belongs
+        // to the replacement, including when settings roll back to an earlier owner.
+        _ui.ResetCompanion();
         return await _windowsSta.InvokeAsync(() => CompanionProductionOwner.StartAsync(
                 this,
                 _windowsSta,
@@ -364,7 +367,7 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
             if (!preferences.Enabled)
             {
                 ApplyVoiceTaskAlertExclusion(preferences);
-                _ui.RefreshVoiceMessaging(preferences);
+                _ui.ClearVoice();
                 return null;
             }
 

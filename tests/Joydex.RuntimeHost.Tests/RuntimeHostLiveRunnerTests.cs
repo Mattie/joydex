@@ -83,6 +83,29 @@ public sealed class RuntimeHostLiveRunnerTests
         await run.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FreshInstallSettingsFailureLeavesRuntimeAvailableForRetry(bool throws)
+    {
+        var policy = CreateProductionPolicy() with { ExistingCompanionInstall = false };
+        var components = new FakeComponents(policy);
+        components.SettingsLauncher.ResultStatus = RuntimeCommandStatus.Failed;
+        components.SettingsLauncher.Failure = throws ? new IOException("Settings child failed") : null;
+        var run = new RuntimeHostLiveRunner(components).RunAsync(policy, CancellationToken.None);
+        await components.EngineStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        components.CompleteEngineStartup();
+        await components.SettingsLauncher.Opened.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        components.SettingsLauncher.Failure = null;
+        components.SettingsLauncher.ResultStatus = RuntimeCommandStatus.Completed;
+        var retry = await components.SettingsLauncher.OpenAsync(
+            new RuntimeCommandRequest(Guid.NewGuid(), RuntimeCommandKind.OpenSettings), CancellationToken.None);
+        Assert.Equal(RuntimeCommandStatus.Completed, retry.Status);
+        components.Engine.RequestShutdown();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     [Fact]
     public async Task ExistingProductionInstallLeavesSettingsClosedAtStartup()
     {
@@ -484,6 +507,8 @@ public sealed class RuntimeHostLiveRunnerTests
 
     private sealed class FakeSettingsLauncher : IRuntimeSettingsProcessLauncher
     {
+        public RuntimeCommandStatus ResultStatus { get; set; } = RuntimeCommandStatus.Completed;
+        public Exception? Failure { get; set; }
         public TaskCompletionSource<RuntimeCommandRequest> Opened { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -492,11 +517,17 @@ public sealed class RuntimeHostLiveRunnerTests
             CancellationToken runtimeCancellationToken)
         {
             runtimeCancellationToken.ThrowIfCancellationRequested();
+            var failure = Failure;
+            var status = ResultStatus;
             Opened.TrySetResult(request);
+            if (failure is not null)
+            {
+                return Task.FromException<RuntimeCommandResult>(failure);
+            }
             return Task.FromResult(new RuntimeCommandResult(
                 request.OperationId,
                 request.Kind,
-                RuntimeCommandStatus.Completed));
+                status));
         }
     }
 

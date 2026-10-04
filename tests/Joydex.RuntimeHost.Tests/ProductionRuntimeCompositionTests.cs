@@ -644,6 +644,46 @@ public sealed class ProductionRuntimeCompositionTests
     }
 
     [Fact]
+    public void ReplacingCompanionClearsRetiredControllersAndButtonMaps()
+    {
+        var projector = new ProductionRuntimeUiProjector();
+        projector.PublishController("retired", "Old device", "Stopped", true);
+        projector.PublishButtonMap("retired", true);
+        var events = new List<RuntimeUiEvent>();
+        projector.Changed += (_, update) => events.Add(update);
+
+        projector.ResetCompanion();
+        projector.PublishController("replacement", "New device", "Connected", false);
+
+        var snapshot = projector.GetSnapshot();
+        Assert.Equal("replacement", Assert.Single(snapshot.Controllers!).DeviceId);
+        Assert.Empty(snapshot.ButtonMaps!);
+        Assert.Contains(events, update => update.Kind == RuntimeEventKind.UiResynchronizationRequired);
+        projector.ResetCompanion();
+        Assert.Empty(projector.GetSnapshot().Controllers!);
+    }
+
+    [Fact]
+    public void DisablingVoiceClearsSessionAndHistoryAndRequestsClientResynchronization()
+    {
+        var projector = new ProductionRuntimeUiProjector();
+        projector.SetActiveVoicePreferences(VoicePePreferences.Default);
+        projector.PublishVoice(new ProductionVoiceState(
+            new RuntimeVoiceSnapshot(RuntimeVoiceSessionState.Listening, true, true, true, false, "Listening", null, 1),
+            [new RuntimeVoiceTimelineEntry("entry", DateTimeOffset.UnixEpoch, RuntimeVoiceTimelineKind.User, "old")]));
+        RuntimeUiEvent? update = null;
+        projector.Changed += (_, value) => update = value;
+
+        projector.ClearVoice();
+
+        Assert.Null(projector.GetSnapshot().Voice);
+        Assert.Equal(RuntimeEventKind.UiResynchronizationRequired, update?.Kind);
+        projector.PublishDesktopTasks([]);
+        projector.RefreshVoiceMessaging(VoicePePreferences.Default with { Enabled = false });
+        Assert.Null(projector.GetSnapshot().Voice);
+    }
+
+    [Fact]
     public void ProjectorPreservesDesktopTasksAcrossConversationUpdatesAndResetsReplacedHistory()
     {
         var projector = new ProductionRuntimeUiProjector();

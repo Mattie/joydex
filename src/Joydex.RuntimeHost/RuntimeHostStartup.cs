@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using Joydex.App;
 using Joydex.Contracts;
 using Joydex.Core.Runtime;
 using Joydex.Ipc;
@@ -328,17 +329,23 @@ internal sealed class RuntimeHostLiveRunner(IRuntimeHostComponentFactory compone
                 if (policy.Mode == RuntimeHostLaunchMode.Production
                     && !policy.ExistingCompanionInstall)
                 {
-                    var openSettings = await settings.Launcher.OpenAsync(
-                            new RuntimeCommandRequest(
-                                Guid.NewGuid(),
-                                RuntimeCommandKind.OpenSettings),
-                            hostLifetime.Token)
-                        .ConfigureAwait(false);
-                    if (openSettings.Status != RuntimeCommandStatus.Completed)
+                    try
                     {
-                        throw new InvalidOperationException(
-                            openSettings.Detail
-                            ?? "Joydex could not open Settings for the new installation.");
+                        var openSettings = await settings.Launcher.OpenAsync(
+                                new RuntimeCommandRequest(
+                                    Guid.NewGuid(),
+                                    RuntimeCommandKind.OpenSettings),
+                                hostLifetime.Token)
+                            .ConfigureAwait(false);
+                        if (openSettings.Status != RuntimeCommandStatus.Completed)
+                        {
+                            ReportSettingsLaunchFailure(policy, openSettings.Detail
+                                ?? "Settings did not complete its startup.");
+                        }
+                    }
+                    catch (Exception exception) when (!hostLifetime.IsCancellationRequested)
+                    {
+                        ReportSettingsLaunchFailure(policy, exception.Message);
                     }
                 }
                 await WaitForTerminalSignalAsync(
@@ -391,6 +398,19 @@ internal sealed class RuntimeHostLiveRunner(IRuntimeHostComponentFactory compone
         ObserveFailure(engineReady.Task);
         ObserveFailure(rendezvousReady.Task);
         ThrowFailures(failure, cleanupFailures);
+    }
+
+    private static void ReportSettingsLaunchFailure(RuntimeHostLiveLaunchPolicy policy, string detail)
+    {
+        try
+        {
+            new FileLog(Path.Combine(policy.DataRoot, "joydex.log")).Write(
+                "Could not open first-run Settings. The runtime remains available; retry Configure. " + detail);
+        }
+        catch
+        {
+            // A diagnostic write must not turn a Settings failure into a runtime failure.
+        }
     }
 
     private static async ValueTask<IRuntimeRpcServer> CreateConnectionCoreAsync(

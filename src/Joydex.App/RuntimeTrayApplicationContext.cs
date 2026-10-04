@@ -623,10 +623,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             ui.TaskAlerts,
             ui.Controllers,
             ui.ButtonMaps);
-        if (ui.Voice is { } voice)
-        {
-            _voiceAdapter.ApplySnapshot(_connectionGeneration, voice);
-        }
+        _voiceAdapter.ApplySnapshot(_connectionGeneration, ui.Voice);
         ConfigureControllerMenu(active, ui.Controllers);
         ApplyActivity(ui.RecentActivity);
         _voiceItem.Enabled = ui.Voice is not null;

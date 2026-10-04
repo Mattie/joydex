@@ -123,10 +123,9 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
         return true;
     }
 
-    /// <summary>Applies a complete Voice projection only to the matching live connection.</summary>
-    public bool ApplySnapshot(long connectionGeneration, RuntimeVoiceUiSnapshot snapshot)
+    /// <summary>Applies a matching connection's Voice projection; null clears the disabled owner.</summary>
+    public bool ApplySnapshot(long connectionGeneration, RuntimeVoiceUiSnapshot? snapshot)
     {
-        ArgumentNullException.ThrowIfNull(snapshot);
         lock (_gate)
         {
             if (!IsCurrentConnection(connectionGeneration))
@@ -627,8 +626,13 @@ internal sealed class RuntimeRoomVoiceWindowAdapter : IDisposable
         return result;
     }
 
-    private void ApplySnapshotCore(RuntimeVoiceUiSnapshot snapshot)
+    private void ApplySnapshotCore(RuntimeVoiceUiSnapshot? snapshot)
     {
+        snapshot ??= new RuntimeVoiceUiSnapshot(
+            new RuntimeVoiceSnapshot(RuntimeVoiceSessionState.Armed, false, false, false, false,
+                "Room Voice is disabled.", null, 0),
+            [],
+            EmptyMessaging());
         _messaging = snapshot.Messaging;
         _conversation.ReplaceProjectedHistory(
             snapshot.Timeline.Select(ToConversationEntry).ToArray(),
