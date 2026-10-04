@@ -1,10 +1,24 @@
+using Joydex.Contracts;
 using Joydex.Core.Config;
 using Joydex.Core.Input;
 using Joydex.Core.Mapping;
+using Joydex.Core.TaskAlerts;
 using Joydex.Core.Voice;
 using Joydex.Windows.Runtime;
 
 namespace Joydex.App;
+
+internal sealed class ConfigurationDraftEventArgs(
+    CompanionConfig companion,
+    VoicePePreferences? voice,
+    PebbleIndexPreferences? pebbleIndex) : EventArgs
+{
+    public CompanionConfig Companion { get; } = companion;
+
+    public VoicePePreferences? Voice { get; } = voice;
+
+    public PebbleIndexPreferences? PebbleIndex { get; } = pebbleIndex;
+}
 
 internal sealed class ConfigurationForm : ThemedForm
 {
@@ -12,18 +26,30 @@ internal sealed class ConfigurationForm : ThemedForm
     private readonly string _configPath;
     private readonly string _windowStatePath;
     private readonly IntPtr _cooperativeWindowHandle;
-    private readonly CompanionConfig _originalConfig;
+    private CompanionConfig _originalConfig;
     private readonly IConfigurationInputClient? _inputClient;
+    private readonly IConfigurationInputSession? _inputSession;
     private readonly bool _documentationMode;
     private readonly bool _demoMode;
     private readonly RoomVoiceSettingsControl? _roomVoiceSettings;
     private readonly PebbleIndexSettingsControl? _pebbleIndexSettings;
     private readonly Func<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?, bool> _saveConfiguration;
+    private readonly Func<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?, CancellationToken, Task<RuntimeSettingsWriteResult>>? _applyConfiguration;
+    private SettingsBundle _authoritativeSettings;
+    private SettingsBundle? _lastProjectedDraft;
+    private readonly CancellationTokenSource _lifetime = new();
     private readonly InputObservationCoalescer _inputObservations = new();
     private readonly ComboBox _deviceCombo = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Label _connectionLabel = new() { AutoSize = true, Text = "Looking for controller..." };
     private readonly Label _inputLabel = new() { AutoSize = true, Text = "Held buttons: none" };
     private readonly StatusLabel _captureLabel = new() { Tag = ThemeTone.Subtle, Text = "Select a row and choose Capture." };
+    private readonly StatusLabel _runtimeStatus = new()
+    {
+        AccessibleName = "Settings apply status",
+        Tag = ThemeTone.Subtle,
+        Text = "Changes are applied by the Joydex runtime.",
+        Visible = false,
+    };
     private readonly ModernDataGridView _bankGrid = CreateGrid();
     private readonly ModernDataGridView _bindingGrid = CreateGrid();
     private readonly ModernDataGridView _buttonMapGrid = CreateGrid();
@@ -45,14 +71,29 @@ internal sealed class ConfigurationForm : ThemedForm
     private readonly RoundedButton _cancelCaptureButton = new() { Text = "Cancel capture", Visible = false };
     private readonly RoundedButton _loadDefaultsButton = new() { Text = "Load Codex Micro defaults" };
     private readonly Panel _pageHost = new() { Dock = DockStyle.Fill };
+    private Control? _navigation;
+    private RoundedButton? _applyButton;
+    private RoundedButton? _saveButton;
+    private RoundedButton? _reviewLatestButton;
+    private RoundedButton? _discardDraftButton;
+    private RoundedButton? _cancelButton;
     private readonly List<NavigationPage> _navigationPages = [];
     private IReadOnlyList<RuntimeInputSourceCatalogEntry> _availableSources = [];
     private CaptureTarget? _captureTarget;
     private InputCaptureLease? _captureLease;
+    private CancellationTokenSource? _captureStartCancellation;
+    private Task? _captureStartTask;
     private JoystickSnapshot? _lastSnapshot;
     private string? _loadWarning;
     private RuntimeInputSourceCatalogEntry? _captureReturnDevice;
     private PromptPickerEditorForm? _promptPickerEditor;
+    private bool _closingAfterCaptureCancellation;
+    private bool _closeCancellationStarted;
+    private bool _configControlsInitialized;
+    private bool _runtimeConnected = true;
+    private bool _settingsOperationActive;
+    private string? _draftAttention;
+    private string? _aggregateAttention;
 
     public ConfigurationForm(
         string configPath,
@@ -64,7 +105,10 @@ internal sealed class ConfigurationForm : ThemedForm
         Func<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?, bool>? saveConfiguration = null,
         CompanionConfig? initialConfig = null,
         IConfigurationInputClient? inputClient = null,
-        bool demoMode = false)
+        bool demoMode = false,
+        IConfigurationInputSession? inputSession = null,
+        Func<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?, CancellationToken, Task<RuntimeSettingsWriteResult>>? applyConfiguration = null,
+        SettingsBundle? initialSettings = null)
     {
         _configPath = configPath;
         _windowStatePath = windowStatePath;
@@ -74,6 +118,8 @@ internal sealed class ConfigurationForm : ThemedForm
         _roomVoiceSettings = roomVoiceSettings;
         _pebbleIndexSettings = pebbleIndexSettings;
         _inputClient = inputClient;
+        _inputSession = inputSession ?? inputClient as IConfigurationInputSession;
+        _applyConfiguration = applyConfiguration;
         _saveConfiguration = saveConfiguration ?? ((config, _, _) =>
         {
             ConfigStore.Save(_configPath, config);
@@ -93,25 +139,35 @@ internal sealed class ConfigurationForm : ThemedForm
             _loadWarning = $"The existing configuration could not be loaded. Saving will replace it with the values shown here. {exception.Message}";
         }
 
+        _authoritativeSettings = initialSettings ?? new SettingsBundle(
+            _originalConfig,
+            roomVoiceSettings?.ReadPreferences() ?? VoicePePreferences.Default,
+            pebbleIndexSettings?.ReadPreferences() ?? PebbleIndexPreferences.Default,
+            TaskAlertPreferences.Default);
+
         Text = _demoMode ? "Joydex — Demo / dry-run inspector" : "Configure Joydex";
+        Icon = ConfigurationIconFactory.Create();
         StartPosition = FormStartPosition.CenterScreen;
         SetLogicalMinimumSize(PreferredMinimumSize);
         Size = new Size(1500, 1000);
-        ShowIcon = false;
+        ShowIcon = true;
 
         RestoreWindowState();
 
-        if (!_documentationMode && _inputClient is not null)
+        if (!_documentationMode && _inputSession is not null)
         {
-            _inputClient.InputObserved += OnInputObserved;
-            _inputClient.CaptureChanged += OnCaptureChanged;
-            try
+            _inputSession.InputObserved += OnInputObserved;
+            _inputSession.CaptureChanged += OnCaptureChanged;
+            if (_inputClient is not null)
             {
-                _availableSources = _inputClient.RefreshSources();
-            }
-            catch (Exception exception)
-            {
-                _connectionLabel.Text = $"Could not enumerate devices: {exception.Message}";
+                try
+                {
+                    _availableSources = _inputClient.RefreshSources();
+                }
+                catch (Exception exception)
+                {
+                    _connectionLabel.Text = $"Could not enumerate devices: {exception.Message}";
+                }
             }
         }
 
@@ -124,7 +180,7 @@ internal sealed class ConfigurationForm : ThemedForm
             _dryRunCheckBox.Text = "Dry run (locked for this demo)";
         }
 
-        Shown += (_, _) =>
+        Shown += async (_, _) =>
         {
             if (_documentationMode)
             {
@@ -132,6 +188,10 @@ internal sealed class ConfigurationForm : ThemedForm
                 return;
             }
 
+            if (_inputClient is null)
+            {
+                await RefreshInputSourcesAsync().ConfigureAwait(true);
+            }
             RefreshSelectedDeviceStatus();
             if (_loadWarning is not null)
             {
@@ -142,6 +202,25 @@ internal sealed class ConfigurationForm : ThemedForm
 
     protected override void OnFormClosing(FormClosingEventArgs eventArgs)
     {
+        if (_settingsOperationActive)
+        {
+            eventArgs.Cancel = true;
+            base.OnFormClosing(eventArgs);
+            return;
+        }
+
+        if (!_closingAfterCaptureCancellation && CaptureIsInProgress())
+        {
+            eventArgs.Cancel = true;
+            base.OnFormClosing(eventArgs);
+            if (!_closeCancellationStarted)
+            {
+                _closeCancellationStarted = true;
+                _ = CancelCaptureAndCloseAsync();
+            }
+            return;
+        }
+
         var restoredSize = WindowState == FormWindowState.Normal ? Size : RestoreBounds.Size;
         ConfigurationWindowStateStore.Save(
             _windowStatePath,
@@ -156,16 +235,20 @@ internal sealed class ConfigurationForm : ThemedForm
 
     protected override void OnFormClosed(FormClosedEventArgs eventArgs)
     {
-        CancelCapture();
+        _captureStartCancellation?.Cancel();
+        _captureStartCancellation?.Dispose();
+        _captureStartCancellation = null;
         _inputObservations.SelectSource(null);
         _promptPickerEditor?.Close();
         _promptPickerEditor?.Dispose();
-        if (_inputClient is not null)
+        if (_inputSession is not null)
         {
-            _inputClient.InputObserved -= OnInputObserved;
-            _inputClient.CaptureChanged -= OnCaptureChanged;
-            _inputClient.Dispose();
+            _inputSession.InputObserved -= OnInputObserved;
+            _inputSession.CaptureChanged -= OnCaptureChanged;
         }
+        _inputClient?.Dispose();
+        _lifetime.Cancel();
+        _lifetime.Dispose();
         base.OnFormClosed(eventArgs);
     }
 
@@ -221,6 +304,7 @@ internal sealed class ConfigurationForm : ThemedForm
             Margin = new Padding(0, 0, 12, 0),
             Padding = new Padding(8, 10, 8, 8),
         };
+        _navigation = sidebar;
         var sidebarLayout = new TableLayoutPanel
         {
             ColumnCount = 1,
@@ -380,7 +464,8 @@ internal sealed class ConfigurationForm : ThemedForm
     private Control BuildBindingsPage()
     {
         var page = CreatePage();
-        _loadDefaultsButton.Click += (_, _) => LoadStarterProfile();
+        _loadDefaultsButton.Click += async (_, _) =>
+            await LoadStarterProfileAsync().ConfigureAwait(true);
         page.Controls.Add(BuildBindingGroup());
         return page;
     }
@@ -393,7 +478,8 @@ internal sealed class ConfigurationForm : ThemedForm
             _cooperativeWindowHandle,
             pickerOnly: true,
             initialConfig: _originalConfig,
-            inputClient: _inputClient);
+            inputClient: _inputClient,
+            inputSession: _inputSession);
         page.Controls.Add(_promptPickerEditor.EmbeddedPickerPage);
         return page;
     }
@@ -513,14 +599,15 @@ internal sealed class ConfigurationForm : ThemedForm
         });
 
         var add = new RoundedButton { Text = "Add bank" };
-        add.Click += (_, _) =>
+        add.Click += async (_, _) =>
         {
-            CancelCapture();
+            await CancelCaptureAsync().ConfigureAwait(true);
             var index = _bankGrid.Rows.Add($"bank-{_bankGrid.Rows.Count + 1}", null);
             _bankGrid.CurrentCell = _bankGrid.Rows[index].Cells[0];
         };
         var remove = new RoundedButton { Text = "Remove bank" };
-        remove.Click += (_, _) => RemoveCurrentRow(_bankGrid);
+        remove.Click += async (_, _) =>
+            await RemoveCurrentRowAsync(_bankGrid).ConfigureAwait(true);
         _captureBankButton.Click += (_, _) => BeginCapture(
             _bankGrid,
             "SelectorButton",
@@ -621,9 +708,9 @@ internal sealed class ConfigurationForm : ThemedForm
             }
         };
         var add = new RoundedButton { Text = "+ Add binding", Variant = ButtonVariant.Primary };
-        add.Click += (_, _) =>
+        add.Click += async (_, _) =>
         {
-            CancelCapture();
+            await CancelCaptureAsync().ConfigureAwait(true);
             var bank = _bankGrid.Rows.Cast<DataGridViewRow>()
                 .Select(row => Convert.ToString(row.Cells["BankName"].Value))
                 .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
@@ -643,9 +730,9 @@ internal sealed class ConfigurationForm : ThemedForm
             }
         };
         var remove = new RoundedButton { Text = "Remove" };
-        remove.Click += (_, _) =>
+        remove.Click += async (_, _) =>
         {
-            RemoveCurrentRow(_bindingGrid);
+            await RemoveCurrentRowAsync(_bindingGrid).ConfigureAwait(true);
             ApplyBindingFilter();
         };
         _captureBindingButton.Text = "Capture action";
@@ -1008,12 +1095,13 @@ internal sealed class ConfigurationForm : ThemedForm
             }
         };
         var clear = new RoundedButton { Text = "Clear hold control" };
-        clear.Click += (_, _) =>
+        clear.Click += async (_, _) =>
         {
-            CancelCapture();
-            if (_buttonMapGrid.CurrentRow is not null)
+            var row = _buttonMapGrid.CurrentRow;
+            await CancelCaptureAsync().ConfigureAwait(true);
+            if (row is not null && _buttonMapGrid.Rows.Contains(row))
             {
-                _buttonMapGrid.CurrentRow.Cells["MapHold"].Value = null;
+                row.Cells["MapHold"].Value = null;
             }
         };
 
@@ -1059,20 +1147,66 @@ internal sealed class ConfigurationForm : ThemedForm
 
     private Control BuildFooter()
     {
-        var save = new RoundedButton { Text = "Save and close", Variant = ButtonVariant.Primary };
-        save.Click += OnSave;
-        var cancel = new RoundedButton
+        _saveButton = new RoundedButton { Text = "Save and close", Variant = ButtonVariant.Primary };
+        _saveButton.Click += OnSave;
+        _applyButton = new RoundedButton
         {
-            DialogResult = DialogResult.Cancel,
+            Text = "Apply",
+            Variant = ButtonVariant.Secondary,
+            Visible = _applyConfiguration is not null,
+        };
+        _applyButton.Click += OnApply;
+        _reviewLatestButton = new RoundedButton
+        {
+            Text = "Review latest",
+            Variant = ButtonVariant.Secondary,
+            Visible = false,
+        };
+        _reviewLatestButton.Click += async (_, _) =>
+        {
+            var draft = await ProjectCurrentDraftAsync().ConfigureAwait(true);
+            if (draft is not null)
+            {
+                ReviewLatestRequested?.Invoke(
+                    this,
+                    new ConfigurationDraftEventArgs(
+                        draft.Companion,
+                        draft.Voice,
+                        draft.PebbleIndex));
+            }
+        };
+        _discardDraftButton = new RoundedButton
+        {
+            Text = "Discard draft",
+            Variant = ButtonVariant.Ghost,
+            Visible = false,
+        };
+        _discardDraftButton.Click += (_, _) =>
+        {
+            if (MessageBox.Show(
+                    this,
+                    "Discard every unsaved change in this settings window and load the latest saved settings?",
+                    "Discard settings draft",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) == DialogResult.Yes)
+            {
+                DiscardDraftRequested?.Invoke(this, EventArgs.Empty);
+            }
+        };
+        _cancelButton = new RoundedButton
+        {
             Name = "ConfigurationCancel",
             Text = "Cancel",
         };
-        cancel.Click += (_, _) =>
+        _cancelButton.Click += async (_, _) =>
         {
+            await CancelCaptureAsync().ConfigureAwait(true);
             DialogResult = DialogResult.Cancel;
             Close();
         };
-        _cancelCaptureButton.Click += (_, _) => CancelCapture();
+        _cancelCaptureButton.Click += async (_, _) =>
+            await CancelCaptureAsync().ConfigureAwait(true);
         var captureStatus = new FlowLayoutPanel
         {
             AutoSize = true,
@@ -1084,6 +1218,8 @@ internal sealed class ConfigurationForm : ThemedForm
         _captureLabel.Margin = new Padding(0, 7, 10, 0);
         captureStatus.Controls.Add(_captureLabel);
         captureStatus.Controls.Add(_cancelCaptureButton);
+        _runtimeStatus.Margin = new Padding(12, 7, 10, 0);
+        captureStatus.Controls.Add(_runtimeStatus);
 
         var commands = new FlowLayoutPanel
         {
@@ -1093,8 +1229,11 @@ internal sealed class ConfigurationForm : ThemedForm
             Padding = new Padding(0, 8, 12, 0),
             WrapContents = false,
         };
-        commands.Controls.Add(save);
-        commands.Controls.Add(cancel);
+        commands.Controls.Add(_saveButton);
+        commands.Controls.Add(_applyButton);
+        commands.Controls.Add(_reviewLatestButton);
+        commands.Controls.Add(_discardDraftButton);
+        commands.Controls.Add(_cancelButton);
 
         var footer = new TableLayoutPanel
         {
@@ -1111,8 +1250,8 @@ internal sealed class ConfigurationForm : ThemedForm
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.Controls.Add(captureStatus, 0, 0);
         footer.Controls.Add(commands, 1, 0);
-        AcceptButton = save;
-        CancelButton = cancel;
+        AcceptButton = _saveButton;
+        CancelButton = _cancelButton;
         return footer;
     }
 
@@ -1171,9 +1310,9 @@ internal sealed class ConfigurationForm : ThemedForm
         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
     };
 
-    private void LoadStarterProfile()
+    private async Task LoadStarterProfileAsync()
     {
-        CancelCapture();
+        await CancelCaptureAsync().ConfigureAwait(true);
         if ((_bankGrid.Rows.Count > 0 || _bindingGrid.Rows.Count > 0)
             && MessageBox.Show(
                 this,
@@ -1248,13 +1387,25 @@ internal sealed class ConfigurationForm : ThemedForm
             ];
         }
 
-        _deviceCombo.Format += (_, eventArgs) =>
+        if (!_configControlsInitialized)
         {
-            if (eventArgs.ListItem is RuntimeInputSourceCatalogEntry source)
+            _configControlsInitialized = true;
+            _deviceCombo.Format += (_, eventArgs) =>
             {
-                eventArgs.Value = source.Source.DisplayName;
-            }
-        };
+                if (eventArgs.ListItem is RuntimeInputSourceCatalogEntry source)
+                {
+                    eventArgs.Value = source.Source.DisplayName;
+                }
+            };
+            _deviceCombo.SelectedIndexChanged += async (_, _) =>
+            {
+                await CancelCaptureAsync().ConfigureAwait(true);
+                RefreshSelectedDeviceStatus();
+            };
+        }
+
+        _deviceCombo.BeginUpdate();
+        _deviceCombo.Items.Clear();
         foreach (var device in _availableSources)
         {
             _deviceCombo.Items.Add(device);
@@ -1270,18 +1421,15 @@ internal sealed class ConfigurationForm : ThemedForm
         {
             _deviceCombo.SelectedIndex = 0;
         }
+        _deviceCombo.EndUpdate();
 
-        _deviceCombo.SelectedIndexChanged += (_, _) =>
-        {
-            CancelCapture();
-            RefreshSelectedDeviceStatus();
-        };
-
+        _bankGrid.Rows.Clear();
         foreach (var (bank, button) in _originalConfig.BankSelectors)
         {
             _bankGrid.Rows.Add(bank, button);
         }
 
+        _bindingGrid.Rows.Clear();
         foreach (var binding in _originalConfig.Bindings)
         {
             var rowIndex = _bindingGrid.Rows.Add(
@@ -1296,6 +1444,7 @@ internal sealed class ConfigurationForm : ThemedForm
         }
         ApplyBindingFilter();
 
+        _buttonMapGrid.Rows.Clear();
         foreach (var profile in _originalConfig.Devices)
         {
             _buttonMapGrid.Rows.Add(
@@ -1315,6 +1464,35 @@ internal sealed class ConfigurationForm : ThemedForm
         }
     }
 
+    internal void ApplyAuthoritativeSettings(SettingsBundle settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        ApplySettingsProjection(settings, settings);
+    }
+
+    internal void ApplyDraftState(RuntimeSettingsDraftState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        ApplySettingsProjection(state.BaseSettings, state.DraftSettings);
+        ShowDraftState(state);
+    }
+
+    private void ApplySettingsProjection(SettingsBundle authoritative, SettingsBundle visible)
+    {
+        _authoritativeSettings = authoritative;
+        _originalConfig = CompanionConfigNormalizer.Normalize(visible.Companion);
+        RoomVoicePreferences = visible.Voice.Normalize();
+        PebbleIndexPreferences = visible.PebbleIndex.Normalize();
+        _promptPickerEditor?.ReplaceConfiguration(_originalConfig);
+        _roomVoiceSettings?.ApplyPreferences(RoomVoicePreferences);
+        _pebbleIndexSettings?.ApplyPreferences(PebbleIndexPreferences);
+        PopulateFromConfig();
+        if (_demoMode)
+        {
+            _dryRunCheckBox.Checked = true;
+        }
+    }
+
     private void RefreshSelectedDeviceStatus()
     {
         _inputLabel.Text = "Held buttons: none";
@@ -1326,10 +1504,47 @@ internal sealed class ConfigurationForm : ThemedForm
         }
 
         _inputObservations.SelectSource(selected.Source.SourceId);
-        var state = _inputClient?.GetSourceState(selected.Source.SourceId);
+        var state = _inputSession?.GetSourceState(selected.Source.SourceId);
         _connectionLabel.Text = state?.Connected == true
             ? $"Observed by Joydex: {selected.Source.DisplayName}."
             : $"Available: {selected.Source.DisplayName}. Capture will ask Joydex to observe this controller.";
+    }
+
+    private async Task RefreshInputSourcesAsync()
+    {
+        if (_documentationMode || _inputSession is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var sources = await _inputSession.RefreshSourcesAsync(_lifetime.Token)
+                .ConfigureAwait(true);
+            var selectedId = (_deviceCombo.SelectedItem as RuntimeInputSourceCatalogEntry)?.Source.SourceId;
+            _availableSources = sources;
+            _deviceCombo.BeginUpdate();
+            _deviceCombo.Items.Clear();
+            foreach (var source in sources)
+            {
+                _deviceCombo.Items.Add(source);
+            }
+            _deviceCombo.SelectedItem = sources.FirstOrDefault(source =>
+                string.Equals(source.Source.SourceId, selectedId, StringComparison.OrdinalIgnoreCase))
+                ?? sources.FirstOrDefault(source => Matches(source, _originalConfig.Device));
+            if (_deviceCombo.SelectedIndex < 0 && _deviceCombo.Items.Count > 0)
+            {
+                _deviceCombo.SelectedIndex = 0;
+            }
+            _deviceCombo.EndUpdate();
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            _connectionLabel.Text = $"Could not enumerate devices: {exception.Message}";
+        }
     }
 
     private bool SelectBindingRowDeviceForCapture()
@@ -1468,7 +1683,6 @@ internal sealed class ConfigurationForm : ThemedForm
             && target.RowIndex < target.Grid.Rows.Count;
         _captureTarget = null;
         _captureLease = null;
-        _inputClient?.ReleaseCaptureObservation(eventArgs.Lease.SourceId);
         if (completed)
         {
             target!.Grid.Rows[target.RowIndex].Cells[target.ColumnName].Value = capturedInput!.DisplayIndex;
@@ -1485,13 +1699,53 @@ internal sealed class ConfigurationForm : ThemedForm
 
     private void BeginCapture(DataGridView grid, string columnName, string instruction)
     {
+        if (CaptureIsInProgress())
+        {
+            return;
+        }
+
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _captureStartCancellation = cancellation;
+        var task = BeginCaptureCoreAsync(grid, columnName, instruction, cancellation.Token);
+        _captureStartTask = task;
+        _ = ObserveCaptureStartAsync(task, cancellation);
+    }
+
+    private async Task ObserveCaptureStartAsync(
+        Task task,
+        CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await task.ConfigureAwait(true);
+        }
+        finally
+        {
+            if (ReferenceEquals(_captureStartTask, task))
+            {
+                _captureStartTask = null;
+            }
+            if (ReferenceEquals(_captureStartCancellation, cancellation))
+            {
+                _captureStartCancellation = null;
+            }
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task BeginCaptureCoreAsync(
+        DataGridView grid,
+        string columnName,
+        string instruction,
+        CancellationToken cancellationToken)
+    {
         if (grid.CurrentRow is null)
         {
             MessageBox.Show(this, "Select a row first.", "Capture control", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        if (_inputClient is null
+        if (_inputSession is null
             || _deviceCombo.SelectedItem is not RuntimeInputSourceCatalogEntry source)
         {
             MessageBox.Show(this, "No Joydex input source is available.", "Capture control");
@@ -1499,11 +1753,32 @@ internal sealed class ConfigurationForm : ThemedForm
         }
 
         _captureTarget = new CaptureTarget(grid, grid.CurrentRow.Index, columnName);
-        var state = _inputClient.GetSourceState(source.Source.SourceId);
-        var result = _inputClient.BeginCapture(
-            source.Source.SourceId,
-            instruction,
-            state?.Connected == true ? state.Generation : null);
+        var state = _inputSession.GetSourceState(source.Source.SourceId);
+        InputCaptureStartResult result;
+        try
+        {
+            result = await _inputSession.BeginCaptureAsync(
+                    source.Source.SourceId,
+                    instruction,
+                    state?.Connected == true ? state.Generation : null,
+                    cancellationToken)
+                .ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _captureTarget = null;
+            UpdateCaptureButtons();
+            RestoreDeviceAfterCapture();
+            return;
+        }
+        catch (Exception exception)
+        {
+            _captureTarget = null;
+            _captureLabel.Text = "Capture could not start: " + exception.Message;
+            UpdateCaptureButtons();
+            RestoreDeviceAfterCapture();
+            return;
+        }
         if (!result.Accepted || result.Lease is null)
         {
             _captureTarget = null;
@@ -1516,28 +1791,87 @@ internal sealed class ConfigurationForm : ThemedForm
         _captureLease = result.Lease;
         _captureLabel.Text = "Preparing the selected controller for capture…";
         UpdateCaptureButtons();
-        if (!_inputClient.ObserveForCapture(source.Source.SourceId))
+        if (result.Lease.Status is not (InputCaptureStatus.Pending or InputCaptureStatus.Active))
         {
-            var captureId = _captureLease.CaptureId;
-            _captureLease = null;
-            _captureTarget = null;
-            _inputClient.CancelCapture(captureId);
-            _captureLabel.Text = "Joydex could not observe the selected controller.";
-            UpdateCaptureButtons();
-            RestoreDeviceAfterCapture();
+            InputCaptureChangedEventArgs? terminal;
+            try
+            {
+                terminal = await _inputSession.GetCaptureAsync(
+                        result.Lease.CaptureId,
+                        cancellationToken)
+                    .ConfigureAwait(true);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _captureTarget = null;
+                _captureLease = null;
+                UpdateCaptureButtons();
+                RestoreDeviceAfterCapture();
+                return;
+            }
+            catch (Exception exception)
+            {
+                _captureTarget = null;
+                _captureLease = null;
+                _captureLabel.Text = "Capture status could not be confirmed: " + exception.Message;
+                UpdateCaptureButtons();
+                RestoreDeviceAfterCapture();
+                return;
+            }
+            if (terminal is not null)
+            {
+                ApplyCaptureChange(terminal);
+            }
+            else
+            {
+                _captureTarget = null;
+                _captureLease = null;
+                _captureLabel.Text = CaptureStatusText(result.Lease.Status);
+                UpdateCaptureButtons();
+                RestoreDeviceAfterCapture();
+            }
         }
     }
 
-    private void CancelCapture()
+    private async Task CancelCaptureAsync()
     {
+        _captureStartCancellation?.Cancel();
+        var captureStart = _captureStartTask;
+        if (captureStart is not null)
+        {
+            try
+            {
+                await captureStart.ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception exception)
+            {
+                _captureLabel.Text = "Capture stopped: " + exception.Message;
+            }
+        }
+
         var capture = _captureLease;
         var target = _captureTarget;
         _captureLease = null;
         _captureTarget = null;
         if (capture is not null)
         {
-            _inputClient?.CancelCapture(capture.CaptureId);
-            _inputClient?.ReleaseCaptureObservation(capture.SourceId);
+            if (_inputSession is not null)
+            {
+                try
+                {
+                    _ = await _inputSession.CancelCaptureAsync(
+                            capture.CaptureId,
+                            CancellationToken.None)
+                        .ConfigureAwait(true);
+                }
+                catch (Exception exception)
+                {
+                    _captureLabel.Text = "Capture cancellation could not be confirmed: " + exception.Message;
+                }
+            }
         }
         if (capture is not null || target is not null)
         {
@@ -1545,6 +1879,33 @@ internal sealed class ConfigurationForm : ThemedForm
         }
         UpdateCaptureButtons();
         RestoreDeviceAfterCapture();
+    }
+
+    private bool CaptureIsInProgress() =>
+        _captureTarget is not null
+        || _captureLease is not null
+        || _captureStartTask is { IsCompleted: false }
+        || _promptPickerEditor?.CaptureIsInProgress == true;
+
+    private async Task CancelCaptureAndCloseAsync()
+    {
+        await QuiesceCapturesAsync().ConfigureAwait(true);
+        if (IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        _closingAfterCaptureCancellation = true;
+        Close();
+    }
+
+    internal async Task QuiesceCapturesAsync()
+    {
+        await CancelCaptureAsync().ConfigureAwait(true);
+        if (_promptPickerEditor is not null)
+        {
+            await _promptPickerEditor.QuiesceCaptureAsync().ConfigureAwait(true);
+        }
     }
 
     private void RestoreDeviceAfterCapture()
@@ -1559,9 +1920,12 @@ internal sealed class ConfigurationForm : ThemedForm
 
     private void UpdateCaptureButtons()
     {
-        _captureBankButton.Enabled = _captureTarget is null;
-        _captureBindingButton.Enabled = _captureTarget is null;
-        _captureMapHoldButton.Enabled = _captureTarget is null;
+        var canStart = _captureTarget is null
+            && !_settingsOperationActive
+            && (_applyConfiguration is null || _runtimeConnected);
+        _captureBankButton.Enabled = canStart;
+        _captureBindingButton.Enabled = canStart;
+        _captureMapHoldButton.Enabled = canStart;
         _cancelCaptureButton.Visible = _captureTarget is not null;
     }
 
@@ -1619,18 +1983,38 @@ internal sealed class ConfigurationForm : ThemedForm
                 StringComparison.OrdinalIgnoreCase);
     }
 
-    private void RemoveCurrentRow(DataGridView grid)
+    private async Task RemoveCurrentRowAsync(DataGridView grid)
     {
-        CancelCapture();
-        if (grid.CurrentRow is not null)
+        var row = grid.CurrentRow;
+        await CancelCaptureAsync().ConfigureAwait(true);
+        if (row is not null && grid.Rows.Contains(row))
         {
-            grid.Rows.Remove(grid.CurrentRow);
+            grid.Rows.Remove(row);
         }
     }
 
-    private void OnSave(object? sender, EventArgs eventArgs)
+    private async void OnSave(object? sender, EventArgs eventArgs) =>
+        await SubmitAsync(closeAfterSuccess: true).ConfigureAwait(true);
+
+    private async void OnApply(object? sender, EventArgs eventArgs) =>
+        await SubmitAsync(closeAfterSuccess: false).ConfigureAwait(true);
+
+    internal async Task<SettingsBundle?> ProjectCurrentDraftAsync()
     {
-        CancelCapture();
+        _lastProjectedDraft = null;
+        await SubmitAsync(closeAfterSuccess: false, projectOnly: true).ConfigureAwait(true);
+        return _lastProjectedDraft;
+    }
+
+    private async Task SubmitAsync(bool closeAfterSuccess, bool projectOnly = false)
+    {
+        await QuiesceCapturesAsync().ConfigureAwait(true);
+        IReadOnlyList<PromptPickerConfig>? promptPickers = null;
+        if (_promptPickerEditor is not null)
+        {
+            promptPickers = await _promptPickerEditor.ProjectPromptPickersAsync()
+                .ConfigureAwait(true);
+        }
         _bankGrid.EndEdit();
         _bindingGrid.EndEdit();
         _buttonMapGrid.EndEdit();
@@ -1769,14 +2153,14 @@ internal sealed class ConfigurationForm : ThemedForm
                 ButtonMapHoldControl = map.Hold,
             };
         }).ToList();
-        var promptPickers = _promptPickerEditor?.GetPromptPickers().ToList()
+        var effectivePromptPickers = promptPickers?.ToList()
             ?? _originalConfig.PromptPickers;
         if (_promptPickerEditor is not null)
         {
             devices = MergePromptPickerDevices(
                 devices,
                 _promptPickerEditor.GetDeviceProfiles(),
-                promptPickers);
+                effectivePromptPickers);
         }
 
         var config = new CompanionConfig
@@ -1798,7 +2182,7 @@ internal sealed class ConfigurationForm : ThemedForm
             },
             BankSelectors = bankSelectors,
             Bindings = bindings,
-            PromptPickers = promptPickers,
+            PromptPickers = effectivePromptPickers,
         };
 
         var errors = parseErrors.Concat(ConfigValidator.Validate(config)).Distinct().ToArray();
@@ -1810,6 +2194,17 @@ internal sealed class ConfigurationForm : ThemedForm
                 "Please finish the configuration",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
+            return;
+        }
+
+        _lastProjectedDraft = _authoritativeSettings with
+        {
+            Companion = config,
+            Voice = roomVoicePreferences ?? _authoritativeSettings.Voice,
+            PebbleIndex = pebbleIndexPreferences ?? _authoritativeSettings.PebbleIndex,
+        };
+        if (projectOnly)
+        {
             return;
         }
 
@@ -1828,23 +2223,208 @@ internal sealed class ConfigurationForm : ThemedForm
 
         try
         {
-            if (!_saveConfiguration(config, roomVoicePreferences, pebbleIndexPreferences))
+            if (_applyConfiguration is null)
             {
+                if (!_saveConfiguration(config, roomVoicePreferences, pebbleIndexPreferences))
+                {
+                    return;
+                }
+                RoomVoicePreferences = roomVoicePreferences;
+                PebbleIndexPreferences = pebbleIndexPreferences;
+                DialogResult = DialogResult.OK;
+                Close();
                 return;
             }
-            RoomVoicePreferences = roomVoicePreferences;
-            PebbleIndexPreferences = pebbleIndexPreferences;
-            DialogResult = DialogResult.OK;
-            Close();
+
+            SetSettingsOperationActive(active: true);
+            var result = await _applyConfiguration(
+                    config,
+                    roomVoicePreferences,
+                    pebbleIndexPreferences,
+                    _lifetime.Token)
+                .ConfigureAwait(true);
+            ShowRuntimeResult(result);
+            if (result.Outcome is RuntimeSettingsWriteOutcome.NoChanges
+                or RuntimeSettingsWriteOutcome.Applied
+                or RuntimeSettingsWriteOutcome.PendingIdle)
+            {
+                ApplyAuthoritativeSettings(result.Snapshot.Desired);
+                if (closeAfterSuccess)
+                {
+                    DialogResult = DialogResult.OK;
+                    Close();
+                }
+            }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
         }
         catch (Exception exception)
         {
-            MessageBox.Show(this, exception.Message, "Could not save configuration", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (_applyConfiguration is null)
+            {
+                MessageBox.Show(this, exception.Message, "Could not save configuration", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            else
+            {
+                _runtimeStatus.Text = "The runtime connection changed. Choose Check status after it reconnects. "
+                    + exception.Message;
+                _runtimeStatus.Visible = true;
+                if (_applyButton is not null)
+                {
+                    _applyButton.Text = "Check status";
+                }
+            }
+        }
+        finally
+        {
+            if (!IsDisposed && !Disposing)
+            {
+                SetSettingsOperationActive(active: false);
+            }
+        }
+    }
+
+    private void SetSettingsOperationActive(bool active)
+    {
+        _settingsOperationActive = active;
+        UpdateRuntimeEditingState();
+        if (active)
+        {
+            _runtimeStatus.Text = "Applying settings…";
+            _runtimeStatus.Visible = true;
+            _reviewLatestButton!.Visible = false;
+            _discardDraftButton!.Visible = false;
+        }
+    }
+
+    internal void SetRuntimeConnectionAvailable(bool connected, string? detail = null)
+    {
+        if (_applyConfiguration is null)
+        {
+            return;
+        }
+
+        _runtimeConnected = connected;
+        _runtimeStatus.Text = connected
+            ? detail ?? "Connected to the Joydex runtime."
+            : detail ?? "The Joydex runtime connection is unavailable. Your draft is still open.";
+        _runtimeStatus.Visible = true;
+        UpdateRuntimeEditingState();
+    }
+
+    internal void ShowDraftState(RuntimeSettingsDraftState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        _draftAttention = state.RequiresRebase || state.PendingOperationId is not null
+            ? state.Detail ?? (state.RequiresRebase
+                ? "Settings changed while this draft was open. Review the latest settings before applying."
+                : "The settings operation is still running. Choose Check status to reconcile it.")
+            : null;
+        RenderSettingsAttention();
+        if (_reviewLatestButton is not null)
+        {
+            _reviewLatestButton.Visible = state.RequiresRebase;
+        }
+        if (_discardDraftButton is not null)
+        {
+            _discardDraftButton.Visible = state.RequiresRebase;
+        }
+        if (_applyButton is not null)
+        {
+            _applyButton.Text = state.PendingOperationId is null ? "Apply" : "Check status";
+        }
+        UpdateRuntimeEditingState();
+    }
+
+    internal void ShowRuntimeSettingsStatus(SettingsSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var attention = snapshot.Aggregates
+            .Where(aggregate => aggregate.Activation != SettingsActivationState.Applied
+                || aggregate.DesiredRevision != aggregate.ActiveRevision)
+            .Select(aggregate => aggregate.Activation switch
+            {
+                SettingsActivationState.PendingIdle =>
+                    $"{aggregate.Aggregate}: saved and waiting for the current runtime owner to become idle."
+                    + FormatAggregateDetail(aggregate.Detail),
+                SettingsActivationState.Failed =>
+                    $"{aggregate.Aggregate}: saved settings are not active."
+                    + FormatAggregateDetail(aggregate.Detail),
+                _ =>
+                    $"{aggregate.Aggregate}: saved revision {aggregate.DesiredRevision} differs from active revision {aggregate.ActiveRevision}."
+                    + FormatAggregateDetail(aggregate.Detail),
+            })
+            .ToArray();
+        _aggregateAttention = attention.Length == 0
+            ? null
+            : string.Join(Environment.NewLine, attention);
+        RenderSettingsAttention();
+    }
+
+    private void RenderSettingsAttention()
+    {
+        var attention = new[] { _draftAttention, _aggregateAttention }
+            .Where(detail => !string.IsNullOrWhiteSpace(detail))
+            .ToArray();
+        _runtimeStatus.Text = string.Join(Environment.NewLine, attention!);
+        _runtimeStatus.Visible = attention.Length > 0;
+    }
+
+    private static string FormatAggregateDetail(string? detail) =>
+        string.IsNullOrWhiteSpace(detail) ? string.Empty : " " + detail.Trim();
+
+    private void UpdateRuntimeEditingState()
+    {
+        var editable = !_settingsOperationActive;
+        var canContactRuntime = editable
+            && (_applyConfiguration is null || _runtimeConnected);
+        if (_navigation is not null)
+        {
+            _navigation.Enabled = editable;
+        }
+        _pageHost.Enabled = editable;
+        if (_applyButton is not null)
+        {
+            _applyButton.Enabled = canContactRuntime;
+        }
+        if (_saveButton is not null)
+        {
+            _saveButton.Enabled = canContactRuntime;
+        }
+        if (_reviewLatestButton is not null)
+        {
+            _reviewLatestButton.Enabled = canContactRuntime;
+        }
+        if (_discardDraftButton is not null)
+        {
+            _discardDraftButton.Enabled = canContactRuntime;
+        }
+        UpdateCaptureButtons();
+    }
+
+    private void ShowRuntimeResult(RuntimeSettingsWriteResult result)
+    {
+        _runtimeStatus.Text = result.Detail;
+        _runtimeStatus.Visible = true;
+        var conflict = result.Outcome == RuntimeSettingsWriteOutcome.Conflict;
+        _reviewLatestButton!.Visible = conflict;
+        _discardDraftButton!.Visible = conflict;
+        if (_applyButton is not null)
+        {
+            _applyButton.Text = result.Outcome is RuntimeSettingsWriteOutcome.Running
+                or RuntimeSettingsWriteOutcome.Uncertain
+                ? "Check status"
+                : "Apply";
         }
     }
 
     internal VoicePePreferences? RoomVoicePreferences { get; private set; }
     internal PebbleIndexPreferences? PebbleIndexPreferences { get; private set; }
+
+    internal event EventHandler<ConfigurationDraftEventArgs>? ReviewLatestRequested;
+
+    internal event EventHandler? DiscardDraftRequested;
 
     internal static List<DeviceProfile> MergePromptPickerDevices(
         IReadOnlyList<DeviceProfile> configuredDevices,

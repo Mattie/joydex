@@ -14,16 +14,22 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
     private readonly CodexVoiceSessionObserver? _fallbackObserver;
     private readonly DedicatedVoiceCoordinator? _dedicatedCoordinator;
     private readonly CodexDedicatedVoiceOwner? _owner;
+    private readonly VoiceMediaStaHost? _mediaSta;
+    private readonly VoiceRuntimeAsyncGate? _publicationGate;
     private readonly VoiceSessionArchiveState? _sessionArchiveState;
     private readonly RoomVoiceConversationModel _conversation;
     private readonly Action<string> _log;
-    private int _disposed;
+    private readonly Task _ownerCompletion;
+    private readonly object _disposeGate = new();
+    private Task? _disposeTask;
 
     private VoicePeBridgeRuntime(
         VoicePeControlAdapter adapter,
         CodexVoiceSessionObserver? fallbackObserver,
         DedicatedVoiceCoordinator? dedicatedCoordinator,
         CodexDedicatedVoiceOwner? owner,
+        VoiceMediaStaHost? mediaSta,
+        VoiceRuntimeAsyncGate? publicationGate,
         VoiceSessionArchiveState? sessionArchiveState,
         RoomVoiceConversationModel conversation,
         Action<string> log)
@@ -32,22 +38,30 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         _fallbackObserver = fallbackObserver;
         _dedicatedCoordinator = dedicatedCoordinator;
         _owner = owner;
+        _mediaSta = mediaSta;
+        _publicationGate = publicationGate;
         _sessionArchiveState = sessionArchiveState;
         _conversation = conversation;
         _log = log;
+        _ownerCompletion = owner is null
+            ? Task.CompletedTask
+            : mediaSta is null
+                ? owner.Completion
+                : ObserveFirstCompletionAsync(owner.Completion, mediaSta.Completion);
     }
 
     public VoicePeSessionMode Mode => _owner is null
         ? VoicePeSessionMode.LastVoiceFallback
         : VoicePeSessionMode.JoydexOwner;
 
-    public bool OwnerReady => _owner?.IsReady == true;
+    public bool OwnerReady => _owner?.IsReady == true
+        && _mediaSta?.Completion.IsCompleted == false;
 
     public bool IsSessionActive => _dedicatedCoordinator?.IsSessionActive == true;
 
     public RoomVoiceConversationModel Conversation => _conversation;
 
-    public Task OwnerCompletion => _owner?.Completion ?? Task.CompletedTask;
+    public Task OwnerCompletion => _ownerCompletion;
 
     public static async Task<VoicePeBridgeRuntime> StartAsync(
         VoicePePreferences preferences,
@@ -62,13 +76,42 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         string desktopTaskBridgePipeName,
         CancellationToken cancellationToken = default)
     {
+        // Retained temporarily for the in-process Tray caller. Voice media no longer stores or
+        // dispatches through this context; RuntimeHost composition uses the context-free overload.
+        ArgumentNullException.ThrowIfNull(uiContext);
+        return await StartAsync(
+                preferences,
+                safety,
+                fallbackCoordinator,
+                webViewDataDirectory,
+                conversation,
+                log,
+                preferencesPath,
+                voiceToolHostPath,
+                desktopTaskBridgePipeName,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public static async Task<VoicePeBridgeRuntime> StartAsync(
+        VoicePePreferences preferences,
+        SafetyOptions safety,
+        PinnedVoiceCoordinator fallbackCoordinator,
+        string webViewDataDirectory,
+        RoomVoiceConversationModel conversation,
+        Action<string> log,
+        string preferencesPath,
+        string voiceToolHostPath,
+        string desktopTaskBridgePipeName,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(preferences);
         ArgumentNullException.ThrowIfNull(safety);
         ArgumentNullException.ThrowIfNull(fallbackCoordinator);
-        ArgumentNullException.ThrowIfNull(uiContext);
         ArgumentException.ThrowIfNullOrWhiteSpace(webViewDataDirectory);
         ArgumentNullException.ThrowIfNull(conversation);
         ArgumentNullException.ThrowIfNull(log);
+        var runtimeLog = CreateBestEffortLog(log);
 
         var normalized = preferences.Normalize();
         var errors = normalized.Validate();
@@ -96,16 +139,15 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 fallbackCoordinator,
                 endpoint,
                 conversation,
-                log),
+                runtimeLog),
             VoicePeSessionMode.JoydexOwner => await StartOwnerAsync(
                     normalized,
                     safety,
                     fallbackCoordinator,
                     endpoint,
-                    uiContext,
                     webViewDataDirectory,
                     conversation,
-                    log,
+                    runtimeLog,
                     preferencesPath,
                     voiceToolHostPath,
                     desktopTaskBridgePipeName,
@@ -115,26 +157,81 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         };
     }
 
-    public async ValueTask DisposeAsync()
+    internal static Action<string> CreateBestEffortLog(Action<string> log)
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        ArgumentNullException.ThrowIfNull(log);
+        return message =>
         {
-            return;
+            try
+            {
+                log(message);
+            }
+            catch
+            {
+                // Diagnostics must not interrupt Voice ownership or cleanup.
+            }
+        };
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        lock (_disposeGate)
+        {
+            return new ValueTask(_disposeTask ??= DisposeCoreAsync());
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        List<Exception>? ownershipFailures = null;
+
+        if (_publicationGate is not null)
+        {
+            try
+            {
+                await _publicationGate.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                TryLog($"Could not quiesce Voice runtime publications: {exception.Message}");
+                (ownershipFailures ??= []).Add(exception);
+            }
         }
 
         if (_dedicatedCoordinator is not null)
         {
             try
             {
+                // Quiesce endpoint signal intake before canceling the coordinator. Otherwise a
+                // fresh wake can race ordered media disposal and construct work against an owner
+                // generation that is already shutting down.
+                await _adapter.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                TryLog($"Could not stop the Voice PE control adapter: {exception.Message}");
+                (ownershipFailures ??= []).Add(exception);
+            }
+
+            try
+            {
                 await _dedicatedCoordinator.DisposeAsync().ConfigureAwait(false);
             }
             catch (Exception exception)
             {
-                _log($"Could not stop the dedicated Voice Session coordinator: {exception.Message}");
+                TryLog($"Could not stop the dedicated Voice Session coordinator: {exception.Message}");
+                (ownershipFailures ??= []).Add(exception);
             }
         }
 
-        _sessionArchiveState?.Complete("stopped", "Joydex stopped Room Voice.");
+        try
+        {
+            _sessionArchiveState?.Complete("stopped", "Joydex stopped Room Voice.");
+        }
+        catch (Exception exception)
+        {
+            TryLog($"Could not complete the active Voice Session archive: {exception.Message}");
+        }
 
         if (_fallbackObserver is not null)
         {
@@ -144,17 +241,20 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
             }
             catch (Exception exception)
             {
-                _log($"Could not stop the Codex Voice session observer: {exception.Message}");
+                TryLog($"Could not stop the Codex Voice session observer: {exception.Message}");
             }
         }
 
-        try
+        if (_dedicatedCoordinator is null)
         {
-            await _adapter.DisposeAsync().ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            _log($"Could not stop the Voice PE control adapter: {exception.Message}");
+            try
+            {
+                await _adapter.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                TryLog($"Could not stop the Voice PE control adapter: {exception.Message}");
+            }
         }
 
         if (_owner is not null)
@@ -165,11 +265,45 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
             }
             catch (Exception exception)
             {
-                _log($"Could not release the Dedicated Voice Task owner: {exception.Message}");
+                TryLog($"Could not release the Dedicated Voice Task owner: {exception.Message}");
+                (ownershipFailures ??= []).Add(exception);
+            }
+        }
+
+        if (_mediaSta is not null)
+        {
+            try
+            {
+                // Media sessions are disposed by the coordinator above. The pump is stopped last
+                // so every WebView2 unsubscribe and COM disposal can execute on its owning STA.
+                await _mediaSta.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                TryLog($"Could not stop the Voice media STA: {exception.Message}");
+                (ownershipFailures ??= []).Add(exception);
             }
         }
 
         GC.SuppressFinalize(this);
+        if (ownershipFailures is not null)
+        {
+            throw new VoiceOwnershipCleanupException(
+                "Room Voice ownership could not be released completely; replacement is unsafe.",
+                ownershipFailures);
+        }
+    }
+
+    private void TryLog(string message)
+    {
+        try
+        {
+            _log(message);
+        }
+        catch
+        {
+            // A failing diagnostic sink cannot interrupt ownership cleanup.
+        }
     }
 
     public Task StopSessionAsync(CancellationToken cancellationToken = default) =>
@@ -230,7 +364,16 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         }
 
         log($"Voice PE native LASTVOICE fallback started for {endpoint.Host}:{endpoint.Port}.");
-        return new VoicePeBridgeRuntime(adapter, observer, null, null, null, conversation, log);
+        return new VoicePeBridgeRuntime(
+            adapter,
+            observer,
+            null,
+            null,
+            null,
+            null,
+            null,
+            conversation,
+            log);
     }
 
     private static async Task<VoicePeBridgeRuntime> StartOwnerAsync(
@@ -238,7 +381,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         SafetyOptions safety,
         PinnedVoiceCoordinator fallbackCoordinator,
         Uri endpoint,
-        SynchronizationContext uiContext,
         string webViewDataDirectory,
         RoomVoiceConversationModel conversation,
         Action<string> log,
@@ -284,9 +426,16 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         var sessionArchiveState = string.IsNullOrWhiteSpace(preferences.AgentWorkspacePath)
             ? null
             : new VoiceSessionArchiveState(preferences, log);
+        VoiceMediaStaHost? mediaSta = null;
+        VoiceRuntimeAsyncGate? publicationGate = null;
+        VoicePeControlAdapter? adapter = null;
+        DedicatedVoiceCoordinator? coordinator = null;
+        IVoicePeControlTransport? unownedControlTransport = null;
         try
         {
             await owner.StartAsync(cancellationToken).ConfigureAwait(false);
+            mediaSta = await VoiceMediaStaHost.StartAsync(cancellationToken).ConfigureAwait(false);
+            publicationGate = new VoiceRuntimeAsyncGate();
             conversation.SetRuntimeState(
                 VoicePeSessionState.Armed,
                 ownerReady: true,
@@ -305,14 +454,13 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                     "Room Voice is armed; conversation history could not be loaded.",
                     exception.Message);
             }
-            VoicePeControlAdapter? adapter = null;
-            var coordinator = new DedicatedVoiceCoordinator(
+            coordinator = new DedicatedVoiceCoordinator(
                 mediaSessionFactory: async token =>
                 {
                     var archive = sessionArchiveState?.Current;
                     var realtime = owner.CreateRealtimeSession();
                     var media = new WebView2VoiceDuplexAudioSession(
-                        uiContext,
+                        mediaSta,
                         webViewDataDirectory,
                         realtime.StartAsync,
                         realtime.MarkMediaConnected,
@@ -359,9 +507,9 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                         "Listening");
                 });
 
-            var controlTransport = new EspHomeVoicePeTransport(endpoint, log);
+            unownedControlTransport = new EspHomeVoicePeTransport(endpoint, log);
             adapter = new VoicePeControlAdapter(
-                controlTransport,
+                unownedControlTransport,
                 async token =>
                 {
                     var previousState = conversation.GetSnapshot();
@@ -400,10 +548,19 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
 
                     return muted;
                 });
+            // VoicePeControlAdapter owns the transport from this point onward.
+            unownedControlTransport = null;
             coordinator.SessionEnded += () =>
             {
                 sessionArchiveState?.Complete("ended");
-                _ = RearmAfterOwnerSessionAsync(adapter, owner, conversation, log);
+                publicationGate.TryRun(token =>
+                    RearmAfterOwnerSessionAsync(
+                        adapter,
+                        owner,
+                        conversation,
+                        publicationGate,
+                        log,
+                        token));
             };
             // A process crash can close media without publishing the final Armed state.
             // Owner startup has no live Voice Session, so restore the wakeable baseline.
@@ -421,13 +578,29 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 null,
                 coordinator,
                 owner,
+                mediaSta,
+                publicationGate,
                 sessionArchiveState,
                 conversation,
                 log);
         }
-        catch
+        catch (Exception startupException)
         {
-            await owner.DisposeAsync().ConfigureAwait(false);
+            var cleanupFailures = await VoiceRuntimeStartupRollback.DisposeAsync(
+                    publicationGate,
+                    (IAsyncDisposable?)adapter ?? unownedControlTransport,
+                    coordinator,
+                    owner,
+                    mediaSta)
+                .ConfigureAwait(false);
+
+            if (cleanupFailures.Count > 0)
+            {
+                throw VoiceRuntimeStartupRollback.ClassifyStartupFailure(
+                    startupException,
+                    cleanupFailures);
+            }
+
             throw;
         }
     }
@@ -436,30 +609,52 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         VoicePeControlAdapter adapter,
         CodexDedicatedVoiceOwner owner,
         RoomVoiceConversationModel conversation,
-        Action<string> log)
+        VoiceRuntimeAsyncGate publicationGate,
+        Action<string> log,
+        CancellationToken cancellationToken)
     {
         try
         {
-            await adapter.ConfirmSessionEndedAsync(CancellationToken.None).ConfigureAwait(false);
-            conversation.SetRuntimeState(
-                VoicePeSessionState.Armed,
-                ownerReady: true,
-                sessionActive: false,
-                "Room Voice is armed.",
-                stale: true);
+            await adapter.ConfirmSessionEndedAsync(cancellationToken).ConfigureAwait(false);
+            if (!publicationGate.TryPublish(
+                    cancellationToken,
+                    () => conversation.SetRuntimeState(
+                        VoicePeSessionState.Armed,
+                        ownerReady: true,
+                        sessionActive: false,
+                        "Room Voice is armed.",
+                        stale: true)))
+            {
+                return;
+            }
             try
             {
-                conversation.ReplaceHistory(await owner.ReadThreadAsync(CancellationToken.None).ConfigureAwait(false));
+                var entries = await owner.ReadThreadAsync(cancellationToken).ConfigureAwait(false);
+                publicationGate.TryPublish(
+                    cancellationToken,
+                    () => conversation.ReplaceHistory(entries));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
             }
             catch (Exception exception)
             {
                 log($"Room Voice conversation refresh failed: {exception.Message}");
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
         catch (Exception exception)
         {
             log($"Voice PE could not rearm after the dedicated Voice Session: {exception.Message}");
         }
+    }
+
+    private static async Task ObserveFirstCompletionAsync(Task ownerCompletion, Task mediaCompletion)
+    {
+        var completed = await Task.WhenAny(ownerCompletion, mediaCompletion).ConfigureAwait(false);
+        await completed.ConfigureAwait(false);
     }
 
     private static VoiceSessionStartResult MapFallbackResult(PinnedVoiceStartResult result) =>
@@ -621,5 +816,145 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 log($"Could not update the active Voice Session pointer: {exception.Message}");
             }
         }
+    }
+}
+
+/// <summary>
+/// Cancels and drains generation-scoped asynchronous publications before a Voice runtime is
+/// disposed, preventing an old session tail from updating the next runtime's shared model.
+/// </summary>
+internal sealed class VoiceRuntimeAsyncGate : IAsyncDisposable
+{
+    private readonly object _gate = new();
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly HashSet<Task> _tasks = [];
+    private Task? _disposeTask;
+    private bool _stopping;
+
+    public bool TryRun(Func<CancellationToken, Task> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        lock (_gate)
+        {
+            if (_stopping)
+            {
+                return false;
+            }
+
+            var task = RunAsync(action, _lifetime.Token);
+            _tasks.Add(task);
+            _ = RemoveWhenCompleteAsync(task);
+            return true;
+        }
+    }
+
+    public bool TryPublish(CancellationToken cancellationToken, Action publication)
+    {
+        ArgumentNullException.ThrowIfNull(publication);
+        lock (_gate)
+        {
+            if (_stopping || cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            publication();
+            return true;
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        lock (_gate)
+        {
+            return new ValueTask(_disposeTask ??= DisposeCoreAsync());
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        Task[] tasks;
+        lock (_gate)
+        {
+            _stopping = true;
+            tasks = [.. _tasks];
+        }
+        _lifetime.Cancel();
+
+        try
+        {
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            _lifetime.Dispose();
+            GC.SuppressFinalize(this);
+        }
+    }
+
+    private async Task RemoveWhenCompleteAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // The owner callback records its own failures. This observer only retires the task.
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                _tasks.Remove(task);
+            }
+        }
+    }
+
+    private static async Task RunAsync(
+        Func<CancellationToken, Task> action,
+        CancellationToken cancellationToken) =>
+        await action(cancellationToken).ConfigureAwait(false);
+}
+
+internal static class VoiceRuntimeStartupRollback
+{
+    public static Exception ClassifyStartupFailure(
+        Exception startupFailure,
+        IReadOnlyCollection<Exception> cleanupFailures)
+    {
+        ArgumentNullException.ThrowIfNull(startupFailure);
+        ArgumentNullException.ThrowIfNull(cleanupFailures);
+        return cleanupFailures.Count == 0
+            ? startupFailure
+            : new VoiceOwnershipCleanupException(
+                "Room Voice startup failed and its ownership cleanup was incomplete.",
+                [startupFailure, .. cleanupFailures]);
+    }
+
+    public static async Task<List<Exception>> DisposeAsync(params IAsyncDisposable?[] resources)
+    {
+        var failures = new List<Exception>();
+        foreach (var resource in resources)
+        {
+            if (resource is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                await resource.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
+        }
+
+        return failures;
     }
 }

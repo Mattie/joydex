@@ -28,9 +28,20 @@ public static class PebbleIndexPreferencesStore
         {
             throw new InvalidDataException($"The Pebble Index settings file must contain 1 to {MaximumDocumentBytes} bytes.");
         }
+        return ParseExisting(File.ReadAllBytes(path));
+    }
+
+    internal static PebbleIndexPreferences ParseExisting(ReadOnlySpan<byte> documentBytes)
+    {
+        if (documentBytes.Length is <= 0 or > MaximumDocumentBytes)
+        {
+            throw new InvalidDataException(
+                $"The Pebble Index settings file must contain 1 to {MaximumDocumentBytes} bytes.");
+        }
+
         try
         {
-            var preferences = JsonSerializer.Deserialize<PebbleIndexPreferences>(File.ReadAllBytes(path), JsonOptions)
+            var preferences = JsonSerializer.Deserialize<PebbleIndexPreferences>(documentBytes, JsonOptions)
                 ?? throw new JsonException("The Pebble Index settings file was empty.");
             var normalized = preferences.Normalize();
             ThrowIfInvalid(normalized);

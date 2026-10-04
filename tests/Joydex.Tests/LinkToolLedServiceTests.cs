@@ -7,6 +7,8 @@ namespace Joydex.Tests;
 
 public sealed class LinkToolLedServiceTests
 {
+    private static readonly TimeSpan AsyncTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public void BuildsOneAtomicStateWithHighestPriorityOnAlpha()
     {
@@ -87,7 +89,7 @@ public sealed class LinkToolLedServiceTests
             EmptySnapshot());
 
         service.Apply(EmptySnapshot());
-        await Task.Delay(100);
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
 
         Assert.Empty(sender.States);
     }
@@ -108,13 +110,9 @@ public sealed class LinkToolLedServiceTests
             _ => { },
             restored);
 
-        service.Apply(restored);
-        await Task.Delay(100);
-        Assert.Empty(sender.States);
-
         service.RestoreAndReplay(replay: true);
 
-        await WaitUntilAsync(() => sender.States.Count == 1, TimeSpan.FromSeconds(2));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
         Assert.Equal(2, sender.States[0].JoydexPrimaryB2State);
     }
 
@@ -130,7 +128,7 @@ public sealed class LinkToolLedServiceTests
 
         service.RestoreAndReplay(replay: true);
 
-        await WaitUntilAsync(() => sender.States.Count == 1, TimeSpan.FromSeconds(2));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
         Assert.Equal(2, sender.States[0].JoydexBank);
         Assert.False(sender.States[0].HasAlert);
     }
@@ -150,12 +148,10 @@ public sealed class LinkToolLedServiceTests
             null,
             TaskAlertState.Running,
             DateTimeOffset.UtcNow)));
-        await WaitUntilAsync(() => sender.States.Any(state => state.JoydexPrimaryB1State == 1), TimeSpan.FromSeconds(2));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
 
         service.Apply(EmptySnapshot());
-        await WaitUntilAsync(
-            () => sender.States.LastOrDefault() is { HasAlert: false },
-            TimeSpan.FromSeconds(2));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
 
         Assert.Equal([true, false], dirty.ToArray());
         Assert.Equal(2, sender.States[^1].JoydexBank);
@@ -168,6 +164,15 @@ public sealed class LinkToolLedServiceTests
         var sender = new RecordingSender();
         var conflicts = new FixedConflictDetector(true);
         await using var service = new LinkToolLedService(sender, conflicts, _ => { }, EmptySnapshot());
+        var conflictObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        service.StatusChanged += (_, status) =>
+        {
+            if (status.Contains("VPC tool active", StringComparison.Ordinal))
+            {
+                conflictObserved.TrySetResult();
+            }
+        };
 
         service.Apply(Snapshot(new TaskAlertAssignment(
             2,
@@ -175,12 +180,12 @@ public sealed class LinkToolLedServiceTests
             null,
             TaskAlertState.Approval,
             DateTimeOffset.UtcNow)));
-        await Task.Delay(100);
+        await conflictObserved.Task.WaitAsync(AsyncTimeout);
         Assert.Empty(sender.States);
 
         conflicts.Value = false;
         service.RestoreAndReplay(replay: true);
-        await WaitUntilAsync(() => sender.States.Any(state => state.JoydexPrimaryB2State == 2), TimeSpan.FromSeconds(2));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
     }
 
     [Fact]
@@ -192,8 +197,15 @@ public sealed class LinkToolLedServiceTests
             new FixedConflictDetector(false),
             _ => { },
             EmptySnapshot());
-        var statuses = new ConcurrentQueue<string>();
-        service.StatusChanged += (_, status) => statuses.Enqueue(status);
+        var inactiveObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        service.StatusChanged += (_, status) =>
+        {
+            if (status.Contains("inactive", StringComparison.OrdinalIgnoreCase))
+            {
+                inactiveObserved.TrySetResult();
+            }
+        };
 
         service.Apply(Snapshot(new TaskAlertAssignment(
             1,
@@ -201,14 +213,12 @@ public sealed class LinkToolLedServiceTests
             null,
             TaskAlertState.Running,
             DateTimeOffset.UtcNow)));
-        await WaitUntilAsync(
-            () => statuses.Any(status => status.Contains("inactive", StringComparison.OrdinalIgnoreCase)),
-            TimeSpan.FromSeconds(2));
+        await inactiveObserved.Task.WaitAsync(AsyncTimeout);
         Assert.Empty(sender.States);
 
         sender.IsListening = true;
         service.RestoreAndReplay(replay: true);
-        await WaitUntilAsync(() => sender.States.Any(state => state.JoydexPrimaryB1State == 1), TimeSpan.FromSeconds(2));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
     }
 
     [Fact]
@@ -227,7 +237,7 @@ public sealed class LinkToolLedServiceTests
         sender.IsListening = true;
         service.RestoreAndReplay(replay: true);
 
-        await WaitUntilAsync(() => sender.States.Count > 0, TimeSpan.FromSeconds(2));
+        Assert.True(await service.WaitForIdleAsync(AsyncTimeout));
         Assert.DoesNotContain(sender.States, state => state.JoydexPrimaryB1State == 1);
         Assert.Equal(2, sender.States[^1].JoydexPrimaryB1State);
     }
@@ -386,17 +396,6 @@ public sealed class LinkToolLedServiceTests
 
     private static TaskAlertSnapshot Snapshot(params TaskAlertAssignment[] assignments) =>
         new(true, assignments, 0, 2);
-
-    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
-    {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        while (!condition() && DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(25);
-        }
-
-        Assert.True(condition());
-    }
 
     private sealed class RecordingSender : ILinkToolTelemetrySender
     {

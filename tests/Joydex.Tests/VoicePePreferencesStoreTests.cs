@@ -24,6 +24,84 @@ public sealed class VoicePePreferencesStoreTests : IDisposable
     }
 
     [Fact]
+    public void ExistingOnlyReadDoesNotCreateAMissingPreferencesFile()
+    {
+        var path = Path.Combine(_directory, "missing", "voice-pe.json");
+
+        _ = Assert.Throws<InvalidDataException>(() => VoicePePreferencesStore.LoadExisting(path));
+
+        Assert.False(File.Exists(path));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(path)));
+    }
+
+    [Fact]
+    public void ExistingOnlyReadMigratesLegacyPreferencesInMemoryWithoutWriting()
+    {
+        var path = Path.Combine(_directory, "voice-pe.json");
+        Directory.CreateDirectory(_directory);
+        var legacy = """
+            {
+              "schemaVersion": 4,
+              "enabled": false,
+              "deviceEndpoint": "",
+              "pinnedTaskId": "",
+              "pinnedTaskLabel": "",
+              "sessionMode": "lastVoiceFallback",
+              "dedicatedTaskId": "",
+              "dedicatedTaskLabel": "",
+              "codexAppServerPath": "",
+              "realtimeVoice": "",
+              "conversationSpeakerGain": 2,
+              "preserveAssistantAudioDiagnostics": false
+            }
+            """;
+        File.WriteAllText(path, legacy);
+
+        var preferences = VoicePePreferencesStore.LoadExisting(path);
+
+        Assert.Equal(VoicePePreferences.CurrentSchemaVersion, preferences.SchemaVersion);
+        Assert.Equal(legacy, File.ReadAllText(path));
+        Assert.Empty(Directory.GetFiles(_directory, "*.backup.json"));
+    }
+
+    [Fact]
+    public async Task ExistingOnlyReadsObserveCompleteAtomicPreferenceReplacements()
+    {
+        var path = Path.Combine(_directory, "voice-pe.json");
+        var firstTarget = Guid.NewGuid().ToString("D");
+        var secondTarget = Guid.NewGuid().ToString("D");
+        var first = VoicePePreferences.Default with
+        {
+            VoiceTargetTaskId = firstTarget,
+            VoiceTargetHostId = "local",
+        };
+        var second = first with { VoiceTargetTaskId = secondTarget };
+        VoicePePreferencesStore.Save(path, first);
+        var observed = new System.Collections.Concurrent.ConcurrentBag<string>();
+
+        var writer = Task.Run(() =>
+        {
+            for (var index = 0; index < 24; index++)
+            {
+                VoicePePreferencesStore.Save(path, index % 2 == 0 ? second : first);
+            }
+        });
+        var readers = Enumerable.Range(0, 2).Select(_ => Task.Run(() =>
+        {
+            while (!writer.IsCompleted)
+            {
+                observed.Add(VoicePePreferencesStore.LoadExisting(path).VoiceTargetTaskId);
+            }
+            observed.Add(VoicePePreferencesStore.LoadExisting(path).VoiceTargetTaskId);
+        }));
+
+        await Task.WhenAll(readers.Append(writer));
+
+        Assert.NotEmpty(observed);
+        Assert.All(observed, target => Assert.Contains(target, new[] { firstTarget, secondTarget }));
+    }
+
+    [Fact]
     public void SavesNormalizedPinnedTaskAndEndpoint()
     {
         var path = Path.Combine(_directory, "voice-pe.json");

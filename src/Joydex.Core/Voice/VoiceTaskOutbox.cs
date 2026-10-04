@@ -13,7 +13,8 @@ public sealed record VoiceTaskOutboxDraft(
     string SourceSession,
     DateTimeOffset CreatedAt,
     int Attempts,
-    string LatestError);
+    string LatestError,
+    bool DeliveryConfirmed = false);
 
 public sealed class VoiceTaskOutbox
 {
@@ -55,7 +56,7 @@ public sealed class VoiceTaskOutbox
             try
             {
                 var draft = JsonSerializer.Deserialize<VoiceTaskOutboxDraft>(File.ReadAllBytes(path), JsonOptions);
-                if (draft is not null && IsValidId(draft.Id))
+                if (draft is not null && IsValidId(draft.Id) && !draft.DeliveryConfirmed)
                 {
                     drafts.Add(draft);
                 }
@@ -95,6 +96,31 @@ public sealed class VoiceTaskOutbox
         var updated = draft with { Attempts = checked(draft.Attempts + 1), LatestError = error.Trim() };
         Save(updated);
         return updated;
+    }
+
+    /// <summary>Persists recoverable content before sending; a restart leaves it for manual review.</summary>
+    public VoiceTaskOutboxDraft BeginDelivery(VoiceTaskOutboxDraft draft)
+    {
+        var updated = draft with
+        {
+            LatestError = "Delivery was started but has not been confirmed. Check the target task before retrying.",
+        };
+        Save(updated);
+        return updated;
+    }
+
+    /// <summary>Durably hides a confirmed delivery before attempting optional file cleanup.</summary>
+    public void ConfirmDelivery(VoiceTaskOutboxDraft draft)
+    {
+        Save(draft with { DeliveryConfirmed = true });
+        try
+        {
+            Remove(draft.Id);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The persisted confirmation already excludes this file from the manual outbox.
+        }
     }
 
     public VoiceTaskOutboxDraft Retarget(VoiceTaskOutboxDraft draft, DesktopTaskSummary target)

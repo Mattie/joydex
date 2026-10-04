@@ -188,6 +188,36 @@ public sealed class DesktopTaskBridgeTests : IDisposable
     }
 
     [Fact]
+    public void InterruptedOutboxDeliveryRemainsRecoverableAfterRestart()
+    {
+        var outbox = new VoiceTaskOutbox(_root);
+        var draft = outbox.Hold(Summary("Target"), "preserve this message", "session", "offline");
+        outbox.BeginDelivery(draft);
+
+        var recovered = Assert.Single(new VoiceTaskOutbox(_root).Load());
+        Assert.Equal(draft.Id, recovered.Id);
+        Assert.Equal(draft.Message, recovered.Message);
+        Assert.Contains("Check the target task", recovered.LatestError, StringComparison.Ordinal);
+
+        outbox.ConfirmDelivery(recovered);
+        Assert.Empty(new VoiceTaskOutbox(_root).Load());
+    }
+
+    [Fact]
+    public void ConfirmedOutboxFileLeftByInterruptedCleanupIsNotRetryable()
+    {
+        var outbox = new VoiceTaskOutbox(_root);
+        var draft = outbox.Hold(Summary("Target"), "delivered message", "session", "offline");
+        var path = Path.Combine(outbox.DirectoryPath, draft.Id + ".json");
+        File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(
+            draft with { DeliveryConfirmed = true },
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)));
+
+        Assert.Empty(new VoiceTaskOutbox(_root).Load());
+        Assert.True(File.Exists(path));
+    }
+
+    [Fact]
     public void ManagedConfigurationPreservesUnrelatedContentAndRefusesUnmanagedConflict()
     {
         Directory.CreateDirectory(_root);
@@ -250,6 +280,104 @@ public sealed class DesktopTaskBridgeTests : IDisposable
         Assert.DoesNotContain(arguments, value => value.Contains("thread/resume", StringComparison.Ordinal));
         Assert.DoesNotContain(arguments, value => value.Contains("send_message_to_thread", StringComparison.Ordinal));
         Assert.Contains(arguments, value => value.Contains(pipe, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task VoiceToolResponseRoutesTheMessageUsingTheActiveProjectionTarget()
+    {
+        Directory.CreateDirectory(_root);
+        var desiredPath = Path.Combine(_root, "voice-pe.json");
+        var activePath = Path.Combine(_root, "runtime-active-voice-pe.json");
+        var sourceTaskId = Guid.NewGuid().ToString("D");
+        var activeTask = Summary("Active target");
+        var desiredTask = Summary("Desired target");
+        var basis = VoicePePreferences.Default with
+        {
+            Enabled = true,
+            DeviceEndpoint = "http://127.0.0.1",
+            SessionMode = VoicePeSessionMode.JoydexOwner,
+            DedicatedTaskId = sourceTaskId,
+            AgentWorkspacePath = _root,
+            DesktopTaskMessagingEnabled = true,
+            VoiceTargetHostId = "local",
+        };
+        VoicePePreferencesStore.Save(
+            desiredPath,
+            basis with
+            {
+                VoiceTargetTaskId = desiredTask.Id,
+                VoiceTargetTaskLabel = desiredTask.Title,
+            });
+        VoicePePreferencesStore.Save(
+            activePath,
+            basis with
+            {
+                VoiceTargetTaskId = activeTask.Id,
+                VoiceTargetTaskLabel = activeTask.Title,
+            });
+        var bridge = new RecordingDesktopTaskBridge([activeTask, desiredTask]);
+        using var request = JsonDocument.Parse("""
+            {
+              "id": 7,
+              "params": {
+                "name": "send_message_to_codex_task",
+                "arguments": { "message": "Use the active target." }
+              }
+            }
+            """);
+
+        var response = JsonSerializer.SerializeToElement(await DesktopBridgeProgram.BuildVoiceToolResponseAsync(
+            request.RootElement,
+            request.RootElement.GetProperty("id"),
+            activePath,
+            sourceTaskId,
+            bridge,
+            new VoiceTaskDeliveryDeduplicator(),
+            CancellationToken.None));
+
+        var sent = Assert.Single(bridge.Sent);
+        Assert.Equal(activeTask.Id, sent.Target.Id);
+        Assert.Equal("Use the active target.", sent.Message);
+        Assert.False(response.GetProperty("result").GetProperty("isError").GetBoolean());
+        Assert.Equal(desiredTask.Id, VoicePePreferencesStore.LoadExisting(desiredPath).VoiceTargetTaskId);
+    }
+
+    [Fact]
+    public void VoiceToolObservesTheNextCompleteActiveTargetProjection()
+    {
+        Directory.CreateDirectory(_root);
+        var activePath = Path.Combine(_root, "runtime-active-voice-pe.json");
+        var firstTarget = Guid.NewGuid().ToString("D");
+        var secondTarget = Guid.NewGuid().ToString("D");
+        var preferences = VoicePePreferences.Default with
+        {
+            VoiceTargetTaskId = firstTarget,
+            VoiceTargetHostId = "local",
+        };
+        VoicePePreferencesStore.Save(activePath, preferences);
+        Assert.Equal(
+            firstTarget,
+            DesktopBridgeProgram.ReadVoiceToolPreferences(activePath).VoiceTargetTaskId);
+
+        VoicePePreferencesStore.Save(
+            activePath,
+            preferences with { VoiceTargetTaskId = secondTarget });
+
+        Assert.Equal(
+            secondTarget,
+            DesktopBridgeProgram.ReadVoiceToolPreferences(activePath).VoiceTargetTaskId);
+    }
+
+    [Fact]
+    public void VoiceToolMissingActiveProjectionReadDoesNotCreateIt()
+    {
+        var activePath = Path.Combine(_root, "missing", "runtime-active-voice-pe.json");
+
+        _ = Assert.Throws<InvalidDataException>(() =>
+            DesktopBridgeProgram.ReadVoiceToolPreferences(activePath));
+
+        Assert.False(File.Exists(activePath));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(activePath)));
     }
 
     [Fact]
@@ -350,6 +478,51 @@ public sealed class DesktopTaskBridgeTests : IDisposable
 
     private static DesktopTaskSummary Summary(string title) => new(
         Guid.NewGuid().ToString("D"), "local", title, "idle", null, null, 0);
+
+    private sealed class RecordingDesktopTaskBridge(IReadOnlyList<DesktopTaskSummary> tasks)
+        : IDesktopTaskBridgeClient
+    {
+        public List<(DesktopTaskSummary Target, string Message)> Sent { get; } = [];
+
+        public Task<bool> IsAvailableAsync(string sourceThreadId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(true);
+
+        public Task<DesktopTaskCatalog> ListTasksAsync(
+            string sourceThreadId,
+            string? excludedThreadId = null,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new DesktopTaskCatalog(tasks));
+
+        public Task<DesktopTaskSummary> ResolveTaskAsync(
+            string sourceThreadId,
+            string targetThreadId,
+            string targetHostId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(tasks.Single(task =>
+                string.Equals(task.Id, targetThreadId, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(task.HostId, targetHostId, StringComparison.OrdinalIgnoreCase)));
+
+        public Task<string> ReadTaskAsync(
+            string sourceThreadId,
+            DesktopTaskSummary target,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<DesktopTaskDeliveryResult> SendMessageAsync(
+            string sourceThreadId,
+            DesktopTaskSummary target,
+            string message,
+            CancellationToken cancellationToken = default)
+        {
+            Sent.Add((target, message));
+            return Task.FromResult(new DesktopTaskDeliveryResult(
+                target.Id,
+                target.HostId,
+                target.Title,
+                Queued: false,
+                "delivered"));
+        }
+    }
 
     private static async Task ServeOnceAsync(
         string pipeName,

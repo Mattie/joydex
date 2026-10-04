@@ -9,6 +9,34 @@ public sealed class TaskAlertCoordinatorTests
     private static readonly string AttentionKey = new('B', 64);
 
     [Fact]
+    public async Task ActivePreferencesConstructorDoesNotReadOrRewriteDesiredPreferences()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "joydex-coordinator-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var preferencesPath = Path.Combine(directory, "task-alerts.json");
+        const string desiredContents = "pending desired settings";
+        File.WriteAllText(preferencesPath, desiredContents);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(
+                preferencesPath,
+                new TaskAlertPreferences(Enabled: false, Bank: 99));
+
+            var snapshot = coordinator.GetSnapshot();
+            Assert.False(snapshot.Enabled);
+            Assert.Equal(5, snapshot.Bank);
+            Assert.Equal(desiredContents, File.ReadAllText(preferencesPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task PublishesChangedSnapshotWhenOverflowEventIsDropped()
     {
         var directory = Path.Combine(Path.GetTempPath(), "joydex-coordinator-tests", Guid.NewGuid().ToString("N"));
@@ -385,7 +413,7 @@ public sealed class TaskAlertCoordinatorTests
 
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot().Assignments.Count == 5,
-                TimeSpan.FromSeconds(3));
+                TimeSpan.FromSeconds(10));
 
             Assert.True(coordinator.AddSuppression(TaskAlertSuppressionScope.Task, "session-1"));
             Assert.Equal(
@@ -400,7 +428,7 @@ public sealed class TaskAlertCoordinatorTests
             Assert.True(coordinator.TryPublish(Event(1)));
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot().RecentEvents?.Last().Result == TaskAlertEventResult.Suppressed,
-                TimeSpan.FromSeconds(3));
+                TimeSpan.FromSeconds(10));
             Assert.DoesNotContain(
                 coordinator.GetSnapshot().Assignments,
                 item => item.SessionId == "session-1");

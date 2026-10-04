@@ -11,15 +11,195 @@ internal sealed record RoomVoiceTaskMessagingSnapshot(
     string SelectedTaskId,
     string SelectedHostId,
     string SelectedLabel,
-    IReadOnlyList<VoiceTaskOutboxDraft> Drafts);
+    IReadOnlyList<RoomVoiceOutboxDraftSummary> Drafts,
+    bool DraftsTruncated = false)
+{
+    public RoomVoiceTaskMessagingSnapshot(
+        bool Enabled,
+        bool BridgeAvailable,
+        string Status,
+        IReadOnlyList<DesktopTaskSummary> Tasks,
+        string SelectedTaskId,
+        string SelectedHostId,
+        string SelectedLabel,
+        IReadOnlyList<VoiceTaskOutboxDraft> Drafts)
+        : this(
+            Enabled,
+            BridgeAvailable,
+            Status,
+            Tasks,
+            SelectedTaskId,
+            SelectedHostId,
+            SelectedLabel,
+            Drafts.Select(RoomVoiceOutboxDraftSummary.FromFullDraft).ToArray())
+    {
+    }
+}
 
-internal sealed record RoomVoiceTaskMessagingCallbacks(
-    Func<CancellationToken, Task<RoomVoiceTaskMessagingSnapshot>> Refresh,
-    Func<DesktopTaskSummary, CancellationToken, Task> SelectTarget,
-    Func<VoiceTaskOutboxDraft, CancellationToken, Task<string>> Retry,
-    Func<VoiceTaskOutboxDraft, DesktopTaskSummary, CancellationToken, Task> Retarget,
-    Action<VoiceTaskOutboxDraft> Discard,
-    Func<IReadOnlyList<VoiceTaskOutboxDraft>> LoadDrafts);
+/// <summary>
+/// Bounded information that is safe to retain in a shared Room Voice snapshot. A truncated
+/// MessagePreview must be expanded through the explicit full-delivery read callback.
+/// </summary>
+internal sealed record RoomVoiceOutboxDraftSummary(
+    string Id,
+    string TargetTaskId,
+    string TargetHostId,
+    string TargetTitle,
+    string MessagePreview,
+    bool MessageTruncated,
+    DateTimeOffset CreatedAt,
+    int Attempts,
+    string LatestError)
+{
+    public static RoomVoiceOutboxDraftSummary FromFullDraft(VoiceTaskOutboxDraft draft)
+    {
+        ArgumentNullException.ThrowIfNull(draft);
+        return new RoomVoiceOutboxDraftSummary(
+            draft.Id,
+            draft.TargetTaskId,
+            draft.TargetHostId,
+            draft.TargetTitle,
+            draft.Message,
+            MessageTruncated: false,
+            draft.CreatedAt,
+            draft.Attempts,
+            draft.LatestError);
+    }
+}
+
+internal sealed class RoomVoiceTaskMessagingCallbacks
+{
+    public RoomVoiceTaskMessagingCallbacks(
+        Func<CancellationToken, Task<RoomVoiceTaskMessagingSnapshot>> refresh,
+        Func<DesktopTaskSummary, CancellationToken, Task<RuntimeVoiceTargetSelectionResult>> selectTarget,
+        Func<RoomVoiceOutboxDraftSummary, CancellationToken, Task<string>> retry,
+        Func<RoomVoiceOutboxDraftSummary, DesktopTaskSummary, CancellationToken, Task> retarget,
+        Func<IReadOnlyList<RoomVoiceOutboxDraftSummary>> loadDrafts,
+        Func<string, CancellationToken, Task<string?>>? readFullOutboxDeliveryAsync = null,
+        Func<string, CancellationToken, Task>? discardOutboxDeliveryAsync = null)
+    {
+        Refresh = refresh ?? throw new ArgumentNullException(nameof(refresh));
+        SelectTarget = selectTarget ?? throw new ArgumentNullException(nameof(selectTarget));
+        Retry = retry ?? throw new ArgumentNullException(nameof(retry));
+        Retarget = retarget ?? throw new ArgumentNullException(nameof(retarget));
+        LoadDrafts = loadDrafts ?? throw new ArgumentNullException(nameof(loadDrafts));
+        ReadFullOutboxDeliveryAsync = readFullOutboxDeliveryAsync;
+        DiscardOutboxDeliveryAsync = discardOutboxDeliveryAsync;
+    }
+
+    public RoomVoiceTaskMessagingCallbacks(
+        Func<CancellationToken, Task<RoomVoiceTaskMessagingSnapshot>> refresh,
+        Func<DesktopTaskSummary, CancellationToken, Task> selectTarget,
+        Func<VoiceTaskOutboxDraft, CancellationToken, Task<string>> retry,
+        Func<VoiceTaskOutboxDraft, DesktopTaskSummary, CancellationToken, Task> retarget,
+        Action<VoiceTaskOutboxDraft> discard,
+        Func<IReadOnlyList<VoiceTaskOutboxDraft>> loadDrafts)
+        : this(
+            refresh,
+            async (target, cancellationToken) =>
+            {
+                await selectTarget(target, cancellationToken).ConfigureAwait(false);
+                return new RuntimeVoiceTargetSelectionResult(
+                    RuntimeVoiceTargetSelectionStatus.Applied,
+                    $"Voice commands will target {target.Title}.");
+            },
+            (draft, cancellationToken) => retry(
+                FindFullDraft(loadDrafts, draft.Id),
+                cancellationToken),
+            (draft, target, cancellationToken) => retarget(
+                FindFullDraft(loadDrafts, draft.Id),
+                target,
+                cancellationToken),
+            () => loadDrafts().Select(RoomVoiceOutboxDraftSummary.FromFullDraft).ToArray(),
+            (id, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var message = loadDrafts().FirstOrDefault(candidate =>
+                    string.Equals(candidate.Id, id, StringComparison.Ordinal))?.Message;
+                return Task.FromResult(message);
+            },
+            (id, cancellationToken) =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var draft = loadDrafts().FirstOrDefault(candidate =>
+                    string.Equals(candidate.Id, id, StringComparison.Ordinal));
+                if (draft is not null)
+                {
+                    discard(draft);
+                }
+                return Task.CompletedTask;
+            })
+    {
+        ArgumentNullException.ThrowIfNull(retry);
+        ArgumentNullException.ThrowIfNull(retarget);
+        ArgumentNullException.ThrowIfNull(discard);
+        ArgumentNullException.ThrowIfNull(loadDrafts);
+    }
+
+    public Func<CancellationToken, Task<RoomVoiceTaskMessagingSnapshot>> Refresh { get; }
+
+    public Func<DesktopTaskSummary, CancellationToken, Task<RuntimeVoiceTargetSelectionResult>> SelectTarget { get; }
+
+    public Func<RoomVoiceOutboxDraftSummary, CancellationToken, Task<string>> Retry { get; }
+
+    public Func<RoomVoiceOutboxDraftSummary, DesktopTaskSummary, CancellationToken, Task> Retarget { get; }
+
+    public Func<IReadOnlyList<RoomVoiceOutboxDraftSummary>> LoadDrafts { get; }
+
+    public Func<string, CancellationToken, Task<string?>>? ReadFullOutboxDeliveryAsync { get; }
+
+    public Func<string, CancellationToken, Task>? DiscardOutboxDeliveryAsync { get; }
+
+    private static VoiceTaskOutboxDraft FindFullDraft(
+        Func<IReadOnlyList<VoiceTaskOutboxDraft>> loadDrafts,
+        string id) =>
+        loadDrafts().FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, id, StringComparison.Ordinal))
+        ?? throw new FileNotFoundException("The pending Room Voice message no longer exists.", id);
+}
+
+internal static class RoomVoiceOutboxInteraction
+{
+    private const string TruncatedMarker = "\r\n\r\n[Preview truncated. Copy to read the complete message.]";
+
+    public static string Preview(RoomVoiceOutboxDraftSummary draft)
+    {
+        ArgumentNullException.ThrowIfNull(draft);
+        return draft.MessageTruncated ? draft.MessagePreview + TruncatedMarker : draft.MessagePreview;
+    }
+
+    public static string Status(RoomVoiceOutboxDraftSummary draft)
+    {
+        ArgumentNullException.ThrowIfNull(draft);
+        var status = $"To {draft.TargetTitle} · {draft.Attempts} attempt(s)";
+        if (!string.IsNullOrWhiteSpace(draft.LatestError))
+        {
+            status += " · " + draft.LatestError;
+        }
+        return draft.MessageTruncated ? status + " · Preview truncated" : status;
+    }
+
+    public static async Task<string> ReadCopyTextAsync(
+        RoomVoiceTaskMessagingCallbacks callbacks,
+        RoomVoiceOutboxDraftSummary draft,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(callbacks);
+        ArgumentNullException.ThrowIfNull(draft);
+        if (!draft.MessageTruncated)
+        {
+            return draft.MessagePreview;
+        }
+        if (callbacks.ReadFullOutboxDeliveryAsync is null)
+        {
+            throw new InvalidOperationException("The complete pending message is unavailable.");
+        }
+
+        return await callbacks.ReadFullOutboxDeliveryAsync(draft.Id, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new FileNotFoundException("The pending Room Voice message no longer exists.", draft.Id);
+    }
+}
 
 internal sealed class VoiceTaskOutboxForm : ThemedForm
 {
@@ -61,8 +241,8 @@ internal sealed class VoiceTaskOutboxForm : ThemedForm
         _targets.SelectedIndexChanged += (_, _) => UpdateButtons(SelectedDraft() is not null);
         _retry.Click += async (_, _) => await RetryAsync();
         _retarget.Click += async (_, _) => await RetargetAsync();
-        _copy.Click += (_, _) => CopySelected();
-        _discard.Click += (_, _) => DiscardSelected();
+        _copy.Click += async (_, _) => await CopySelectedAsync();
+        _discard.Click += async (_, _) => await DiscardSelectedAsync();
 
         var detail = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4 };
         detail.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -102,6 +282,9 @@ internal sealed class VoiceTaskOutboxForm : ThemedForm
 
     private void ApplySnapshot(RoomVoiceTaskMessagingSnapshot snapshot)
     {
+        Text = snapshot.DraftsTruncated
+            ? $"Pending Room Voice messages — newest {snapshot.Drafts.Count}; older messages remain in the outbox"
+            : "Pending Room Voice messages";
         _availableTargets = snapshot.Tasks;
         _targets.BeginUpdate();
         _targets.Items.Clear();
@@ -113,7 +296,7 @@ internal sealed class VoiceTaskOutboxForm : ThemedForm
         RefreshDrafts(snapshot.Drafts);
     }
 
-    private void RefreshDrafts(IReadOnlyList<VoiceTaskOutboxDraft>? drafts = null)
+    private void RefreshDrafts(IReadOnlyList<RoomVoiceOutboxDraftSummary>? drafts = null)
     {
         var selectedId = SelectedDraft()?.Id;
         var values = drafts ?? _callbacks.LoadDrafts();
@@ -134,15 +317,17 @@ internal sealed class VoiceTaskOutboxForm : ThemedForm
         DraftsChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private VoiceTaskOutboxDraft? SelectedDraft() => (_drafts.SelectedItem as DraftChoice)?.Draft;
+    private RoomVoiceOutboxDraftSummary? SelectedDraft() => (_drafts.SelectedItem as DraftChoice)?.Draft;
 
     private void RenderSelection()
     {
         var draft = SelectedDraft();
-        _message.Text = draft?.Message ?? string.Empty;
+        _message.Text = draft is null
+            ? string.Empty
+            : RoomVoiceOutboxInteraction.Preview(draft);
         _status.Text = draft is null
             ? "No pending messages."
-            : $"To {draft.TargetTitle} · {draft.Attempts} attempt(s) · {draft.LatestError}";
+            : RoomVoiceOutboxInteraction.Status(draft);
         _targets.SelectedItem = draft is null
             ? null
             : _targets.Items.Cast<TargetChoice>().FirstOrDefault(choice =>
@@ -199,17 +384,31 @@ internal sealed class VoiceTaskOutboxForm : ThemedForm
         }
     }
 
-    private void CopySelected()
+    private async Task CopySelectedAsync()
     {
-        if (SelectedDraft()?.Message is not { Length: > 0 } message)
+        var draft = SelectedDraft();
+        if (draft is null)
         {
             return;
         }
+        string message;
         try
         {
+            message = await RoomVoiceOutboxInteraction.ReadCopyTextAsync(
+                _callbacks,
+                draft,
+                CancellationToken.None);
+            if (message.Length == 0)
+            {
+                return;
+            }
             Clipboard.SetText(message);
         }
-        catch (ExternalException exception)
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception exception)
         {
             MessageBox.Show(
                 this,
@@ -220,7 +419,7 @@ internal sealed class VoiceTaskOutboxForm : ThemedForm
         }
     }
 
-    private void DiscardSelected()
+    private async Task DiscardSelectedAsync()
     {
         var draft = SelectedDraft();
         if (draft is null
@@ -234,8 +433,24 @@ internal sealed class VoiceTaskOutboxForm : ThemedForm
         {
             return;
         }
-        _callbacks.Discard(draft);
-        RefreshDrafts();
+        SetBusy(true);
+        try
+        {
+            if (_callbacks.DiscardOutboxDeliveryAsync is null)
+            {
+                throw new InvalidOperationException("Discarding pending messages is unavailable.");
+            }
+            await _callbacks.DiscardOutboxDeliveryAsync(draft.Id, CancellationToken.None);
+            RefreshDrafts();
+        }
+        catch (Exception exception)
+        {
+            _status.Text = "Discard failed: " + exception.Message;
+        }
+        finally
+        {
+            SetBusy(false);
+        }
     }
 
     private void SetBusy(bool busy)
@@ -252,7 +467,7 @@ internal sealed class VoiceTaskOutboxForm : ThemedForm
         _discard.Enabled = hasDraft && !_busy;
     }
 
-    private sealed record DraftChoice(VoiceTaskOutboxDraft Draft)
+    private sealed record DraftChoice(RoomVoiceOutboxDraftSummary Draft)
     {
         public string Display => $"{Draft.TargetTitle} · {Draft.CreatedAt:g}";
         public override string ToString() => Display;

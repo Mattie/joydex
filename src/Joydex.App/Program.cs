@@ -27,6 +27,21 @@ internal static class Program
             return;
         }
 
+        RuntimeAppStartupMode startupMode;
+        try
+        {
+            startupMode = RuntimeAppStartup.SelectMode(args);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                exception.Message,
+                "Joydex could not start",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return;
+        }
+
         if (DocumentationScreenshotRenderer.TryRender(args))
         {
             return;
@@ -37,31 +52,21 @@ internal static class Program
             return;
         }
 
-        var mutexName = demoPolicy is null ? "Local\\Joydex" : "Local\\Joydex.Demo";
-        using var mutex = new Mutex(initiallyOwned: true, mutexName, out var createdNew);
-        if (!createdNew)
-        {
-            MessageBox.Show(
-                "Joydex is already running.",
-                "Joydex",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-            return;
-        }
-
         try
         {
-            var configPath = demoPolicy?.ConfigPath ?? ConfigPathResolver.Resolve(args);
-            Application.Run(new TrayApplicationContext(
-                configPath,
-                demoMode: demoPolicy is not null,
-                demoInputSourceFactory: demoPolicy is null ? null : new DemoJoystickSourceFactory()));
+            RuntimeAppStartup.Run(
+                args,
+                startupMode,
+                demoPolicy,
+                WindowsFormsRuntimeAppStartupHost.Instance);
         }
         catch (Exception exception)
         {
             MessageBox.Show(
                 exception.Message,
-                "Joydex could not start",
+                startupMode == RuntimeAppStartupMode.Settings
+                    ? "Joydex settings could not start"
+                    : "Joydex could not start",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }

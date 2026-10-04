@@ -8,6 +8,8 @@ namespace Joydex.Tests;
 
 public sealed class TaskAlertPipeServerTests
 {
+    private static readonly TimeSpan AsyncTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task AcceptsConcurrentMessagesAndReducesWithoutWaitingForConsumers()
     {
@@ -23,7 +25,7 @@ public sealed class TaskAlertPipeServerTests
             await Task.WhenAll(Enumerable.Range(1, 12).Select(index => SendAsync(pipeName, index)));
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot() is { Assignments.Count: 10, DroppedEventCount: 2 },
-                TimeSpan.FromSeconds(3));
+                AsyncTimeout);
 
             var snapshot = coordinator.GetSnapshot();
             Assert.Equal(10, snapshot.Assignments.Count);
@@ -55,14 +57,14 @@ public sealed class TaskAlertPipeServerTests
                 """);
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Approval,
-                TimeSpan.FromSeconds(3));
+                AsyncTimeout);
 
             await SendPayloadAsync(pipeName, $$"""
                 {"event":"ToolCompleted","sessionId":"session","turnId":"turn","attentionKey":"{{attentionKey}}","receivedAtUnixMs":{{now.AddMilliseconds(1).ToUnixTimeMilliseconds()}}}
                 """);
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Running,
-                TimeSpan.FromSeconds(3));
+                AsyncTimeout);
         }
         finally
         {
@@ -94,7 +96,7 @@ public sealed class TaskAlertPipeServerTests
             await SendPayloadAsync(pipeName, payload);
             await WaitUntilAsync(
                 () => coordinator.GetSnapshot().Assignments.Count == 1,
-                TimeSpan.FromSeconds(3));
+                AsyncTimeout);
 
             var snapshot = coordinator.GetSnapshot();
             Assert.Equal(Path.GetFullPath(workspace), Assert.Single(snapshot.Assignments).Workspace);
@@ -121,9 +123,10 @@ public sealed class TaskAlertPipeServerTests
             pipeName,
             PipeDirection.Out,
             PipeOptions.Asynchronous);
-        await client.ConnectAsync(2000);
+        using var timeout = new CancellationTokenSource(AsyncTimeout);
+        await client.ConnectAsync(timeout.Token);
         var bytes = Encoding.UTF8.GetBytes(payload);
-        await client.WriteAsync(bytes);
+        await client.WriteAsync(bytes, timeout.Token);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)

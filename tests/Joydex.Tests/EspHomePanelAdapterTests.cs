@@ -775,7 +775,7 @@ public sealed class EspHomePanelAdapterTests
             TimeSpan? timeout = null)
         {
             var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromSeconds(2));
-            while (DateTimeOffset.UtcNow < deadline)
+            while (true)
             {
                 lock (_sync)
                 {
@@ -785,10 +785,13 @@ public sealed class EspHomePanelAdapterTests
                     }
                 }
 
+                if (DateTimeOffset.UtcNow >= deadline)
+                {
+                    throw new TimeoutException($"Expected {count} panel state updates.");
+                }
+
                 await Task.Delay(10);
             }
-
-            throw new TimeoutException($"Expected {count} panel state updates.");
         }
 
         public async Task WaitForWorkspaceLabelCountAsync(
@@ -796,7 +799,7 @@ public sealed class EspHomePanelAdapterTests
             TimeSpan? timeout = null)
         {
             var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromSeconds(2));
-            while (DateTimeOffset.UtcNow < deadline)
+            while (true)
             {
                 lock (_sync)
                 {
@@ -806,10 +809,13 @@ public sealed class EspHomePanelAdapterTests
                     }
                 }
 
+                if (DateTimeOffset.UtcNow >= deadline)
+                {
+                    throw new TimeoutException($"Expected {count} panel workspace-label updates.");
+                }
+
                 await Task.Delay(10);
             }
-
-            throw new TimeoutException($"Expected {count} panel workspace-label updates.");
         }
 
         public ValueTask DisposeAsync()

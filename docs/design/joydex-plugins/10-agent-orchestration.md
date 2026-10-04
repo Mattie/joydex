@@ -8,7 +8,7 @@ The filename's 10 is this document's sequence number in the design set, not an a
 
 Use **OVERSEERWAVES**: one overseer owns integration and the shared contracts, with GPT-5.6 Sol xhigh builders/reviewers for difficult boundaries and Sol medium for bounded work after those boundaries settle. Start with one builder and one independent reviewer. Expand to two builders plus one reviewer, and occasionally three builders when their files and resources are independent. A role can be reused across waves; we do not need a permanent agent for every plugin.
 
-The benefit is independent investigation and implementation of separate adapters. The constraint is shared ownership: TrayApplicationContext, configuration, actions, key injection and worker lifecycle currently connect most features. Sending several agents to split those files simultaneously would increase integration work. This concurrency recommendation is based on those code boundaries; it is not a measured model speed or cost claim.
+The benefit is independent investigation and implementation of separate adapters. The constraint is shared ownership: runtime composition, tray and settings projections, actions, key injection and worker lifecycle still connect most features. Sending several agents to split those files simultaneously would increase integration work. This concurrency recommendation is based on those code boundaries; it is not a measured model speed or cost claim.
 
 Keep the overseer on the capable model configured for the task unless a model is explicitly selected. If the whole team should use Sol, use Sol xhigh for that role too. Official Codex guidance supports role-specific model/effort choices and cautions that subagents add token usage and parallel writes need care. [Codex subagents](https://developers.openai.com/codex/multi-agent).
 
@@ -25,7 +25,7 @@ Keep the overseer on the capable model configured for the task unless a model is
 | Discord builder | Sol xhigh | Fresh-only authorization, ingress/mirror state and uncertainty; receives an established gateway contract |
 | Independent reviewer | Sol xhigh for risk boundaries; medium for narrow docs/parity checks | Read-only review of the exact proposed or integrated revision; challenges ownership, tests and user outcome |
 
-The overseer may delegate a shared file to exactly one builder for a slice. Everyone else proposes the needed seam and waits for its accepted revision. No simultaneous ownership of TrayApplicationContext, ConfigurationForm, shared action contracts, configuration stores, solution files or publish scripts. File moves and their references belong to the same owner until the move merges.
+The overseer may delegate a shared file to exactly one builder for a slice. Everyone else proposes the needed seam and waits for its accepted revision. No simultaneous ownership of ProductionRuntimeComposition, RuntimeTrayApplicationContext, ConfigurationForm, shared action contracts, configuration stores, solution files or publish scripts. File moves and their references belong to the same owner until the move merges.
 
 The integrator also owns DESKTOPGATEWAY, or explicitly delegates it to one Sol xhigh builder: creation intents, provenance, durable bindings and ambiguous-result reconciliation. Discord owns ingress/mirror state and consumes that completed capability. Readiness work does not itself authorize external publication; follow the user's release instructions and any applicable approval gates.
 
@@ -79,7 +79,7 @@ flowchart LR
 
 ## A concrete first assignment
 
-Assign the first xhigh builder HOSTSEAM: separate runtime lifetime from window lifetime, introduce one input observation/capture boundary and establish per-source injected-key ownership. Initially delegate only its agreed Runtime/Actions files and a new host seam; the integrator owns TrayApplicationContext and ConfigurationForm edits. The builder requests any composition changes through a small patch proposal.
+Assign the first xhigh builder HOSTSEAM: separate runtime lifetime from window lifetime, introduce one input observation/capture boundary and establish per-source injected-key ownership. Initially delegate only its agreed Runtime/Actions files and a new host seam; the integrator owns ProductionRuntimeComposition, RuntimeTrayApplicationContext and ConfigurationForm edits. The builder requests any composition changes through a small patch proposal.
 
 Acceptance must include two devices holding the same chord while one enters capture or disconnects, a control held before capture, release after capture, UI loss during capture, and generation changes during shutdown. Do not enable modeless capture until those scenarios pass. Then the integrator completes HOSTSEAM with a transitional same-process modeless form and the ordinary settings-continuity check. PROCESSUI supplies the stronger process-kill continuity guarantee.
 

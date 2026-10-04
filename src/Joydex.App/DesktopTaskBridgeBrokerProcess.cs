@@ -61,9 +61,18 @@ internal sealed class DesktopTaskBridgeBrokerProcess : IAsyncDisposable
             log("Joydex Desktop Task Bridge broker worker started.");
             return broker;
         }
-        catch
+        catch (Exception startupException)
         {
-            await broker.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                await broker.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception cleanupException)
+            {
+                throw DesktopTaskBridgeOwnershipCleanupException.ForStartupFailure(
+                    startupException,
+                    cleanupException);
+            }
             throw;
         }
     }
@@ -130,5 +139,71 @@ internal sealed class DesktopTaskBridgeBrokerProcess : IAsyncDisposable
         catch (Exception)
         {
         }
+    }
+}
+
+/// <summary>
+/// Reports that the Desktop Task Bridge broker may still own its child process after cleanup
+/// failed. A caller must treat this runtime generation as terminal because replacement is unsafe.
+/// </summary>
+public sealed class DesktopTaskBridgeOwnershipCleanupException(
+    string message,
+    IEnumerable<Exception> failures) : AggregateException(message, failures)
+{
+    internal static DesktopTaskBridgeOwnershipCleanupException ForStartupFailure(
+        Exception startupFailure,
+        Exception cleanupFailure)
+    {
+        ArgumentNullException.ThrowIfNull(startupFailure);
+        ArgumentNullException.ThrowIfNull(cleanupFailure);
+        return new DesktopTaskBridgeOwnershipCleanupException(
+            "The Desktop Task Bridge broker failed to start and its child process could not be "
+            + "released. Its owner generation must not be replaced.",
+            [startupFailure, cleanupFailure]);
+    }
+}
+
+internal static class DesktopTaskBridgeBrokerFailurePolicy
+{
+    internal static void HandleTerminalStartupFailure(
+        DesktopTaskBridgeOwnershipCleanupException exception,
+        DesktopTaskBridgeBrokerAdmission admission,
+        Action<string> log)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        ArgumentNullException.ThrowIfNull(admission);
+        ArgumentNullException.ThrowIfNull(log);
+        admission.StopPermanently(exception);
+        log(
+            $"Desktop Task Bridge broker worker is unavailable: {exception.Message} "
+            + "Automatic replacement is disabled until Joydex restarts.");
+    }
+
+    internal static void HandleRetryableStartupFailure(
+        Exception exception,
+        Action<string> log,
+        Action scheduleRestart)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        ArgumentNullException.ThrowIfNull(log);
+        ArgumentNullException.ThrowIfNull(scheduleRestart);
+        log($"Desktop Task Bridge broker worker is unavailable: {exception.Message}");
+        scheduleRestart();
+    }
+}
+
+internal sealed class DesktopTaskBridgeBrokerAdmission
+{
+    private DesktopTaskBridgeOwnershipCleanupException? _terminalFailure;
+
+    internal bool CanStart => Volatile.Read(ref _terminalFailure) is null;
+
+    internal DesktopTaskBridgeOwnershipCleanupException? TerminalFailure =>
+        Volatile.Read(ref _terminalFailure);
+
+    internal void StopPermanently(DesktopTaskBridgeOwnershipCleanupException terminalFailure)
+    {
+        ArgumentNullException.ThrowIfNull(terminalFailure);
+        _ = Interlocked.CompareExchange(ref _terminalFailure, terminalFailure, null);
     }
 }

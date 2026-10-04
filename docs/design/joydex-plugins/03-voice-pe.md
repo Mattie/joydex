@@ -13,7 +13,7 @@ The initial plugin contains both existing modes: JoydexOwner and the explicit La
 | Source | Destination responsibility |
 |---|---|
 | src/Joydex.App/VoicePeBridgeRuntime.cs | Plugin composition, startup and ordered disposal |
-| TrayApplicationContext owner monitoring/startup/retry methods | Voice worker supervision with generation-aware publication |
+| ProductionRuntimeComposition and VoiceProductionOwner | Voice worker supervision with generation-aware publication |
 | src/Joydex.Windows/Voice/CodexDedicatedVoiceOwner.cs | Voice-specific App Server owner and writer lock |
 | DedicatedVoiceCoordinator, VoicePeControlAdapter | Session lifecycle, wake, hangup, readiness and rearm |
 | VoicePeLanAudioTransport, Sendspin transports and speaker session | Media/control path inside worker |

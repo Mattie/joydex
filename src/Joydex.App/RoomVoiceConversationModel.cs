@@ -19,7 +19,8 @@ internal sealed record RoomVoiceConversationSnapshot(
     bool Stale,
     string Status,
     string? Error,
-    long ConversationVersion = 0);
+    long ConversationVersion = 0,
+    bool TimelineTruncated = false);
 
 /// <summary>
 /// Keeps display-only Room Voice state in memory. Transcript text never crosses into Joydex logs
@@ -41,6 +42,7 @@ internal sealed class RoomVoiceConversationModel
     private string? _error;
     private long _liveSequence;
     private long _conversationVersion;
+    private bool _timelineTruncated;
 
     public event EventHandler? Changed;
     public event EventHandler? RuntimeStateChanged;
@@ -58,11 +60,30 @@ internal sealed class RoomVoiceConversationModel
                 _stale,
                 _status,
                 _error,
-                _conversationVersion);
+                _conversationVersion,
+                _timelineTruncated);
         }
     }
 
     public void ReplaceHistory(IReadOnlyList<CodexVoiceConversationEntry> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        ReplaceProjectedHistory(
+            entries.Select(entry => new RoomVoiceConversationEntry(
+                entry.Id,
+                entry.Timestamp,
+                entry.Kind,
+                entry.Text,
+                RawText: entry.RawText)).ToArray(),
+            timelineTruncated: false);
+    }
+
+    /// <summary>
+    /// Replaces the bounded runtime projection without losing stable entry identity or partial state.
+    /// </summary>
+    public void ReplaceProjectedHistory(
+        IReadOnlyList<RoomVoiceConversationEntry> entries,
+        bool timelineTruncated)
     {
         ArgumentNullException.ThrowIfNull(entries);
         lock (_sync)
@@ -72,17 +93,39 @@ internal sealed class RoomVoiceConversationModel
                 _entries.Clear();
                 _entries.AddRange(entries
                     .OrderBy(entry => entry.Timestamp)
-                    .TakeLast(MaximumVisibleEntries)
-                    .Select(entry => new RoomVoiceConversationEntry(
-                        entry.Id,
-                        entry.Timestamp,
-                        entry.Kind,
-                        entry.Text,
-                        RawText: entry.RawText)));
+                    .TakeLast(MaximumVisibleEntries));
             }
             _historyAvailable = true;
             _stale = false;
             _error = null;
+            _timelineTruncated = timelineTruncated;
+            _conversationVersion++;
+        }
+        RaiseChanged();
+    }
+
+    /// <summary>
+    /// Applies one runtime delta by its stable ID. Replayed entries replace in place; distinct
+    /// entries remain distinct even when they have the same role and adjacent timestamps.
+    /// </summary>
+    public void UpsertProjectedEntry(RoomVoiceConversationEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentException.ThrowIfNullOrWhiteSpace(entry.Id);
+        lock (_sync)
+        {
+            var existingIndex = _entries.FindIndex(candidate =>
+                string.Equals(candidate.Id, entry.Id, StringComparison.Ordinal));
+            if (existingIndex >= 0)
+            {
+                _entries[existingIndex] = entry;
+            }
+            else
+            {
+                _entries.Add(entry);
+            }
+            _historyAvailable = true;
+            TrimVisibleEntries();
             _conversationVersion++;
         }
         RaiseChanged();
@@ -100,6 +143,7 @@ internal sealed class RoomVoiceConversationModel
             _historyAvailable = true;
             _stale = false;
             _error = null;
+            _timelineTruncated = false;
             _conversationVersion++;
         }
         RaiseChanged();
@@ -212,6 +256,7 @@ internal sealed class RoomVoiceConversationModel
                 : "Room Voice is disabled.";
             _error = null;
             _stale = false;
+            _timelineTruncated = false;
         }
         RaiseChanged();
         RuntimeStateChanged?.Invoke(this, EventArgs.Empty);

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -6,6 +7,8 @@ namespace Joydex.Core.Voice;
 public static class VoicePePreferencesStore
 {
     private const int MaximumDocumentBytes = 64 * 1024;
+    private static readonly TimeSpan ExistingOpenRetryTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan ExistingOpenRetryDelay = TimeSpan.FromMilliseconds(5);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -48,6 +51,73 @@ public static class VoicePePreferencesStore
                 $"The Voice PE settings file must contain 1 to {MaximumDocumentBytes} bytes.");
         }
 
+        var (preferences, schemaVersion) = ParseDocument(documentBytes);
+        var migrated = schemaVersion != VoicePePreferences.CurrentSchemaVersion;
+        if (migrated)
+        {
+            if (schemaVersion is 4 or 5)
+            {
+                PreserveSchemaBackup(path, schemaVersion, documentBytes);
+            }
+            Save(path, preferences);
+        }
+
+        return preferences;
+    }
+
+    /// <summary>
+    /// Reads an existing preferences document without creating, migrating, or rewriting it.
+    /// The open handle permits an owning process to replace the complete document atomically.
+    /// </summary>
+    public static VoicePePreferences LoadExisting(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var fullPath = Path.GetFullPath(path);
+        var retryWindow = Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                using var stream = new FileStream(
+                    fullPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read | FileShare.Delete,
+                    bufferSize: 4096,
+                    FileOptions.SequentialScan);
+                if (stream.Length is <= 0 or > MaximumDocumentBytes)
+                {
+                    throw new InvalidDataException(
+                        $"The Voice PE settings file must contain 1 to {MaximumDocumentBytes} bytes.");
+                }
+
+                var documentBytes = new byte[checked((int)stream.Length)];
+                stream.ReadExactly(documentBytes);
+                return ParseDocument(documentBytes).Preferences;
+            }
+            catch (IOException) when (retryWindow.Elapsed < ExistingOpenRetryTimeout)
+            {
+                Thread.Sleep(ExistingOpenRetryDelay);
+            }
+            catch (IOException exception)
+            {
+                throw new InvalidDataException("The Voice PE settings file could not be read.", exception);
+            }
+        }
+    }
+
+    internal static VoicePePreferences ParseExisting(byte[] documentBytes) =>
+        ParseDocument(documentBytes).Preferences;
+
+    private static (VoicePePreferences Preferences, int SchemaVersion) ParseDocument(byte[] documentBytes)
+    {
+        ArgumentNullException.ThrowIfNull(documentBytes);
+        if (documentBytes.Length is <= 0 or > MaximumDocumentBytes)
+        {
+            throw new InvalidDataException(
+                $"The Voice PE settings file must contain 1 to {MaximumDocumentBytes} bytes.");
+        }
+
         int schemaVersion;
         try
         {
@@ -65,7 +135,6 @@ public static class VoicePePreferencesStore
         }
 
         VoicePePreferences preferences;
-        var migrated = false;
         try
         {
             preferences = schemaVersion switch
@@ -91,7 +160,6 @@ public static class VoicePePreferencesStore
                 _ => throw new InvalidDataException(
                     $"Unsupported Voice PE settings schema version {schemaVersion}."),
             };
-            migrated = schemaVersion != VoicePePreferences.CurrentSchemaVersion;
         }
         catch (JsonException exception)
         {
@@ -109,16 +177,7 @@ public static class VoicePePreferencesStore
                 + string.Join(Environment.NewLine + "- ", errors));
         }
 
-        if (migrated)
-        {
-            if (schemaVersion is 4 or 5)
-            {
-                PreserveSchemaBackup(path, schemaVersion, documentBytes);
-            }
-            Save(path, normalized);
-        }
-
-        return normalized;
+        return (normalized, schemaVersion);
     }
 
     public static void Save(string path, VoicePePreferences preferences)
@@ -157,7 +216,14 @@ public static class VoicePePreferencesStore
                 stream.Flush(flushToDisk: true);
             }
 
-            File.Move(temporaryPath, fullPath, overwrite: true);
+            if (File.Exists(fullPath))
+            {
+                File.Replace(temporaryPath, fullPath, destinationBackupFileName: null);
+            }
+            else
+            {
+                File.Move(temporaryPath, fullPath);
+            }
         }
         finally
         {

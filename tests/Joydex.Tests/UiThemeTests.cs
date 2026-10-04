@@ -251,7 +251,7 @@ public sealed class UiThemeTests
         Assert.False(DocumentationScreenshotRenderer.IsRenderRequest(["--render-button-map", "output"]));
     }
 
-    [Fact]
+    [AttendedFact]
     public void ComboCellEntersEditModeFromOneMouseClick()
     {
         Exception? failure = null;

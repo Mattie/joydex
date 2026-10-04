@@ -1,3 +1,4 @@
+using Joydex.Contracts;
 using Joydex.Core.Voice;
 using Joydex.Windows.Voice;
 
@@ -60,6 +61,10 @@ internal sealed class RoomVoiceSettingsControl : UserControl
     private readonly Func<Uri, VoicePeWakeTuning, CancellationToken, Task<VoicePeWakeTuning>> _writeWakeTuning;
     private readonly Func<string, CancellationToken, Task<CodexProjectCatalog>>? _listProjects;
     private readonly Func<string, CodexVoiceWorkspaceProvisioningRequest, CancellationToken, Task<CodexVoiceWorkspaceProvisioningResult>>? _provisionWorkspace;
+    private readonly Func<CancellationToken, Task<RuntimeDesktopBridgeStatus>>? _inspectDesktopBridge;
+    private readonly Func<CancellationToken, Task<RuntimeDesktopBridgeStatus>>? _installDesktopBridge;
+    private readonly Func<CancellationToken, Task<RuntimeDesktopBridgeStatus>>? _removeDesktopBridge;
+    private readonly Func<CancellationToken, Task<int>>? _deleteLegacyCaptures;
     private readonly bool _allowExternalActions;
     private readonly CancellationTokenSource _tuningCancellation = new();
     private readonly CancellationToken _tuningCancellationToken;
@@ -93,9 +98,9 @@ internal sealed class RoomVoiceSettingsControl : UserControl
     };
     private readonly DesktopBridgeConfigurationManager _desktopBridgeConfiguration;
     private readonly string _desktopBridgeHostPath;
-    private readonly string _voiceTargetTaskId;
-    private readonly string _voiceTargetHostId;
-    private readonly string _voiceTargetTaskLabel;
+    private string _voiceTargetTaskId;
+    private string _voiceTargetHostId;
+    private string _voiceTargetTaskLabel;
     private string? _loadedTuningEndpoint;
     private string _provisionedWorkspacePath;
     private string _provisionedProjectId;
@@ -109,6 +114,10 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         Func<Uri, VoicePeWakeTuning, CancellationToken, Task<VoicePeWakeTuning>> writeWakeTuning,
         Func<string, CancellationToken, Task<CodexProjectCatalog>>? listProjects = null,
         Func<string, CodexVoiceWorkspaceProvisioningRequest, CancellationToken, Task<CodexVoiceWorkspaceProvisioningResult>>? provisionWorkspace = null,
+        Func<CancellationToken, Task<RuntimeDesktopBridgeStatus>>? inspectDesktopBridge = null,
+        Func<CancellationToken, Task<RuntimeDesktopBridgeStatus>>? installDesktopBridgeAction = null,
+        Func<CancellationToken, Task<RuntimeDesktopBridgeStatus>>? removeDesktopBridgeAction = null,
+        Func<CancellationToken, Task<int>>? deleteLegacyCaptures = null,
         bool allowExternalActions = true)
     {
         ArgumentNullException.ThrowIfNull(initial);
@@ -117,6 +126,10 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         _writeWakeTuning = writeWakeTuning ?? throw new ArgumentNullException(nameof(writeWakeTuning));
         _listProjects = listProjects;
         _provisionWorkspace = provisionWorkspace;
+        _inspectDesktopBridge = inspectDesktopBridge;
+        _installDesktopBridge = installDesktopBridgeAction;
+        _removeDesktopBridge = removeDesktopBridgeAction;
+        _deleteLegacyCaptures = deleteLegacyCaptures;
         _allowExternalActions = allowExternalActions;
         _tuningCancellationToken = _tuningCancellation.Token;
         _desktopBridgeHostPath = Path.Combine(AppContext.BaseDirectory, "Joydex.DesktopBridgeHost.exe");
@@ -273,7 +286,8 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             Name = "RoomVoiceInstallDesktopBridge",
             Text = "Install/Repair Desktop Bridge",
         };
-        installDesktopBridge.Click += (_, _) => InstallDesktopBridge();
+        installDesktopBridge.Click += async (_, _) =>
+            await InstallDesktopBridgeAsync().ConfigureAwait(true);
         var removeDesktopBridge = new RoundedButton
         {
             AutoSize = true,
@@ -281,7 +295,8 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             Name = "RoomVoiceRemoveDesktopBridge",
             Text = "Remove Desktop Bridge",
         };
-        removeDesktopBridge.Click += (_, _) => RemoveDesktopBridge();
+        removeDesktopBridge.Click += async (_, _) =>
+            await RemoveDesktopBridgeAsync().ConfigureAwait(true);
         desktopBridgeCommands.Controls.Add(installDesktopBridge);
         desktopBridgeCommands.Controls.Add(removeDesktopBridge);
         var desktopBridgeLayout = new TableLayoutPanel
@@ -304,7 +319,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         var desktopBridgeGroup = CreateGroup("Desktop task messaging (experimental)", desktopBridgeLayout);
         if (_allowExternalActions)
         {
-            RefreshDesktopBridgeStatus();
+            _ = RefreshDesktopBridgeStatusAsync();
         }
         else
         {
@@ -425,7 +440,8 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             Name = "RoomVoiceDeleteCaptures",
             Text = "Delete legacy captures",
         };
-        deleteCaptures.Click += (_, _) => DeleteDiagnosticsCaptures();
+        deleteCaptures.Click += async (_, _) =>
+            await DeleteDiagnosticsCapturesAsync().ConfigureAwait(true);
         diagnosticsCommands.Controls.Add(openCaptures);
         diagnosticsCommands.Controls.Add(deleteCaptures);
         var diagnosticsLayout = new TableLayoutPanel
@@ -550,7 +566,60 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         VoiceTargetHostId: _voiceTargetHostId,
         VoiceTargetTaskLabel: _voiceTargetTaskLabel).Normalize();
 
-    private void InstallDesktopBridge()
+    internal void ApplyPreferences(VoicePePreferences preferences)
+    {
+        ArgumentNullException.ThrowIfNull(preferences);
+        var normalized = preferences.Normalize();
+        _updatingWorkspaceControls = true;
+        try
+        {
+            _enabled.Checked = normalized.Enabled;
+            _sessionMode.SelectedItem = _sessionMode.Items
+                .Cast<SessionModeChoice>()
+                .First(choice => choice.Mode == normalized.SessionMode);
+            _endpoint.Text = normalized.DeviceEndpoint;
+            _taskReference.Text = string.IsNullOrWhiteSpace(normalized.PinnedTaskId)
+                ? string.Empty
+                : CodexTaskReference.BuildDeepLink(normalized.PinnedTaskId);
+            _taskLabel.Text = normalized.PinnedTaskLabel;
+            _dedicatedTaskReference.Text = string.IsNullOrWhiteSpace(normalized.DedicatedTaskId)
+                ? string.Empty
+                : CodexTaskReference.BuildDeepLink(normalized.DedicatedTaskId);
+            _dedicatedTaskLabel.Text = normalized.DedicatedTaskLabel;
+            _codexAppServerPath.Text = CodexAppServerRuntimeResolver.IsManagedRuntimePath(
+                normalized.CodexAppServerPath)
+                ? string.Empty
+                : normalized.CodexAppServerPath;
+            _agentWorkspacePath.Text = string.IsNullOrWhiteSpace(normalized.AgentWorkspacePath)
+                ? SuggestDefaultWorkspacePath()
+                : normalized.AgentWorkspacePath;
+            _provisionedWorkspacePath = normalized.AgentWorkspacePath;
+            _provisionedProjectId = normalized.AgentProjectId;
+            InitializeProjectChoices(normalized);
+            _realtimeVoice.SelectedItem = _realtimeVoice.Items
+                .Cast<RealtimeVoiceChoice>()
+                .First(choice => string.Equals(
+                    choice.Value,
+                    normalized.RealtimeVoice,
+                    StringComparison.Ordinal));
+            _conversationSpeakerGain.Value = normalized.ConversationSpeakerGain;
+            _preserveAssistantAudioDiagnostics.Checked =
+                normalized.PreserveAssistantAudioDiagnostics;
+            _desktopTaskMessaging.Checked = normalized.DesktopTaskMessagingEnabled;
+            _voiceTargetTaskId = normalized.VoiceTargetTaskId;
+            _voiceTargetHostId = normalized.VoiceTargetHostId;
+            _voiceTargetTaskLabel = normalized.VoiceTargetTaskLabel;
+        }
+        finally
+        {
+            _updatingWorkspaceControls = false;
+        }
+
+        UpdateWorkspaceStatus(normalized);
+        UpdateRouteFields();
+    }
+
+    private async Task InstallDesktopBridgeAsync()
     {
         if (!_allowExternalActions)
         {
@@ -559,15 +628,26 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
         try
         {
-            if (!File.Exists(_desktopBridgeHostPath))
+            RuntimeDesktopBridgeStatus status;
+            if (_installDesktopBridge is not null)
             {
-                throw new FileNotFoundException(
-                    "This Joydex package does not contain Joydex.DesktopBridgeHost.exe.",
-                    _desktopBridgeHostPath);
+                status = await _installDesktopBridge(_tuningCancellationToken)
+                    .ConfigureAwait(true);
             }
-            _desktopBridgeConfiguration.InstallOrRepair(_desktopBridgeHostPath);
+            else
+            {
+                if (!File.Exists(_desktopBridgeHostPath))
+                {
+                    throw new FileNotFoundException(
+                        "This Joydex package does not contain Joydex.DesktopBridgeHost.exe.",
+                        _desktopBridgeHostPath);
+                }
+                _desktopBridgeConfiguration.InstallOrRepair(_desktopBridgeHostPath);
+                status = ToRuntimeDesktopBridgeStatus(
+                    _desktopBridgeConfiguration.Inspect(_desktopBridgeHostPath));
+            }
             _desktopTaskMessaging.Checked = true;
-            RefreshDesktopBridgeStatus();
+            ApplyDesktopBridgeStatus(status);
             MessageBox.Show(
                 this,
                 "The Desktop Task Bridge is configured. Joydex will start it with Room Voice; no Desktop restart is required.",
@@ -575,17 +655,20 @@ internal sealed class RoomVoiceSettingsControl : UserControl
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
-        catch (Exception exception) when (exception is IOException
-            or UnauthorizedAccessException
-            or InvalidDataException
-            or ArgumentException)
+        catch (OperationCanceledException) when (_tuningCancellationToken.IsCancellationRequested)
         {
-            MessageBox.Show(this, exception.Message, "Desktop Task Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            RefreshDesktopBridgeStatus();
+        }
+        catch (Exception exception)
+        {
+            if (!IsDisposed && !Disposing)
+            {
+                MessageBox.Show(this, exception.Message, "Desktop Task Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            await RefreshDesktopBridgeStatusAsync().ConfigureAwait(true);
         }
     }
 
-    private void RemoveDesktopBridge()
+    private async Task RemoveDesktopBridgeAsync()
     {
         if (!_allowExternalActions)
         {
@@ -594,40 +677,77 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
         try
         {
-            _desktopBridgeConfiguration.Remove();
+            RuntimeDesktopBridgeStatus status;
+            if (_removeDesktopBridge is not null)
+            {
+                status = await _removeDesktopBridge(_tuningCancellationToken)
+                    .ConfigureAwait(true);
+            }
+            else
+            {
+                _desktopBridgeConfiguration.Remove();
+                status = ToRuntimeDesktopBridgeStatus(
+                    _desktopBridgeConfiguration.Inspect(_desktopBridgeHostPath));
+            }
             _desktopTaskMessaging.Checked = false;
-            RefreshDesktopBridgeStatus();
+            ApplyDesktopBridgeStatus(status);
         }
-        catch (Exception exception) when (exception is IOException
-            or UnauthorizedAccessException
-            or InvalidDataException
-            or ArgumentException)
+        catch (OperationCanceledException) when (_tuningCancellationToken.IsCancellationRequested)
         {
-            MessageBox.Show(this, exception.Message, "Desktop Task Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (Exception exception)
+        {
+            if (!IsDisposed && !Disposing)
+            {
+                MessageBox.Show(this, exception.Message, "Desktop Task Bridge", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
     }
 
-    private void RefreshDesktopBridgeStatus()
+    private async Task RefreshDesktopBridgeStatusAsync()
     {
         try
         {
-            var status = _desktopBridgeConfiguration.Inspect(_desktopBridgeHostPath);
-            _desktopBridgeStatus.Text = status.Message;
-            _desktopBridgeStatus.ForeColor = status.State == DesktopBridgeConfigurationState.Installed
-                ? JoydexTheme.Success
-                : status.State == DesktopBridgeConfigurationState.Conflict
-                    ? Color.IndianRed
-                    : SystemColors.GrayText;
+            var status = _inspectDesktopBridge is null
+                ? ToRuntimeDesktopBridgeStatus(
+                    _desktopBridgeConfiguration.Inspect(_desktopBridgeHostPath))
+                : await _inspectDesktopBridge(_tuningCancellationToken).ConfigureAwait(true);
+            ApplyDesktopBridgeStatus(status);
         }
-        catch (Exception exception) when (exception is IOException
-            or UnauthorizedAccessException
-            or ArgumentException
-            or InvalidOperationException)
+        catch (OperationCanceledException) when (_tuningCancellationToken.IsCancellationRequested)
         {
-            _desktopBridgeStatus.Text = "Desktop Task Bridge status is unavailable: " + exception.Message;
-            _desktopBridgeStatus.ForeColor = Color.IndianRed;
+        }
+        catch (Exception exception)
+        {
+            if (!IsDisposed && !Disposing)
+            {
+                _desktopBridgeStatus.Text = "Desktop Task Bridge status is unavailable: " + exception.Message;
+                _desktopBridgeStatus.ForeColor = Color.IndianRed;
+            }
         }
     }
+
+    private void ApplyDesktopBridgeStatus(RuntimeDesktopBridgeStatus status)
+    {
+        _desktopBridgeStatus.Text = status.Message;
+        _desktopBridgeStatus.ForeColor = status.State == RuntimeDesktopBridgeState.Installed
+                ? JoydexTheme.Success
+                : status.State == RuntimeDesktopBridgeState.Conflict
+                    ? Color.IndianRed
+                    : SystemColors.GrayText;
+    }
+
+    private static RuntimeDesktopBridgeStatus ToRuntimeDesktopBridgeStatus(
+        DesktopBridgeConfigurationStatus status) => new(
+        status.State switch
+        {
+            DesktopBridgeConfigurationState.NotInstalled => RuntimeDesktopBridgeState.NotInstalled,
+            DesktopBridgeConfigurationState.Installed => RuntimeDesktopBridgeState.Installed,
+            DesktopBridgeConfigurationState.RepairNeeded => RuntimeDesktopBridgeState.RepairNeeded,
+            DesktopBridgeConfigurationState.Conflict => RuntimeDesktopBridgeState.Conflict,
+            _ => throw new InvalidDataException("The Desktop Bridge status is unknown."),
+        },
+        status.Message);
 
     private void InitializeProjectChoices(VoicePePreferences initial)
     {
@@ -1270,30 +1390,51 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         }
     }
 
-    private void DeleteDiagnosticsCaptures()
+    private async Task DeleteDiagnosticsCapturesAsync()
+    {
+        try
+        {
+            await DeleteDiagnosticsCapturesCoreAsync().ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (_tuningCancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            if (!IsDisposed && !Disposing)
+            {
+                MessageBox.Show(this, exception.Message, "Room Voice diagnostics", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+    }
+
+    private async Task DeleteDiagnosticsCapturesCoreAsync()
     {
         if (!_allowExternalActions)
         {
             return;
         }
 
-        var directory = DiagnosticsDirectory();
-        if (!Directory.Exists(directory))
+        string[]? captures = null;
+        if (_deleteLegacyCaptures is null)
         {
-            MessageBox.Show(this, "There are no saved Room Voice captures.", "Room Voice diagnostics");
-            return;
-        }
-
-        var captures = Directory.GetFiles(directory, "*.wav", SearchOption.TopDirectoryOnly);
-        if (captures.Length == 0)
-        {
-            MessageBox.Show(this, "There are no saved Room Voice captures.", "Room Voice diagnostics");
-            return;
+            var directory = DiagnosticsDirectory();
+            if (Directory.Exists(directory))
+            {
+                captures = Directory.GetFiles(directory, "*.wav", SearchOption.TopDirectoryOnly);
+            }
+            if (captures is null || captures.Length == 0)
+            {
+                MessageBox.Show(this, "There are no saved Room Voice captures.", "Room Voice diagnostics");
+                return;
+            }
         }
 
         if (MessageBox.Show(
                 this,
-                $"Delete {captures.Length} saved Room Voice WAV capture(s)?",
+                captures is null
+                    ? "Delete every saved Room Voice WAV capture?"
+                    : $"Delete {captures.Length} saved Room Voice WAV capture(s)?",
                 "Delete Room Voice captures",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning,
@@ -1304,10 +1445,29 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
         try
         {
-            foreach (var capture in captures)
+            int deleted;
+            if (_deleteLegacyCaptures is not null)
             {
-                File.Delete(capture);
+                deleted = await _deleteLegacyCaptures(_tuningCancellationToken)
+                    .ConfigureAwait(true);
             }
+            else
+            {
+                foreach (var capture in captures!)
+                {
+                    File.Delete(capture);
+                }
+                deleted = captures!.Length;
+            }
+            MessageBox.Show(
+                this,
+                deleted == 0
+                    ? "There were no saved Room Voice captures."
+                    : $"Deleted {deleted} saved Room Voice WAV capture(s).",
+                "Room Voice diagnostics");
+        }
+        catch (OperationCanceledException) when (_tuningCancellationToken.IsCancellationRequested)
+        {
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

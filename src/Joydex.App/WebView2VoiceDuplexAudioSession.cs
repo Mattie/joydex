@@ -26,7 +26,7 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
     private const int SpeakerFramesPerSecond = 50;
     private const int SpeakerSessionDiagnosticSegmentFrames = SpeakerFramesPerSecond * 60 * 5;
 
-    private readonly SynchronizationContext _uiContext;
+    private readonly IVoiceMediaDispatcher _mediaDispatcher;
     private readonly string _userDataDirectory;
     private readonly Func<string, CancellationToken, Task<string>> _negotiate;
     private readonly Action _mediaConnected;
@@ -89,7 +89,7 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
     private Task? _stopTask;
 
     public WebView2VoiceDuplexAudioSession(
-        SynchronizationContext uiContext,
+        IVoiceMediaDispatcher mediaDispatcher,
         string userDataDirectory,
         Func<string, CancellationToken, Task<string>> negotiate,
         Action mediaConnected,
@@ -104,7 +104,7 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
         Action<string>? log = null,
         string? diagnosticsDirectory = null)
     {
-        _uiContext = uiContext ?? throw new ArgumentNullException(nameof(uiContext));
+        _mediaDispatcher = mediaDispatcher ?? throw new ArgumentNullException(nameof(mediaDispatcher));
         _userDataDirectory = Path.GetFullPath(userDataDirectory);
         _negotiate = negotiate ?? throw new ArgumentNullException(nameof(negotiate));
         _mediaConnected = mediaConnected ?? throw new ArgumentNullException(nameof(mediaConnected));
@@ -210,33 +210,38 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
         }
     }
 
-    public ValueTask StopAsync(CancellationToken cancellationToken = default)
+    public async ValueTask StopAsync(CancellationToken cancellationToken = default)
     {
+        Task stopTask;
         lock (_stopGate)
         {
-            return new ValueTask(_stopTask ??= StopCoreAsync(cancellationToken));
+            // Request cancellation applies only to this caller's wait. The first caller cannot
+            // permanently cancel the shared stop operation later awaited by session disposal.
+            stopTask = _stopTask ??= StopCoreAsync();
         }
+
+        await stopTask.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task StopCoreAsync(CancellationToken cancellationToken)
+    private async Task StopCoreAsync()
     {
         try
         {
             try
             {
-                await _stopRealtime(cancellationToken).ConfigureAwait(false);
+                await _stopRealtime(CancellationToken.None).ConfigureAwait(false);
             }
-            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+            catch (Exception exception)
             {
                 _log?.Invoke($"Codex Realtime stop did not complete cleanly: {exception.Message}");
             }
 
             try
             {
-                await PostMessageAsync(new { type = "stop" }, cancellationToken).ConfigureAwait(false);
-                await _browserStopped.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                await PostMessageAsync(new { type = "stop" }, CancellationToken.None).ConfigureAwait(false);
+                await _browserStopped.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
-            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+            catch (Exception exception)
             {
                 _log?.Invoke($"WebRTC peer stop did not complete cleanly: {exception.Message}");
             }
@@ -269,7 +274,7 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
 
         try
         {
-            await RunOnUiAsync(
+            await RunOnMediaStaAsync(
                     () =>
                     {
                         var webView = _webView;
@@ -321,7 +326,7 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
         }
 
         Directory.CreateDirectory(_userDataDirectory);
-        await RunOnUiAsync(
+        await RunOnMediaStaAsync(
                 async () =>
                 {
                     _form = new OffscreenVoiceForm();
@@ -1162,7 +1167,7 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
     private Task PostMessageAsync(object message, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(message, JsonOptions);
-        return RunOnUiAsync(
+        return RunOnMediaStaAsync(
             () =>
             {
                 var core = _webView?.CoreWebView2
@@ -1173,31 +1178,8 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
             cancellationToken);
     }
 
-    private Task RunOnUiAsync(Func<Task> action, CancellationToken cancellationToken)
-    {
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _uiContext.Post(
-            async _ =>
-            {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    completion.TrySetCanceled(cancellationToken);
-                    return;
-                }
-
-                try
-                {
-                    await action();
-                    completion.TrySetResult();
-                }
-                catch (Exception exception)
-                {
-                    completion.TrySetException(exception);
-                }
-            },
-            null);
-        return completion.Task;
-    }
+    private Task RunOnMediaStaAsync(Func<Task> action, CancellationToken cancellationToken) =>
+        _mediaDispatcher.InvokeAsync(action, cancellationToken);
 
     private sealed class OffscreenVoiceForm : Form
     {

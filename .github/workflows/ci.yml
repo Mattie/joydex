@@ -36,4 +36,6 @@ jobs:
         run: dotnet build .\Joydex.sln --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test .\Joydex.sln --configuration Release --no-build --no-restore
+        # Keep independent test hosts from competing for the same small runner's CPU.
+        # Tests within each project retain their normal parallelism.
+        run: dotnet test .\Joydex.sln --configuration Release --no-build --no-restore -m:1

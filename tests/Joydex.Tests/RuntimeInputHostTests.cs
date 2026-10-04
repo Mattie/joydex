@@ -7,6 +7,8 @@ namespace Joydex.Tests;
 
 public sealed class RuntimeInputHostTests
 {
+    private static readonly TimeSpan AsyncTimeout = TimeSpan.FromSeconds(10);
+
     [Fact]
     public async Task HeldAtActivationIsIgnoredAndCapturedPressIsSuppressedThroughRelease()
     {
@@ -272,16 +274,20 @@ public sealed class RuntimeInputHostTests
         using var host = new RuntimeInputHost(clock);
         var session = host.ConnectSource(Source("stick-a"), () => { });
         await Route(host, session, Snapshot(), []);
-        var activeEntered = new ManualResetEventSlim();
-        var releaseActive = new ManualResetEventSlim();
+        var activeEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseActive = new ManualResetEventSlim();
         var delivered = new List<InputCaptureLease>();
         var deliveredGate = new object();
         host.CaptureChanged += (_, update) =>
         {
             if (update.Lease.Status == InputCaptureStatus.Active)
             {
-                activeEntered.Set();
-                releaseActive.Wait(TimeSpan.FromSeconds(1));
+                activeEntered.TrySetResult();
+                if (!releaseActive.Wait(AsyncTimeout))
+                {
+                    throw new TimeoutException("The test did not release the active capture update.");
+                }
             }
             lock (deliveredGate)
             {
@@ -294,12 +300,24 @@ public sealed class RuntimeInputHostTests
             "binding",
             Timeout: TimeSpan.FromSeconds(1)));
 
-        var activation = Task.Run(() => Route(host, session, Snapshot(), []));
-        Assert.True(activeEntered.Wait(TimeSpan.FromSeconds(1)));
-        clock.Advance(TimeSpan.FromSeconds(2));
-        host.ExpireCaptures(clock.GetUtcNow());
-        releaseActive.Set();
-        await activation.WaitAsync(TimeSpan.FromSeconds(1));
+        var activation = Task.Factory.StartNew(
+                () => Route(host, session, Snapshot(), []),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default)
+            .Unwrap();
+        try
+        {
+            await activeEntered.Task.WaitAsync(AsyncTimeout);
+            clock.Advance(TimeSpan.FromSeconds(2));
+            host.ExpireCaptures(clock.GetUtcNow());
+        }
+        finally
+        {
+            releaseActive.Set();
+        }
+
+        await activation.WaitAsync(AsyncTimeout);
 
         InputCaptureLease[] updates;
         lock (deliveredGate)

@@ -64,13 +64,31 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         string preferencesPath,
         string? statePath = null,
         Action<string>? log = null)
+        : this(
+            preferencesPath,
+            TaskAlertPreferencesStore.LoadOrCreate(preferencesPath),
+            statePath,
+            log)
+    {
+    }
+
+    /// <summary>
+    /// Starts task-alert processing from settings that the runtime has already activated. The
+    /// constructor does not read or write the preferences file.
+    /// </summary>
+    public TaskAlertCoordinator(
+        string preferencesPath,
+        TaskAlertPreferences activePreferences,
+        string? statePath = null,
+        Action<string>? log = null)
     {
         _preferencesPath = preferencesPath ?? throw new ArgumentNullException(nameof(preferencesPath));
+        ArgumentNullException.ThrowIfNull(activePreferences);
         var preferencesDirectory = Path.GetDirectoryName(Path.GetFullPath(preferencesPath))
             ?? throw new InvalidOperationException("The task-alert settings path has no parent directory.");
         _statePath = statePath ?? Path.Combine(preferencesDirectory, "task-alert-state.json");
         _log = log ?? (_ => { });
-        _preferences = TaskAlertPreferencesStore.LoadOrCreate(preferencesPath);
+        _preferences = activePreferences.Normalize();
         _pool = new TaskAlertPool();
         if (!_preferences.Enabled)
         {

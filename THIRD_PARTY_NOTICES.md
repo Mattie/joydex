@@ -62,6 +62,15 @@ license and bundled third-party notice are included as
 [`LICENSES/Microsoft-WebView2-NOTICE.txt`](LICENSES/Microsoft-WebView2-NOTICE.txt),
 and both files are copied into Joydex publish output.
 
+## Runtime IPC libraries
+
+Joydex uses [StreamJsonRpc 2.25.29](https://www.nuget.org/packages/StreamJsonRpc/2.25.29)
+and its runtime dependency closure for the authenticated local runtime channel.
+The redistributed libraries use the MIT License and retain the copyright and
+third-party notices supplied by their package authors. The complete texts are
+included in [`LICENSES/Runtime-IPC.txt`](LICENSES/Runtime-IPC.txt), which is
+copied into Joydex publish output.
+
 ## Home Assistant Voice PE and ESPHome firmware
 
 The source-only Voice PE example under `firmware/esphome/voice-pe` is based on

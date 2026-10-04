@@ -4,7 +4,7 @@ Original design: 2026-09-08. Refreshed: 2026-09-11 against main at `3d7c673`. St
 
 Our recommended direction is **ENGINEFIRST**: keep the working .NET and Windows integrations, give Joydex an independent runtime, and extract features into explicitly registered plugins. Settings becomes a client of that runtime. Voice, controller input, PAD updates, and inbound messages keep running while settings is open.
 
-The refresh incorporates the committed Voice, Pebble, configuration and controller changes since the original draft. The latest merge itself was README-only; the [baseline refresh](11-main-refresh.md) distinguishes it from the broader changes. Accepted ADRs remain in force, including ADR 0005's managed Codex runtime policy. New ADRs linked below are proposals. The baseline refresh changed documentation only; subsequent implementation is tracked in [milestone demos](12-milestone-demos.md).
+The refresh incorporates the committed Voice, Pebble, configuration and controller changes since the original draft. The latest merge itself was README-only; the [baseline refresh](11-main-refresh.md) distinguishes it from the broader changes. Accepted ADRs remain in force, including ADR 0005's managed Codex runtime policy. ADRs 0006–0008 remain proposals; ADR 0009 records the accepted PROCESSUI boundary. The baseline refresh changed documentation only; subsequent implementation is tracked in [milestone demos](12-milestone-demos.md).
 
 ## Read the designs
 
@@ -22,6 +22,7 @@ The refresh incorporates the committed Voice, Pebble, configuration and controll
 | [Agent implementation plan](10-agent-orchestration.md) | Overseer, Sol xhigh/medium assignments, worktree ownership, waves and integration gates |
 | [Main baseline refresh](11-main-refresh.md) | Changed assumptions, existing fixes to preserve, source evidence and remaining gaps |
 | [Milestone demos](12-milestone-demos.md) | Current implementation scope, acceptance evidence and user feedback stops |
+| [PROCESSUI contract](13-process-settings-contract.md) | Accepted settings/runtime boundary, revisions, client loss and operation reconciliation |
 
 ## Recommended shape
 
@@ -69,5 +70,7 @@ These keywords identify proposed choices; they do not need separate approval bef
 - [ADR 0008: Discord creates Desktop-owned tasks](../../adr/0008-discord-creates-desktop-owned-tasks.md)
 
 ADR 0005 is already [accepted for managed Codex runtimes](../../adr/0005-follow-managed-codex-runtime-with-capability-checks.md); its number and policy remain intact.
+
+[ADR 0009](../../adr/0009-separate-settings-from-runtime-with-owned-media-sta.md) accepts the settings process split and runtime-owned Voice STA for PROCESSUI; separate Voice process isolation remains a later extraction.
 
 Begin with a recorded baseline, then one runtime/input owner and an independent reviewer. Expand parallel implementation only after the shared contracts pass their first behavior tests. The [agent plan](10-agent-orchestration.md) makes those handoffs explicit.
