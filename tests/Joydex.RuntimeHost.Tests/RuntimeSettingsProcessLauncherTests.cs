@@ -389,11 +389,19 @@ public sealed class RuntimeSettingsProcessLauncherTests
             processes,
             attachTimeout: TimeSpan.FromMilliseconds(50),
             exitTimeout: TimeSpan.FromSeconds(1));
+        // Attach at ticket issuance so successful attempts cannot lose a 50 ms race
+        // against the test runner. The second attempt still exercises the deadline.
+        tickets.AfterIssue = issueNumber =>
+        {
+            if (issueNumber is 1 or 3)
+            {
+                launcher.OnSettingsAttached($"settings-connection-{issueNumber}");
+            }
+        };
 
         var firstOpen = launcher.OpenAsync(Request(), CancellationToken.None);
         var child = await processes.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        launcher.OnSettingsAttached("settings-connection-1");
-        await firstOpen;
+        Assert.Equal(RuntimeCommandStatus.Completed, (await firstOpen).Status);
 
         launcher.OnSettingsDisconnected("settings-connection-1");
         var failedResult = await launcher.OpenAsync(Request(), CancellationToken.None);
@@ -403,12 +411,10 @@ public sealed class RuntimeSettingsProcessLauncherTests
         Assert.Single(processes.Processes);
         Assert.Equal(0, child.CloseInputCount);
 
-        var retryOpen = launcher.OpenAsync(Request(), CancellationToken.None);
-        await EventuallyAsync(() => tickets.Processes.Count == 3);
-        launcher.OnSettingsAttached("settings-connection-2");
-        var retryResult = await retryOpen;
+        var retryResult = await launcher.OpenAsync(Request(), CancellationToken.None);
 
         Assert.Equal(RuntimeCommandStatus.Completed, retryResult.Status);
+        Assert.Equal(3, tickets.Processes.Count);
         Assert.Single(processes.Processes);
         await launcher.DisposeAsync();
     }
