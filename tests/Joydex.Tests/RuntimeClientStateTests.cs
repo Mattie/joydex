@@ -259,6 +259,98 @@ public sealed class RuntimeClientStateTests
             } && id == captureId);
     }
 
+    [Theory]
+    [InlineData(2)]
+    [InlineData(256)]
+    [InlineData(300)]
+    public async Task ResyncOverflowPreservesCaptureCompletionAcrossRepeatedSnapshots(int completionSequence)
+    {
+        var client = new RuntimeClientState(new ImmediateSynchronizationContext());
+        var changes = new List<RuntimeClientStateChange>();
+        client.Changed += (_, change) => changes.Add(change);
+        var epoch = Guid.NewGuid();
+        var lease = new RuntimeCaptureLease(
+            Guid.NewGuid(), "controller", "binding", 1,
+            DateTimeOffset.UtcNow.AddSeconds(10), InputCaptureStatus.Active, 1);
+        var initial = Snapshot(epoch, eventCursor: 1, bank: 2);
+        client.Initialize(Attach(initial with { Input = initial.Input with { Captures = [lease] } }));
+        await client.RuntimeEventAsync(
+            new RuntimeEvent(epoch, 3, RuntimeEventKind.SettingsChanged, Settings: Settings(3, 2)), default);
+        var capturedInput = new JoystickEvent(JoystickEventKind.ButtonPressed, 0, 7);
+        for (var sequence = 1; sequence <= 600; sequence++)
+        {
+            await client.RuntimeInputEventAsync(
+                sequence == completionSequence
+                    ? new RuntimeConnectionInputEvent(
+                        epoch, sequence, RuntimeConnectionInputEventKind.CaptureChanged,
+                        Capture: new RuntimeCaptureUpdate(
+                            lease with { Status = InputCaptureStatus.Completed, Revision = 2 }, capturedInput))
+                    : ObservationEvent(epoch, sequence), default);
+        }
+
+        // The first in-flight snapshot predates the overflow; a second refresh is required.
+        client.ApplySnapshot(initial with { Input = initial.Input with { Captures = [lease] } });
+        Assert.True(client.Current.ResynchronizationRequired);
+        client.ApplySnapshot(Snapshot(epoch, eventCursor: 3, bank: 2, inputEventCursor: 600));
+
+        Assert.False(client.Current.ResynchronizationRequired);
+        Assert.Empty(client.Current.Snapshot!.Input.Captures);
+        var completion = Assert.Single(changes, change => change.InputEvent?.Capture is not null);
+        Assert.Equal(lease.CaptureId, completion.InputEvent!.Capture!.Lease.CaptureId);
+        Assert.Equal(InputCaptureStatus.Completed, completion.InputEvent.Capture.Lease.Status);
+        Assert.Equal(capturedInput, completion.InputEvent.Capture.CapturedInput);
+        await client.RuntimeInputEventAsync(ObservationEvent(epoch, 601), default);
+        Assert.False(client.Current.ResynchronizationRequired);
+        Assert.Equal(601, client.Current.InputEventCursor);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResyncCoalescesCaptureRevisionsAndRejectsRetiredEpoch(bool replaceEpoch)
+    {
+        var client = new RuntimeClientState(new ImmediateSynchronizationContext());
+        var captures = new List<RuntimeCaptureUpdate>();
+        client.Changed += (_, change) =>
+        {
+            if (change.InputEvent?.Capture is { } capture)
+            {
+                captures.Add(capture);
+            }
+        };
+        var epoch = Guid.NewGuid();
+        client.Initialize(Attach(Snapshot(epoch, eventCursor: 1, bank: 2)));
+        await client.RuntimeEventAsync(
+            new RuntimeEvent(epoch, 3, RuntimeEventKind.SettingsChanged, Settings: Settings(3, 2)), default);
+        var lease = new RuntimeCaptureLease(
+            Guid.NewGuid(), "controller", "binding", 1,
+            DateTimeOffset.UtcNow.AddSeconds(10), InputCaptureStatus.Active, 1);
+        for (var revision = 1; revision <= 600; revision++)
+        {
+            await client.RuntimeInputEventAsync(new RuntimeConnectionInputEvent(
+                epoch, revision, RuntimeConnectionInputEventKind.CaptureChanged,
+                Capture: new RuntimeCaptureUpdate(lease with { Revision = revision })), default);
+        }
+        await client.RuntimeInputEventAsync(new RuntimeConnectionInputEvent(
+            epoch, 601, RuntimeConnectionInputEventKind.CaptureChanged,
+            Capture: new RuntimeCaptureUpdate(lease)), default);
+
+        client.ApplySnapshot(Snapshot(
+            replaceEpoch ? Guid.NewGuid() : epoch, eventCursor: 3, bank: 2, inputEventCursor: 601));
+
+        Assert.False(client.Current.ResynchronizationRequired);
+        if (replaceEpoch)
+        {
+            Assert.Empty(captures);
+            Assert.Empty(client.Current.Snapshot!.Input.Captures);
+        }
+        else
+        {
+            Assert.Equal(600, Assert.Single(captures).Lease.Revision);
+            Assert.Equal(600, Assert.Single(client.Current.Snapshot!.Input.Captures).Revision);
+        }
+    }
+
     [Fact]
     public async Task VoiceDeltaMergesTimelineAndResetRequestsAFullSnapshot()
     {

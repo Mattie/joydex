@@ -153,6 +153,9 @@ internal sealed class RuntimeClientState : IRuntimeRpcClient
             }
             else
             {
+                // Overflow requires another snapshot, but snapshots omit completed captures.
+                // Keep their one-shot payloads until a refresh can safely replay them.
+                _callbacksDuringResynchronization.AddRange(buffered);
                 changes.Add(NewChangeLocked(RuntimeClientChangeKind.ResynchronizationRequired));
             }
             scheduleNotifications = false;
@@ -404,13 +407,33 @@ internal sealed class RuntimeClientState : IRuntimeRpcClient
 
     private void BufferDuringResynchronizationLocked(PendingCallback callback)
     {
+        if (callback.InputEvent?.Capture is { } capture)
+        {
+            var existing = _callbacksDuringResynchronization.FindIndex(item =>
+                item.InputEvent?.EngineEpoch == callback.InputEvent.EngineEpoch
+                && item.InputEvent?.Capture?.Lease.CaptureId == capture.Lease.CaptureId);
+            if (existing >= 0)
+            {
+                if (_callbacksDuringResynchronization[existing].InputEvent!.Capture!.Lease.Revision
+                    >= capture.Lease.Revision)
+                {
+                    return;
+                }
+                _callbacksDuringResynchronization.RemoveAt(existing);
+            }
+            // Capture lifecycle updates cannot be rebuilt from a snapshot. Retain the latest
+            // revision per lease even after disposable observations have overflowed.
+            _callbacksDuringResynchronization.Add(callback);
+            return;
+        }
         if (_resynchronizationCallbacksLost)
         {
             return;
         }
-        if (_callbacksDuringResynchronization.Count == MaximumBufferedCallbacks)
+        if (_callbacksDuringResynchronization.Count(item => item.InputEvent?.Capture is null)
+            == MaximumBufferedCallbacks)
         {
-            _callbacksDuringResynchronization.Clear();
+            _callbacksDuringResynchronization.RemoveAll(item => item.InputEvent?.Capture is null);
             _resynchronizationCallbacksLost = true;
             return;
         }
