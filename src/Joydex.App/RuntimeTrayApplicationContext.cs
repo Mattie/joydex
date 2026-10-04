@@ -55,6 +55,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private RuntimeSettingsWriter? _settingsWriter;
     private RoomVoiceForm? _voiceForm;
     private TaskAlertsForm? _taskAlertsForm;
+    private bool _taskAlertsShowPending;
     private DryRunActivityForm? _activityForm;
     private PromptPickerEditorForm? _promptPickerEditor;
     private long? _promptPickerEditorBaseRevision;
@@ -1113,7 +1114,20 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
 
     private void OnTaskAlertsStatus(object? sender, EventArgs eventArgs)
     {
-        if (_demoMode)
+        if (_demoMode || _exitStarted || _taskAlertsShowPending)
+        {
+            return;
+        }
+        // The nested menu still has dismissal/focus messages after its Click handler.
+        _taskAlertsShowPending = true;
+        Application.Idle += OnApplicationIdleShowTaskAlerts;
+    }
+
+    private void OnApplicationIdleShowTaskAlerts(object? sender, EventArgs eventArgs)
+    {
+        Application.Idle -= OnApplicationIdleShowTaskAlerts;
+        _taskAlertsShowPending = false;
+        if (_exitStarted)
         {
             return;
         }
@@ -1370,6 +1384,8 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             return;
         }
         _exitStarted = true;
+        Application.Idle -= OnApplicationIdleShowTaskAlerts;
+        _taskAlertsShowPending = false;
         _notifyIcon.ContextMenuStrip!.Enabled = false;
         _ = ShutdownAndExitAsync(shutdownRuntime);
     }

@@ -3,6 +3,7 @@ using Joydex.Contracts;
 using Joydex.Core.TaskAlerts;
 using Joydex.Virpil;
 using Joydex.Windows.TaskAlerts;
+using Microsoft.Win32;
 
 namespace Joydex.RuntimeHost.Production;
 
@@ -105,6 +106,8 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
             coordinator.Changed += owner.OnChanged;
             led.ProfileDirtyChanged += owner.OnProfileDirtyChanged;
             deviceChangeMonitor.DevicesChanged += owner.OnDevicesChanged;
+            SystemEvents.PowerModeChanged += owner.OnPowerModeChanged;
+            SystemEvents.SessionEnding += owner.OnSessionEnding;
             owner.UpdateGuardian(snapshot);
             if (snapshot.Enabled && snapshot.Assignments.Count > 0)
             {
@@ -126,6 +129,11 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
             var cleanupFailures = new List<Exception>();
             if (owner is not null)
             {
+                Interlocked.Exchange(ref owner._disposed, 1);
+                try { SystemEvents.PowerModeChanged -= owner.OnPowerModeChanged; }
+                catch (Exception exception) { cleanupFailures.Add(exception); }
+                try { SystemEvents.SessionEnding -= owner.OnSessionEnding; }
+                catch (Exception exception) { cleanupFailures.Add(exception); }
                 try { coordinator!.Changed -= owner.OnChanged; }
                 catch (Exception exception) { cleanupFailures.Add(exception); }
                 try { led!.ProfileDirtyChanged -= owner.OnProfileDirtyChanged; }
@@ -176,6 +184,8 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
 
     private async Task DisposeOnStaAsync()
     {
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        SystemEvents.SessionEnding -= OnSessionEnding;
         _factory.ClearTaskAlerts(this);
         _coordinator.Changed -= OnChanged;
         _ledOutput.ProfileDirtyChanged -= OnProfileDirtyChanged;
@@ -243,6 +253,53 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
     {
         _factory.WriteLog("Device-change notification; task-alert profile restore/replay requested.");
         _ledOutput.RestoreAndReplay(Snapshot.Enabled);
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs eventArgs)
+    {
+        if (eventArgs.Mode == PowerModes.Suspend)
+        {
+            SetPowerPaused(true);
+        }
+        else if (eventArgs.Mode == PowerModes.Resume)
+        {
+            SetPowerPaused(false);
+        }
+    }
+
+    private void OnSessionEnding(object sender, SessionEndingEventArgs eventArgs) => SetPowerPaused(true);
+
+    private void SetPowerPaused(bool paused)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+        try
+        {
+            _windowsSta.Invoke(() =>
+            {
+                // A system event may already be queued when this owner is replaced.
+                if (Volatile.Read(ref _disposed) != 0)
+                {
+                    return;
+                }
+                _ledOutput.SetPaused(paused);
+                if (!paused)
+                {
+                    var snapshot = Snapshot;
+                    _ledOutput.Apply(snapshot);
+                    _ledOutput.RestoreAndReplay(snapshot.Enabled);
+                }
+            });
+        }
+        catch (Exception exception)
+        {
+            if (Volatile.Read(ref _disposed) == 0)
+            {
+                _ownedCompletion.TrySetException(exception);
+            }
+        }
     }
 
     private void UpdateGuardian(TaskAlertSnapshot snapshot)
