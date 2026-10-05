@@ -1,9 +1,12 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Diagnostics;
+using System.IO.Pipes;
 using Joydex.Contracts;
 using Joydex.Ipc;
 using Joydex.RuntimeHost;
 using Joydex.RuntimeHost.Settings;
+using StreamJsonRpc;
 
 namespace Joydex.ProcessProbe;
 
@@ -19,6 +22,15 @@ internal static class Program
     {
         try
         {
+            if (args is ["--voice-worker"])
+            {
+                return await RunVoiceWorkerProbeAsync();
+            }
+            if (args is ["--voice-worker-child"])
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan);
+                return 0;
+            }
             if (args.Length < 2)
             {
                 throw new ArgumentException("Expected a command and settings root.");
@@ -49,6 +61,85 @@ internal static class Program
             Console.Error.WriteLine(exception);
             return 1;
         }
+    }
+
+    private static async Task<int> RunVoiceWorkerProbeAsync()
+    {
+        var line = await Console.In.ReadLineAsync();
+        var ticket = JsonSerializer.Deserialize<VoiceWorkerLaunchTicket>(line ?? string.Empty)
+            ?? throw new InvalidDataException("Missing Voice worker ticket.");
+        using var pipe = new NamedPipeClientStream(
+            ".",
+            ticket.PipeName,
+            PipeDirection.InOut,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await pipe.ConnectAsync(timeout.Token);
+        _ = WindowsPipePeerVerifier.VerifyServer(
+            pipe,
+            ticket.ExpectedSessionId,
+            ticket.ExpectedHostProcessId,
+            ticket.ExpectedHostStartTimeUtcTicks);
+        var (rpc, bounded) = RuntimeJsonRpc.Create(pipe);
+        using (rpc)
+        using (bounded)
+        {
+            rpc.AddLocalRpcTarget(new VoiceWorkerProbeTarget(ticket, rpc));
+            rpc.StartListening();
+            await rpc.Completion;
+        }
+        return 0;
+    }
+
+    private sealed class VoiceWorkerProbeTarget(VoiceWorkerLaunchTicket ticket, JsonRpc rpc)
+    {
+        [JsonRpcMethod(VoiceWorkerProtocol.Start)]
+        public async Task<VoiceWorkerStartResponse> StartAsync(
+            VoiceWorkerStartRequest request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Capability != ticket.Capability
+                || request.Generation != ticket.Generation
+                || request.ProtocolMajor != VoiceWorkerProtocol.MajorVersion)
+            {
+                throw new InvalidDataException("Invalid Voice worker handshake.");
+            }
+            using var descendant = Process.Start(new ProcessStartInfo
+            {
+                FileName = Environment.ProcessPath
+                    ?? throw new InvalidOperationException("The process path is unavailable."),
+                Arguments = "--voice-worker-child",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            }) ?? throw new InvalidOperationException("The Voice worker descendant probe did not start.");
+            var current = ProbeSnapshot(request.Generation, 2);
+            await rpc.InvokeWithCancellationAsync(
+                VoiceWorkerProtocol.PublishSnapshot,
+                [current],
+                cancellationToken);
+            return new VoiceWorkerStartResponse(
+                VoiceWorkerProtocol.MajorVersion,
+                VoiceWorkerProtocol.MinorVersion,
+                ProbeSnapshot(request.Generation, 1));
+        }
+
+        [JsonRpcMethod(VoiceWorkerProtocol.Stop)]
+        public Task StopAsync(VoiceWorkerGenerationMessage request) => Task.CompletedTask;
+
+        private static VoiceWorkerSnapshot ProbeSnapshot(long generation, long sequence) => new(
+            generation,
+            sequence,
+            new RuntimeVoiceSnapshot(
+                RuntimeVoiceSessionState.Armed,
+                true,
+                false,
+                false,
+                false,
+                "Synthetic Voice worker ready.",
+                null,
+                sequence),
+            []);
     }
 
     private static async Task<int> RuntimeApplyCrashAsync(string[] args)

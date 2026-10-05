@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Win32.SafeHandles;
 using System.Text;
 using Joydex.Contracts;
 using Joydex.Ipc;
@@ -828,6 +829,15 @@ internal interface IRuntimeSettingsProcess : IAsyncDisposable
     void Kill();
 }
 
+internal interface IVoiceWorkerNativeProcess
+{
+    SafeProcessHandle ProcessHandle { get; }
+
+    long ProcessStartTimeUtcTicks { get; }
+
+    int SessionId { get; }
+}
+
 internal sealed class RuntimeIpcSettingsTicketIssuer(RuntimeIpcServer server) :
     IRuntimeSettingsTicketIssuer
 {
@@ -872,7 +882,7 @@ internal sealed class WindowsRuntimeSettingsProcessFactory : IRuntimeSettingsPro
     }
 }
 
-internal sealed class WindowsRuntimeSettingsProcess : IRuntimeSettingsProcess
+internal sealed class WindowsRuntimeSettingsProcess : IRuntimeSettingsProcess, IVoiceWorkerNativeProcess
 {
     private readonly Task _completion;
     private readonly Task _standardOutput;
@@ -896,6 +906,13 @@ internal sealed class WindowsRuntimeSettingsProcess : IRuntimeSettingsProcess
     public Stream StandardInput => Process.StandardInput.BaseStream;
 
     public Task Completion => _completion;
+
+    SafeProcessHandle IVoiceWorkerNativeProcess.ProcessHandle => Process.SafeHandle;
+
+    long IVoiceWorkerNativeProcess.ProcessStartTimeUtcTicks =>
+        Process.StartTime.ToUniversalTime().Ticks;
+
+    int IVoiceWorkerNativeProcess.SessionId => Process.SessionId;
 
     public void CloseInput()
     {

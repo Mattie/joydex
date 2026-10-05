@@ -274,6 +274,9 @@ A worker process provides independent lifetime; it does not establish a hostile-
 The PAD pilot uses an explicit in-process registration and isolates ordinary lifecycle
 failures. A fatal native/CLR failure still affects RuntimeHost; see
 [ADR 0010](docs/adr/0010-use-a-bundled-in-process-pad-pilot.md).
+Voice uses a separate supervised media process under
+[ADR 0011](docs/adr/0011-isolate-voice-media-in-a-worker-process.md), while
+RuntimeHost retains settings activation and shared integration ownership.
 
 **Active / Desired Configuration**:
 Active configuration describes what an owner is using. Desired configuration is a validated,

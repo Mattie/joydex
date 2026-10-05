@@ -17,6 +17,11 @@ internal sealed record ProductionRuntimePaths(
     string DesktopBridgeHost,
     string JoydexApplication)
 {
+    public string VoiceWorker => Path.Combine(
+        Path.GetDirectoryName(JoydexApplication)
+            ?? throw new InvalidOperationException("The Joydex application path has no parent directory."),
+        "Joydex.VoiceWorker.exe");
+
     public static ProductionRuntimePaths FromCompanionConfiguration(string configurationPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(configurationPath);

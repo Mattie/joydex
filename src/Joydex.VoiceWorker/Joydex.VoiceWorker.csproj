@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Joydex.Contracts\Joydex.Contracts.csproj" />
+    <ProjectReference Include="..\Joydex.Core\Joydex.Core.csproj" />
+    <ProjectReference Include="..\Joydex.Ipc\Joydex.Ipc.csproj" />
+    <ProjectReference Include="..\Joydex.Windows\Joydex.Windows.csproj" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50"
+                      PrivateAssets="all" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Joydex.App\RoomVoiceConversationModel.cs" Link="Media\RoomVoiceConversationModel.cs" />
+    <Compile Include="..\Joydex.App\VoiceMediaStaHost.cs" Link="Media\VoiceMediaStaHost.cs" />
+    <Compile Include="..\Joydex.App\VoicePeBridgeRuntime.cs" Link="Media\VoicePeBridgeRuntime.cs" />
+    <Compile Include="..\Joydex.App\VoiceSessionArchive.cs" Link="Media\VoiceSessionArchive.cs" />
+    <Compile Include="..\Joydex.App\WebView2VoiceDuplexAudioSession.cs" Link="Media\WebView2VoiceDuplexAudioSession.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="$(PkgMicrosoft_Web_WebView2)\runtimes\win-x64\native\WebView2Loader.dll"
+             Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\Joydex.App\Assets\Voice\index.html"
+             Link="Assets\Voice\index.html" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\Joydex.App\Assets\Voice\duplex-processor.js"
+             Link="Assets\Voice\duplex-processor.js" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="RemoveUnusedWebView2WpfReference" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)"
+                 Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+</Project>

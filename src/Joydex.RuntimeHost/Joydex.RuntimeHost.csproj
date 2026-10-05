@@ -9,13 +9,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Web.WebView2"
-                      Version="1.0.4129.50"
-                      PrivateAssets="all"
-                      GeneratePathProperty="true" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Compile Include="..\Joydex.App\CancellableRuntimeCoordinator.cs"
              Link="Production\Shared\CancellableRuntimeCoordinator.cs" />
     <Compile Include="..\Joydex.App\FileLog.cs"
@@ -34,31 +27,6 @@
              Link="Production\PebbleIndex\PebbleIndexReceiverRuntime.cs" />
     <Compile Include="..\Joydex.App\PromptPickerCoordinator.cs"
              Link="Production\Companion\PromptPickerCoordinator.cs" />
-    <Compile Include="..\Joydex.App\RoomVoiceConversationModel.cs"
-             Link="Production\Voice\RoomVoiceConversationModel.cs" />
-    <Compile Include="..\Joydex.App\VoiceMediaStaHost.cs"
-             Link="Production\Voice\VoiceMediaStaHost.cs" />
-    <Compile Include="..\Joydex.App\VoicePeBridgeRuntime.cs"
-             Link="Production\Voice\VoicePeBridgeRuntime.cs" />
-    <Compile Include="..\Joydex.App\VoiceSessionArchive.cs"
-             Link="Production\Voice\VoiceSessionArchive.cs" />
-    <Compile Include="..\Joydex.App\WebView2VoiceDuplexAudioSession.cs"
-             Link="Production\Voice\WebView2VoiceDuplexAudioSession.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Content Include="$(PkgMicrosoft_Web_WebView2)\runtimes\win-x64\native\WebView2Loader.dll"
-             Link="WebView2Loader.dll"
-             CopyToOutputDirectory="PreserveNewest"
-             CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="..\Joydex.App\Assets\Voice\index.html"
-             Link="Assets\Voice\index.html"
-             CopyToOutputDirectory="PreserveNewest"
-             CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="..\Joydex.App\Assets\Voice\duplex-processor.js"
-             Link="Assets\Voice\duplex-processor.js"
-             CopyToOutputDirectory="PreserveNewest"
-             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -66,12 +34,5 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
-
-  <Target Name="RemoveUnusedWebView2WpfReference" BeforeTargets="ResolveAssemblyReferences">
-    <ItemGroup>
-      <Reference Remove="@(Reference)"
-                 Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
-    </ItemGroup>
-  </Target>
 
 </Project>

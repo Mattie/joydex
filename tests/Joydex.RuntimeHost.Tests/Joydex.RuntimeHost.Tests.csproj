@@ -25,6 +25,7 @@
     <ProjectReference Include="..\..\src\Joydex.Contracts\Joydex.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Joydex.Core\Joydex.Core.csproj" />
     <ProjectReference Include="..\..\src\Joydex.RuntimeHost\Joydex.RuntimeHost.csproj" />
+    <ProjectReference Include="..\..\src\Joydex.VoiceWorker\Joydex.VoiceWorker.csproj" />
     <ProjectReference Include="..\Joydex.ProcessProbe\Joydex.ProcessProbe.csproj"
                       ReferenceOutputAssembly="false" />
   </ItemGroup>

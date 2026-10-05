@@ -1,6 +1,13 @@
 # Voice PE plugin
 
-Status: proposed. Plugin ID: joydex.voice-pe.
+Status: VOICEPLUGIN implementation authorized 2026-09-12. Plugin ID: joydex.voice-pe.
+
+PROCESSUI already moved Voice into RuntimeHost with an independently owned media
+STA. This stage moves that existing media aggregate into `Joydex.VoiceWorker.exe`;
+RuntimeHost retains active/desired settings, the shared Desktop broker and the
+existing Room Voice client interface. See [ADR 0011](../../adr/0011-isolate-voice-media-in-a-worker-process.md).
+The source inventory and extraction sequence below describe the broader design;
+do not repeat completed PROCESSUI work when implementing this remaining boundary.
 
 ## Outcome
 

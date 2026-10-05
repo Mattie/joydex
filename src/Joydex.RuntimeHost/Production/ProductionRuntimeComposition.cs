@@ -103,6 +103,10 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
                 EnsureStartedAsync(activeSettings).GetAwaiter().GetResult();
             }
             _activeBundle = activeSettings;
+            if (_initialized.Contains(SettingsAggregateId.Voice))
+            {
+                _factory.CommitVoiceActivation(activeSettings.Voice);
+            }
             if (!_pluginsInitialized)
             {
                 _factory.RefreshPluginsAsync(activeSettings, _runtimeCancellationToken)
@@ -483,6 +487,10 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
                 Install(aggregate, replacement);
             }
             _activeBundle = activationCandidate;
+            if (aggregate == SettingsAggregateId.Voice)
+            {
+                _factory.CommitVoiceActivation(activationCandidate.Voice);
+            }
             if (aggregate == SettingsAggregateId.Companion)
             {
                 await _factory.RefreshPluginsAsync(activationCandidate, _runtimeCancellationToken)
@@ -605,6 +613,7 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
             }
 
             _activeBundle = activationCandidate;
+            _factory.CommitVoiceActivation(activationCandidate.Voice);
             await _factory.RefreshPluginsAsync(activationCandidate, _runtimeCancellationToken)
                 .ConfigureAwait(false);
             return new SettingsActivationResult(SettingsActivationState.Applied);
@@ -733,6 +742,10 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
                 await _factory.RefreshPluginsAsync(previousBundle, _runtimeCancellationToken)
                     .ConfigureAwait(false);
             }
+            if (aggregate == SettingsAggregateId.Voice)
+            {
+                _factory.CommitVoiceActivation(previousBundle.Voice);
+            }
             return null;
         }
         catch (Exception exception)
@@ -778,8 +791,10 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
                 request.Kind,
                 RuntimeCommandStatus.Completed,
                 Payload: new RuntimeCommandPayload(
-                    VoiceConversation: voice.GetConversationPage(
-                        request.Arguments?.ContinuationToken)));
+                    VoiceConversation: await voice.GetConversationPageAsync(
+                            request.Arguments?.ContinuationToken,
+                            cancellationToken)
+                        .ConfigureAwait(false)));
         }
 
         var state = voice.GetState();
@@ -1056,7 +1071,9 @@ internal interface IProductionVoiceOwner : IProductionRuntimeOwner
 
     ProductionVoiceState GetState();
 
-    RuntimeVoiceConversationPage GetConversationPage(string? continuationToken);
+    Task<RuntimeVoiceConversationPage> GetConversationPageAsync(
+        string? continuationToken,
+        CancellationToken cancellationToken);
 }
 
 internal sealed record ProductionVoiceState(
@@ -1074,6 +1091,8 @@ internal interface IProductionRuntimeOwnerFactory : IAsyncDisposable
     RuntimeUiSnapshot GetUiSnapshot();
 
     void RefreshVoiceMessaging(VoicePePreferences preferences);
+
+    void CommitVoiceActivation(VoicePePreferences preferences) { }
 
     Task RefreshPluginsAsync(
         SettingsBundle activeSettings,

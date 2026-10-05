@@ -6,6 +6,7 @@ namespace Joydex.RuntimeHost.Plugins;
 internal static class BundledPluginCatalog
 {
     internal const string PadId = RuntimePluginIds.Pad;
+    internal const string VoiceId = RuntimePluginIds.VoicePe;
 
     public static IReadOnlyList<BundledPluginRegistration> Registrations { get; } =
     [
@@ -16,6 +17,13 @@ internal static class BundledPluginCatalog
             MinimumHostApiMinor: 0,
             SettingsSchemaVersion: 1,
             Execution: BundledPluginExecutionModel.InProcess),
+        new(
+            VoiceId,
+            Version: "1.0.0",
+            HostApiMajor: 1,
+            MinimumHostApiMinor: 3,
+            SettingsSchemaVersion: 1,
+            Execution: BundledPluginExecutionModel.WorkerProcess),
     ];
 
     public static BundledPluginRegistration GetRequired(string pluginId)

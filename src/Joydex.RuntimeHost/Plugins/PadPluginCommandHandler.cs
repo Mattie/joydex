@@ -3,10 +3,20 @@ using Joydex.Contracts;
 namespace Joydex.RuntimeHost.Plugins;
 
 /// <summary>Dispatches the three typed management commands for the bundled PAD.</summary>
-internal sealed class PadPluginCommandHandler(PadPlugin pad, Action<string> log)
+internal sealed class PadPluginCommandHandler(
+    PadPlugin pad,
+    Action<string> log,
+    Func<BundledPluginHealth>? voiceHealth = null)
 {
     private readonly PadPlugin _pad = pad ?? throw new ArgumentNullException(nameof(pad));
     private readonly Action<string> _log = log ?? throw new ArgumentNullException(nameof(log));
+    private readonly Func<BundledPluginHealth> _voiceHealth = voiceHealth ?? (() => new(
+        BundledPluginCatalog.VoiceId,
+        BundledPluginLifecycleState.Disabled,
+        0,
+        "Room Voice is disabled.",
+        false,
+        false));
 
     public async Task<RuntimeCommandResult> ExecuteAsync(
         RuntimeCommandRequest request,
@@ -19,6 +29,13 @@ internal sealed class PadPluginCommandHandler(PadPlugin pad, Action<string> log)
         }
 
         var pluginId = request.Arguments?.PluginId;
+        if (string.Equals(pluginId, BundledPluginCatalog.VoiceId, StringComparison.Ordinal))
+        {
+            return Result(
+                request,
+                RuntimeCommandStatus.Rejected,
+                "Room Voice is managed by its existing Voice controls.");
+        }
         if (string.IsNullOrEmpty(pluginId)
             || !string.Equals(pluginId, BundledPluginCatalog.PadId, StringComparison.Ordinal))
         {
@@ -97,7 +114,7 @@ internal sealed class PadPluginCommandHandler(PadPlugin pad, Action<string> log)
         detail,
         new RuntimeCommandPayload(Plugins: new RuntimePluginSnapshot(
             BundledPluginCatalog.Registrations.Select(MapRegistration).ToArray(),
-            [MapHealth(_pad.Health)])));
+            [MapHealth(_pad.Health), MapHealth(_voiceHealth())])));
 
     private static RuntimePluginRegistration MapRegistration(
         BundledPluginRegistration registration) => new(
