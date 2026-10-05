@@ -489,6 +489,11 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
     private void ValidateCommandAuthorization(RuntimeCommandRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (IsPluginManagementCommand(request.Kind) && _negotiatedProtocolMinor < 3)
+        {
+            throw new InvalidOperationException(
+                "The negotiated runtime protocol does not support plugin management commands.");
+        }
         if (request.Kind is RuntimeCommandKind.OpenSettings or RuntimeCommandKind.ShutdownRuntime
             && _authorizedClientKind != RuntimeClientKind.Tray)
         {
@@ -498,6 +503,11 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
                     : "Only the tray client may stop the runtime.");
         }
     }
+
+    private static bool IsPluginManagementCommand(RuntimeCommandKind kind) => kind is
+        RuntimeCommandKind.InspectPlugins or
+        RuntimeCommandKind.RestartPlugin or
+        RuntimeCommandKind.ReloadPluginConfiguration;
 
     private void EnsureAttached()
     {

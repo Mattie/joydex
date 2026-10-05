@@ -46,6 +46,7 @@ internal static class RuntimeCommandCanonicalizer
         var deliveryId = NormalizeOptional(arguments.DeliveryId);
         var endpoint = NormalizeEndpoint(arguments.VoiceEndpoint);
         var continuationToken = NormalizeOptional(arguments.ContinuationToken);
+        var pluginId = NormalizePluginId(arguments.PluginId);
         if (continuationToken?.Length > 256)
         {
             throw new ArgumentException("The continuation token is too long.");
@@ -64,7 +65,8 @@ internal static class RuntimeCommandCanonicalizer
             appServerPath,
             endpoint,
             arguments.VoiceWakeTuning,
-            continuationToken);
+            continuationToken,
+            pluginId);
         return HasAny(normalized) ? normalized : null;
     }
 
@@ -84,7 +86,8 @@ internal static class RuntimeCommandCanonicalizer
                        && (arguments.CodexAppServerPath is null || names.Contains(nameof(arguments.CodexAppServerPath)))
                        && (arguments.VoiceEndpoint is null || names.Contains(nameof(arguments.VoiceEndpoint)))
                        && (arguments.VoiceWakeTuning is null || names.Contains(nameof(arguments.VoiceWakeTuning)))
-                       && (arguments.ContinuationToken is null || names.Contains(nameof(arguments.ContinuationToken))));
+                       && (arguments.ContinuationToken is null || names.Contains(nameof(arguments.ContinuationToken)))
+                       && (arguments.PluginId is null || names.Contains(nameof(arguments.PluginId))));
         }
 
         var valid = kind switch
@@ -120,6 +123,9 @@ internal static class RuntimeCommandCanonicalizer
             RuntimeCommandKind.SetJoydexStartAtLogin or
                 RuntimeCommandKind.SetLinkToolStartAtLogin =>
                 arguments?.Enabled is not null && Only(nameof(arguments.Enabled)),
+            RuntimeCommandKind.RestartPlugin or
+                RuntimeCommandKind.ReloadPluginConfiguration =>
+                arguments?.PluginId is not null && Only(nameof(arguments.PluginId)),
             _ => arguments is null,
         };
         return valid ? null : $"The {kind} command arguments are missing or contain unused fields.";
@@ -192,6 +198,19 @@ internal static class RuntimeCommandCanonicalizer
     private static string? NormalizeOptional(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    private static string? NormalizePluginId(string? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+        if (!RuntimePluginLimits.IsCanonicalPluginId(value))
+        {
+            throw new ArgumentException("A canonical plugin ID is required.");
+        }
+        return value;
+    }
+
     private static bool HasAggregates(RuntimeCommandArguments? arguments) =>
         arguments?.ExternalSettingsAggregates is { Length: > 0 };
 
@@ -204,5 +223,6 @@ internal static class RuntimeCommandCanonicalizer
         || arguments.CodexAppServerPath is not null
         || arguments.VoiceEndpoint is not null
         || arguments.VoiceWakeTuning is not null
-        || arguments.ContinuationToken is not null;
+        || arguments.ContinuationToken is not null
+        || arguments.PluginId is not null;
 }

@@ -3,7 +3,7 @@ namespace Joydex.Contracts;
 public static class RuntimeProtocol
 {
     public const int MajorVersion = 1;
-    public const int MinorVersion = 2;
+    public const int MinorVersion = 3;
     public const int MaximumMessageBytes = 1024 * 1024;
     public const int MaximumRetainedEvents = 256;
 
@@ -15,6 +15,7 @@ public static class RuntimeProtocol
     public const string RuntimeUiCapability = "runtime-ui.v1";
     public const string SettingsTransferCapability = "settings-transfer.v1";
     public const string ReliableCursorsCapability = "reliable-cursors.v1";
+    public const string PluginManagementCapability = "plugin-management.v1";
 
     public static string[] Capabilities { get; } =
     [
@@ -26,12 +27,15 @@ public static class RuntimeProtocol
         RuntimeUiCapability,
         SettingsTransferCapability,
         ReliableCursorsCapability,
+        PluginManagementCapability,
     ];
 
     public static string[] CapabilitiesForMinor(int negotiatedMinor) => Capabilities
         .Where(capability => negotiatedMinor >= 1 || capability != RuntimeUiCapability)
         .Where(capability => negotiatedMinor >= 2
             || capability is not (SettingsTransferCapability or ReliableCursorsCapability))
+        .Where(capability => negotiatedMinor >= 3
+            || capability != PluginManagementCapability)
         .ToArray();
 }
 

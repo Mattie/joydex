@@ -33,6 +33,18 @@ The host supplies a task snapshot, navigation capability, acknowledgement capabi
 
 Preserve LocalAppData/Joydex/WirelessPanel/panel.json and its CurrentUser DPAPI credential behavior. It is independent of the selected companion --config path today; document that association explicitly in the settings page.
 
+The first bundled pilot uses the existing configuration file and provisioning tool.
+Its tray surface is **Plugins > PAD**, with health, restart and reload controls.
+Opening the menu inspects current health. Restart uses the effective configuration;
+reload explicitly reads and validates the external file before replacing it. An
+unrelated Companion Apply updates PAD's action policy without adopting external
+panel-file edits or reconnecting the adapter. See [ADR 0010](../../adr/0010-use-a-bundled-in-process-pad-pilot.md).
+
+Health describes the host's PAD lifecycle. A ready adapter does not by itself prove
+that a physical panel is connected or that a command reached it. If cleanup of the
+prior adapter cannot be confirmed, PAD replacement remains blocked until process
+exit so two adapters cannot own the same connection.
+
 Expose endpoint, enablement, connection health, pairing/test command and existing provisioning workflow. A token/host change reconnects only PAD. Validate before replacing active settings, and retain old credentials if the test fails.
 
 No firmware or numeric command changes are required for extraction. A future dynamic layout or arbitrary plugin action surface needs a separately versioned protocol and coordinated firmware rollout. Existing command numbers never get renumbered to match a new registry.

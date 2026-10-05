@@ -40,6 +40,9 @@ public enum RuntimeCommandKind
     RemoveTaskAlertHooks,
     ShutdownRuntime,
     OpenSettings,
+    InspectPlugins,
+    RestartPlugin,
+    ReloadPluginConfiguration,
 }
 
 /// <summary>
@@ -55,7 +58,8 @@ public sealed record RuntimeCommandArguments(
     string? CodexAppServerPath = null,
     Uri? VoiceEndpoint = null,
     VoicePeWakeTuning? VoiceWakeTuning = null,
-    string? ContinuationToken = null);
+    string? ContinuationToken = null,
+    string? PluginId = null);
 
 public sealed record RuntimeCommandRequest(
     Guid OperationId,
@@ -106,7 +110,8 @@ public sealed record RuntimeCommandPayload(
     RuntimeTaskAlertHookStatus? TaskAlertHooks = null,
     RuntimeVoiceConversationPage? VoiceConversation = null,
     RuntimeVoiceOutboxDelivery? VoiceOutboxDelivery = null,
-    int? DeletedFileCount = null);
+    int? DeletedFileCount = null,
+    RuntimePluginSnapshot? Plugins = null);
 
 /// <summary>A requested target. The host re-resolves its identity before acting on it.</summary>
 public sealed record RuntimeTaskReference(string TaskId, string HostId);

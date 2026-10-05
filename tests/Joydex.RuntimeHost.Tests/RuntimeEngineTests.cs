@@ -31,10 +31,13 @@ public sealed class RuntimeEngineTests
     }
 
     [Fact]
-    public void NewSettingsCommandPreservesThePublishedShutdownOrdinal()
+    public void NewCommandsPreservePublishedOrdinalsAndAppendPluginManagement()
     {
         Assert.Equal(27, (int)RuntimeCommandKind.ShutdownRuntime);
         Assert.Equal(28, (int)RuntimeCommandKind.OpenSettings);
+        Assert.Equal(29, (int)RuntimeCommandKind.InspectPlugins);
+        Assert.Equal(30, (int)RuntimeCommandKind.RestartPlugin);
+        Assert.Equal(31, (int)RuntimeCommandKind.ReloadPluginConfiguration);
     }
 
     [Fact]
@@ -732,6 +735,78 @@ public sealed class RuntimeEngineTests
         Assert.Contains(
             RuntimeProtocol.ReliableCursorsCapability,
             RuntimeProtocol.CapabilitiesForMinor(2));
+        Assert.DoesNotContain(
+            RuntimeProtocol.PluginManagementCapability,
+            RuntimeProtocol.CapabilitiesForMinor(2));
+        Assert.Contains(
+            RuntimeProtocol.PluginManagementCapability,
+            RuntimeProtocol.CapabilitiesForMinor(3));
+    }
+
+    [Fact]
+    public async Task MinorTwoPeerCannotIssuePluginManagementCommands()
+    {
+        using var scratch = new ScratchDirectory();
+        await using var engine = await RuntimeEngine.StartSyntheticAsync(scratch.Root, "old-plugin-peer");
+        await using var session = engine.CreateSession(
+            "old-plugin-peer",
+            RuntimeClientKind.HeadlessTest,
+            new RecordingClient(),
+            CancellationToken.None);
+        _ = await session.AttachAsync(
+            new RuntimeAttachRequest(
+                RuntimeProtocol.MajorVersion,
+                2,
+                RuntimeClientKind.HeadlessTest,
+                RuntimeInstanceKind.Synthetic,
+                engine.DataRootId,
+                "consumed-by-transport"),
+            CancellationToken.None);
+
+        foreach (var kind in new[]
+                 {
+                     RuntimeCommandKind.InspectPlugins,
+                     RuntimeCommandKind.RestartPlugin,
+                     RuntimeCommandKind.ReloadPluginConfiguration,
+                 })
+        {
+            var arguments = kind == RuntimeCommandKind.InspectPlugins
+                ? null
+                : new RuntimeCommandArguments(PluginId: RuntimePluginIds.Pad);
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                session.ExecuteCommandAsync(
+                    new RuntimeCommandRequest(Guid.NewGuid(), kind, arguments),
+                    CancellationToken.None));
+
+            Assert.Contains("does not support plugin management", exception.Message);
+        }
+    }
+
+    [Fact]
+    public void PluginCommandRequiresAnExactCanonicalPluginId()
+    {
+        var operationId = Guid.NewGuid();
+        Assert.True(RuntimeCommandCanonicalizer.TryNormalize(
+            new RuntimeCommandRequest(
+                operationId,
+                RuntimeCommandKind.RestartPlugin,
+                new RuntimeCommandArguments(PluginId: RuntimePluginIds.Pad)),
+            out var normalized,
+            out var error), error);
+        Assert.Equal(RuntimePluginIds.Pad, normalized.Arguments?.PluginId);
+        Assert.True(RuntimePluginLimits.IsCanonicalPluginId("a." + new string('b', 62)));
+        Assert.False(RuntimePluginLimits.IsCanonicalPluginId("a." + new string('b', 63)));
+
+        foreach (var invalid in new[] { " joydex.pad", "Joydex.pad", "joydex..pad", "joydex.pad/other" })
+        {
+            Assert.False(RuntimeCommandCanonicalizer.TryNormalize(
+                new RuntimeCommandRequest(
+                    Guid.NewGuid(),
+                    RuntimeCommandKind.ReloadPluginConfiguration,
+                    new RuntimeCommandArguments(PluginId: invalid)),
+                out _,
+                out _));
+        }
     }
 
     [Fact]

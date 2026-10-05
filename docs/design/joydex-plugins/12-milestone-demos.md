@@ -294,9 +294,9 @@ were closed after exact path, parent and role checks; normal Joydex stayed runni
 
 ## Milestone 3 — Bundled PAD plugin pilot
 
-Status: implementation authorized 2026-09-12. The user requested continued
-implementation and no further agent-driven demo. Begin with one PAD/catalog builder
-and independent review, using background-safe validation only.
+Status: implemented 2026-09-12, through `b6024f3`. The user requested continued
+implementation and no further agent-driven demo. A PAD/catalog builder and a
+client/tray builder completed the bounded pilot with independent review.
 
 Give the existing wireless panel adapter a stable `joydex.pad` registration and
 independent lifecycle/configuration/health boundary. Preserve its settings path,
@@ -305,6 +305,76 @@ Prove with injected owners/transports that missing, disabled, failed or restarte
 PAD leaves unrelated runtime components healthy. Keep the first catalog explicit
 and bundled; public SDK loading and firmware changes are outside this milestone.
 
-The remaining M2 attended checks and physical PAD canary remain release evidence
-gaps. Record them beside the completed background evidence; do not infer real
-hardware or media continuity from fake lifecycle tests.
+The typed contracts are integrated at `a081264` (reviewed `74f5577`), the client
+and tray at `0571bab` (reviewed `7479c2b`), and the independent PAD owner at
+`517abc3` plus `b6024f3` (reviewed `98af614` plus `a3fd9aa`). The tray exposes
+**Plugins > PAD** lifecycle, Restart and Reload configuration. Protocol minor 3
+advertises `plugin-management.v1`; older negotiated clients cannot invoke the new
+commands. Opening the submenu inspects health without reloading configuration.
+
+PAD is no longer owned by the Companion controller aggregate. It keeps the existing
+transport reconnect behavior, while its supervisor handles unexpected loop
+termination with bounded retries. A replacement waits for confirmed prior cleanup;
+uncertain cleanup blocks PAD replacement until process exit. Restart uses the
+effective configuration, invalid reload preserves a live prior generation, and
+Companion policy updates do not silently adopt external panel-file edits. Client
+recovery resolves an uncertain operation before another Restart or Reload, and
+stale connection results cannot overwrite the new connection's tray state.
+
+Final integrated validation ran from a clean detached checkout of `b6024f3`, using
+SDK 8.0.423, Release warnings as errors and `JOYDEX_RUN_ATTENDED_TESTS=0`. Restore
+used the existing local package cache. Both selected runs passed, with no failures,
+skips or build warnings:
+
+| Audited selection | Passed |
+|---|---:|
+| `PadPluginTests` | 18 |
+| `RuntimeEngineTests` | 25 |
+| Three `ProductionRuntimeCompositionTests` methods below | 3 |
+| `EspHomePanelAdapterTests` | 39 |
+| `RuntimePluginConnectionServicesTests` | 8 |
+| **Total** | **93** |
+
+The composition selection was exactly `RefreshStartsEveryOwnerInDependencyOrder`,
+`PadLossAndRetryStayOutsideCompositionAndUnrelatedOwnerLifetimes`, and
+`PadPolicyRefreshFollowsOnlySuccessfulCompanionCommitAndRollback`. These checks use
+fake owners/transports and synthetic settings stores. They exercise production
+command dispatch, isolation, cleanup/retry, reload rollback, current action policy,
+fixed panel behavior, protocol compatibility and client reply recovery. They do
+not open the tray, drive Settings, or contact a physical panel.
+
+The next implementation slice is VOICEPLUGIN. Do not treat this checkpoint as a
+new packaged release or as evidence that the remaining attended scenarios passed.
+
+### Physical PAD canary
+
+The 2026-10-04 mainline migration retained the reviewed RuntimeHost recovery fixes.
+Its Release solution build passed without warnings; 91 focused host tests and 72
+focused client/panel tests passed. PAD recovery now distinguishes a replacement
+engine from a reconnect and releases expired terminal results only for a later
+explicit action. The physical evidence below is historical, not a new hardware run.
+
+On 2026-09-12 the user exited the prior Joydex normally. A process check confirmed
+all Joydex owners had exited before the separate `pad-canary-b6024f3-win-x64`
+package launched with the existing Companion and PAD configuration. Both files
+were backed up first. Publishing succeeded with the known Guardian/HidSharp IL2104
+warning; all 111 package files were nonempty and recorded in a SHA-256 manifest.
+
+The user confirmed current tasks appeared on the real PAD. **Restart PAD** caused
+temporary display flicker, then recovered; the flicker stopped and task buttons
+opened the correct tasks. Task navigation also worked while Configure was open
+and after it closed. These are user-observed physical results, with the user
+operating the tray and panel.
+
+This closes the small PAD restart/navigation and Settings open/close canary.
+The temporary restart flicker remains a recorded observation. Settings Capture,
+Apply, Settings-process termination/restart, live Voice/media continuity, physical
+PAD disconnect/reconnect, and full release/rollback acceptance remain unverified.
+
+## Milestone 4 — Voice plugin extraction
+
+Status: implementation authorized 2026-09-12 following the physical PAD canary.
+Preserve the running canary while extracting the existing Voice aggregate and
+supervision into the bundled plugin boundary. Retain media STA ownership, session
+and archive behavior, active/desired configuration, and existing fallback mode.
+Use background-safe validation; further physical Voice testing is a separate step.

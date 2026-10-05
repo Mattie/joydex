@@ -4,11 +4,9 @@ using Joydex.Core.Config;
 using Joydex.Core.Mapping;
 using Joydex.Core.Runtime;
 using Joydex.Core.TaskAlerts;
-using Joydex.WirelessPanel;
 using Joydex.Windows.Input;
 using Joydex.Windows.Runtime;
 using Joydex.Windows.TaskAlerts;
-using Joydex.Windows.WirelessPanel;
 
 namespace Joydex.RuntimeHost.Production;
 
@@ -20,7 +18,6 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
     private readonly RuntimeInputSourceProvider _catalog;
     private readonly List<CompanionWorker> _workers;
     private readonly PromptPickerCoordinator _promptPicker;
-    private readonly EspHomePanelAdapter? _panel;
     private readonly TaskCompletionSource _ownedCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _completion;
@@ -34,8 +31,7 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
         RuntimeInputHost inputHost,
         RuntimeInputSourceProvider catalog,
         List<CompanionWorker> workers,
-        PromptPickerCoordinator promptPicker,
-        EspHomePanelAdapter? panel)
+        PromptPickerCoordinator promptPicker)
     {
         _factory = factory;
         _windowsSta = windowsSta;
@@ -43,9 +39,7 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
         _catalog = catalog;
         _workers = workers;
         _promptPicker = promptPicker;
-        _panel = panel;
         _completion = Task.WhenAny(_ownedCompletion.Task, windowsSta.Completion).Unwrap();
-        _factory.TaskAlertsChanged += OnTaskAlertsChanged;
     }
 
     public SettingsAggregateId Aggregate => SettingsAggregateId.Companion;
@@ -72,7 +66,6 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
             factory.WriteLog);
         var workers = new List<CompanionWorker>();
         PromptPickerCoordinator? promptPicker = null;
-        EspHomePanelAdapter? panel = null;
         try
         {
             var entries = catalog.Refresh(config);
@@ -132,15 +125,13 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
                 worker.Start();
             }
 
-            panel = await TryStartPanelAsync(factory, config).ConfigureAwait(true);
             var owner = new CompanionProductionOwner(
                 factory,
                 windowsSta,
                 inputHost,
                 catalog,
                 workers,
-                promptPicker,
-                panel)
+                promptPicker)
             {
                 _catalogEntries = entries.ToDictionary(
                     entry => entry.Source.SourceId,
@@ -159,10 +150,6 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
                 }
             }
             catch (Exception exception) { cleanupFailures.Add(exception); }
-            if (panel is not null)
-            {
-                await TryDisposeAsync(panel, cleanupFailures).ConfigureAwait(true);
-            }
             foreach (var worker in workers.AsEnumerable().Reverse())
             {
                 await TryDisposeAsync(worker, cleanupFailures).ConfigureAwait(true);
@@ -219,13 +206,8 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
 
     private async Task DisposeOnStaAsync()
     {
-        _factory.TaskAlertsChanged -= OnTaskAlertsChanged;
         _promptPicker.Changed -= _factory.OnPromptPickerChanged;
         var failures = new List<Exception>();
-        if (_panel is not null)
-        {
-            await TryDisposeAsync(_panel, failures);
-        }
         foreach (var worker in _workers.AsEnumerable().Reverse())
         {
             await TryDisposeAsync(worker, failures);
@@ -234,63 +216,7 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
         _ownedCompletion.TrySetResult();
         if (failures.Count > 0)
         {
-            throw new AggregateException("Controller or PAD cleanup did not complete.", failures);
-        }
-    }
-
-    private void OnTaskAlertsChanged(object? sender, TaskAlertSnapshot snapshot) =>
-        _panel?.Apply(snapshot);
-
-    private static async Task<EspHomePanelAdapter?> TryStartPanelAsync(
-        WindowsProductionRuntimeOwnerFactory factory,
-        CompanionConfig config)
-    {
-        EspHomePanelAdapter? panel = null;
-        try
-        {
-            var panelConfiguration = new WirelessPanelConfigurationStore().Load();
-            if (panelConfiguration is null || !panelConfiguration.Enabled)
-            {
-                return null;
-            }
-            var navigator = new TaskDeepLinkNavigator(config.Safety, factory.WriteLog);
-            var executor = factory.CreateActionExecutor(config);
-            var snapshot = factory.GetTaskAlertSnapshot();
-            panel = new EspHomePanelAdapter(
-                new EspHomePanelTransport(
-                    panelConfiguration.Endpoint,
-                    panelConfiguration.Username,
-                    panelConfiguration.Password,
-                    factory.WriteLog),
-                snapshot,
-                factory.GetTaskAlertSnapshot,
-                navigator,
-                factory.AcknowledgeTerminalTaskAlert,
-                executor.ExecuteAsync,
-                factory.WriteLog);
-            panel.Start();
-            factory.WriteLog(
-                $"ESPHome panel adapter started for {panelConfiguration.Endpoint.Host}:"
-                + $"{panelConfiguration.Endpoint.Port}.");
-            return panel;
-        }
-        catch (Exception exception)
-        {
-            if (panel is not null)
-            {
-                try
-                {
-                    await panel.DisposeAsync().ConfigureAwait(true);
-                }
-                catch (Exception cleanupFailure)
-                {
-                    throw new ProductionOwnershipCleanupException(
-                        "ESPHome panel startup failed and cleanup was incomplete.",
-                        [exception, cleanupFailure]);
-                }
-            }
-            factory.WriteLog("ESPHome panel is unavailable: " + exception.Message);
-            return null;
+            throw new AggregateException("Controller cleanup did not complete.", failures);
         }
     }
 
