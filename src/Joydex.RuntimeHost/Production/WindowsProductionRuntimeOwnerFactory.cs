@@ -6,6 +6,7 @@ using Joydex.Core.TaskAlerts;
 using Joydex.Core.Voice;
 using Joydex.Ipc;
 using Joydex.RuntimeHost.Plugins;
+using Joydex.Virpil;
 using Joydex.WirelessPanel;
 using Joydex.Windows.Actions;
 using Joydex.Windows.Input;
@@ -40,6 +41,9 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     private TaskAlertProductionOwner? _taskAlerts;
     private VoiceProductionOwner? _voiceOwner;
     private PebbleIndexProductionOwner? _pebbleOwner;
+    private CompanionProductionOwner? _directInputOwner;
+    private TaskAlertProductionOwner? _virpilHealthOwner;
+    private long _nextDeviceGeneration;
     private BundledPluginHealth _voiceHealth = new(
         BundledPluginCatalog.VoiceId,
         BundledPluginLifecycleState.Disabled,
@@ -110,7 +114,9 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
             _pad,
             WriteLog,
             GetVoiceHealth,
-            GetPebbleHealth);
+            GetPebbleHealth,
+            GetDirectInputHealth,
+            GetVirpilHealth);
     }
 
     public event Action? VoiceBecameIdle;
@@ -125,6 +131,27 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
 
     public Task Completion => _completion;
 
+    public VirpilSettingsTransition? PrepareTaskAlertTransition(SettingsBundle previous, SettingsBundle candidate) =>
+        VirpilSettingsTransition.Prepare(
+            previous.TaskAlerts.Normalize().LedOutput ?? TaskAlertLedOptions.CreateDefault(),
+            candidate.TaskAlerts.Normalize().LedOutput ?? TaskAlertLedOptions.CreateDefault(),
+            static () =>
+            {
+                if (new DirectVirpilConflictDetector().HasConflict())
+                {
+                    throw new InvalidOperationException(
+                        "Close VIRPIL LinkTool and all VPC utilities before enabling Direct USB LED output.");
+                }
+                var transport = new VirpilHidTransportFactory();
+                if (!transport.IsAvailable(VirpilDevices.Throttle) || !transport.IsAvailable(VirpilDevices.Alpha))
+                {
+                    throw new InvalidOperationException(
+                        "Both the CM3 throttle and Constellation Alpha must be connected before enabling Direct USB LED output.");
+                }
+            },
+            new RegistryLoginStartupStore("Joydex.VirpilLinkTool"),
+            _paths.LinkToolProfile);
+
     internal IReadOnlyList<BundledPluginRegistration> Catalog =>
         BundledPluginCatalog.Registrations;
 
@@ -135,7 +162,10 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         {
             BundledPluginCatalog.PadId => _pad.Health,
             BundledPluginCatalog.VoiceId => GetVoiceHealth(),
-            _ => GetPebbleHealth(),
+            BundledPluginCatalog.PebbleId => GetPebbleHealth(),
+            BundledPluginCatalog.DirectInputId => GetDirectInputHealth(),
+            BundledPluginCatalog.VirpilId => GetVirpilHealth(),
+            _ => throw new ArgumentOutOfRangeException(nameof(pluginId)),
         };
     }
 
@@ -611,12 +641,14 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
                 this,
                 _windowsSta,
                 _paths,
-                activeSettings))
+                activeSettings,
+                Interlocked.Increment(ref _nextDeviceGeneration)))
             .GetAwaiter()
             .GetResult();
         lock (_stateGate)
         {
             _taskAlerts = owner;
+            _virpilHealthOwner = owner;
         }
         PublishTaskAlerts(owner, owner.Snapshot);
         return owner;
@@ -630,14 +662,17 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         // The previous owner has drained; none of its retained device/UI state belongs
         // to the replacement, including when settings roll back to an earlier owner.
         _ui.ResetCompanion();
-        return await _windowsSta.InvokeAsync(() => CompanionProductionOwner.StartAsync(
+        var owner = await _windowsSta.InvokeAsync(() => CompanionProductionOwner.StartAsync(
                 this,
                 _windowsSta,
                 _inputHost,
                 _inputSources,
-                activeSettings),
+                activeSettings,
+                Interlocked.Increment(ref _nextDeviceGeneration)),
                 cancellationToken)
             .ConfigureAwait(false);
+        lock (_stateGate) { _directInputOwner = owner; }
+        return owner;
     }
 
     private async Task<IProductionRuntimeOwner?> CreateVoiceAsync(
@@ -807,6 +842,26 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     private BundledPluginHealth GetPebbleHealth()
     {
         lock (_stateGate) { return _pebbleHealth; }
+    }
+
+    private BundledPluginHealth GetDirectInputHealth()
+    {
+        lock (_stateGate)
+        {
+            return _directInputOwner?.HealthSnapshot ?? new(
+                BundledPluginCatalog.DirectInputId, BundledPluginLifecycleState.Stopped,
+                0, "Controller acquisition has not started.", false, false);
+        }
+    }
+
+    private BundledPluginHealth GetVirpilHealth()
+    {
+        lock (_stateGate)
+        {
+            return _virpilHealthOwner?.HealthSnapshot ?? new(
+                BundledPluginCatalog.VirpilId, BundledPluginLifecycleState.Stopped,
+                0, "VIRPIL hardware ownership has not started.", false, false);
+        }
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

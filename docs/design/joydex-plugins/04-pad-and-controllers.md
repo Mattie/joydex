@@ -1,6 +1,6 @@
 # Joydex PAD, joystick/throttle and VIRPIL plugins
 
-Status: proposed. “Joydex PAD” here means our existing wireless ESPHome touchscreen. Joysticks and throttles are separate physical input sources.
+Status: PAD and device extraction implemented; physical device acceptance remains open. “Joydex PAD” here means our existing wireless ESPHome touchscreen. Joysticks and throttles are separate physical input sources.
 
 ## Recommended split
 
@@ -59,7 +59,12 @@ The initial Secrets release uses the native desktop popup plus enrolled controll
 
 ## DirectInput boundary
 
-CompanionWorker currently combines acquisition, CompanionEngine and execution. Refactor into one acquisition owner per configured device, a domain resolver, and an asynchronous action dispatcher. Keep polling cadence and buffered input handling independent of slow task navigation or network operations.
+Each configured CompanionWorker now uses a bounded acquisition pump independently of its ordered
+CompanionEngine resolver and asynchronous action dispatcher. Polling continues during slow task
+navigation. Changed snapshots and buffered edges are copied in order; queue exhaustion ends that
+source generation. Capture records an acquisition watermark under the input host lock, rejects
+older frames at routing, and releases/rebaselines after the prior action joins, even if the capture
+client has already cancelled. See [ADR 0013](../../adr/0013-keep-device-plugins-with-the-runtime-hardware-owner.md).
 
 Preserve device profile IDs, instance/product selectors, legacy single-device normalization, banks, cooldown, press/release/toggle semantics, wheel notch counts, maps, prompt picker behavior and open-working-directory actions.
 
@@ -77,7 +82,12 @@ Dry-run and simulator/foreground suppression remain centralized and unchanged in
 
 ## VIRPIL boundary and Guardian
 
-Keep both LED backends selectable. SetLedOutputAsync currently includes external-writer checks, expected-device checks, LinkTool startup changes, pause/swap/dispose, persistence rollback, Guardian update and output replay. Extract that complete transaction.
+Both LED backends remain selectable. The production settings Apply flow validates changed LED
+options before retiring the active owner. Direct USB checks external writers and expected devices,
+and disables the exact Joydex LinkTool startup entry. LinkTool profile preparation must succeed.
+Failed activation restores the previous startup command or exact profile bytes. Ordinary startup
+with unchanged saved options retains disconnected-device tolerance. The VIRPIL aggregate owns
+pause/dispose, Guardian update and replay.
 
 Keep VirpilShiftModeReader and VirpilHidTransport in the same process as direct LED output until a single cross-process HID owner exists. Per-process locks on device path cannot protect competing worker processes.
 

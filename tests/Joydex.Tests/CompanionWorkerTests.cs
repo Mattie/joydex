@@ -76,11 +76,11 @@ public sealed class CompanionWorkerTests
 
         worker.Start();
         await lifecycle.ReleaseRetried.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await worker.StopAsync();
 
         Assert.True(lifecycle.ReleaseCalls >= 2);
         Assert.Equal(lifecycle.ReleasedSources[0], lifecycle.ReleasedSources[1]);
         Assert.Contains(logs, message => message.Contains("release failed", StringComparison.Ordinal));
-        await worker.StopAsync();
     }
 
     [Fact]

@@ -33,6 +33,8 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _pluginsItem;
     private readonly ToolStripMenuItem _padItem;
     private readonly ToolStripMenuItem _padHealthItem;
+    private readonly ToolStripMenuItem _directInputHealthItem;
+    private readonly ToolStripMenuItem _virpilHealthItem;
     private readonly ToolStripMenuItem _restartPadItem;
     private readonly ToolStripMenuItem _reloadPadConfigurationItem;
     private readonly ToolStripMenuItem _configureItem;
@@ -149,11 +151,14 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             },
         };
         _padItem.DropDownOpening += OnPadMenuOpening;
+        _directInputHealthItem = new ToolStripMenuItem("Controllers: Runtime starting…") { Enabled = false };
+        _virpilHealthItem = new ToolStripMenuItem("VIRPIL: Runtime starting…") { Enabled = false };
         _pluginsItem = new ToolStripMenuItem("Plugins")
         {
             Enabled = false,
-            DropDownItems = { _padItem },
+            DropDownItems = { _padItem, _directInputHealthItem, _virpilHealthItem },
         };
+        _pluginsItem.DropDownOpening += OnPadMenuOpening;
         _configureItem = new ToolStripMenuItem(
             demoMode ? "Demo inspector…" : "Configure…",
             image: null,
@@ -975,6 +980,16 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             StringComparison.Ordinal));
         _padHealth = health;
         RenderPadHealth();
+        RenderDeviceHealth(_directInputHealthItem, "Controllers", RuntimePluginIds.DirectInput, outcome.Plugins);
+        RenderDeviceHealth(_virpilHealthItem, "VIRPIL", RuntimePluginIds.Virpil, outcome.Plugins);
+    }
+
+    private static void RenderDeviceHealth(
+        ToolStripMenuItem item, string label, string pluginId, RuntimePluginSnapshot snapshot)
+    {
+        var health = snapshot.Health.SingleOrDefault(candidate => candidate.PluginId == pluginId);
+        item.Text = $"{label}: {health?.State.ToString() ?? "Unavailable"}";
+        item.ToolTipText = health?.Detail ?? "This runtime does not report the device plugin.";
     }
 
     private void EnsurePadConnectionCurrent(long generation)
@@ -1003,6 +1018,10 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
 
     private void SetPadUnavailable(string detail)
     {
+        _directInputHealthItem.Text = "Controllers: Unavailable";
+        _directInputHealthItem.ToolTipText = detail;
+        _virpilHealthItem.Text = "VIRPIL: Unavailable";
+        _virpilHealthItem.ToolTipText = detail;
         _padHealth = null;
         _padHealthItem.Text = "Lifecycle: Unavailable";
         _padHealthItem.ToolTipText = detail;

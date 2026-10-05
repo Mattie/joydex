@@ -13,33 +13,26 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
     private readonly ProductionWindowsStaHost _windowsSta;
     private readonly TaskAlertCoordinator _coordinator;
     private readonly TaskAlertPipeServer _pipe;
-    private readonly VirpilShiftModeMonitor _shiftMonitor;
-    private readonly ITaskAlertLedOutput _ledOutput;
-    private readonly GuardianController _guardian;
-    private readonly DeviceChangeMonitor _deviceChangeMonitor;
+    private readonly VirpilProductionPlugin _virpil;
     private readonly TaskCompletionSource _ownedCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _completion;
     private int _disposed;
+    private Task? _disposeTask;
+    private readonly object _disposeGate = new();
 
     private TaskAlertProductionOwner(
         WindowsProductionRuntimeOwnerFactory factory,
         ProductionWindowsStaHost windowsSta,
         TaskAlertCoordinator coordinator,
         TaskAlertPipeServer pipe,
-        VirpilShiftModeMonitor shiftMonitor,
-        ITaskAlertLedOutput ledOutput,
-        GuardianController guardian,
-        DeviceChangeMonitor deviceChangeMonitor)
+        VirpilProductionPlugin virpil)
     {
         _factory = factory;
         _windowsSta = windowsSta;
         _coordinator = coordinator;
         _pipe = pipe;
-        _shiftMonitor = shiftMonitor;
-        _ledOutput = ledOutput;
-        _guardian = guardian;
-        _deviceChangeMonitor = deviceChangeMonitor;
+        _virpil = virpil;
         _completion = Task.WhenAny(_ownedCompletion.Task, windowsSta.Completion).Unwrap();
     }
 
@@ -47,13 +40,16 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
 
     public Task Completion => _completion;
 
+    internal Joydex.RuntimeHost.Plugins.BundledPluginHealth HealthSnapshot => _virpil.HealthSnapshot;
+
     internal TaskAlertSnapshot Snapshot => _coordinator.GetSnapshot();
 
     public static TaskAlertProductionOwner Start(
         WindowsProductionRuntimeOwnerFactory factory,
         ProductionWindowsStaHost windowsSta,
         ProductionRuntimePaths paths,
-        SettingsBundle activeSettings)
+        SettingsBundle activeSettings,
+        long generation = 1)
     {
         ArgumentNullException.ThrowIfNull(factory);
         ArgumentNullException.ThrowIfNull(windowsSta);
@@ -62,10 +58,7 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
 
         TaskAlertCoordinator? coordinator = null;
         TaskAlertPipeServer? pipe = null;
-        VirpilShiftModeMonitor? monitor = null;
-        ITaskAlertLedOutput? led = null;
-        GuardianController? guardian = null;
-        DeviceChangeMonitor? deviceChangeMonitor = null;
+        VirpilProductionPlugin? virpil = null;
         TaskAlertProductionOwner? owner = null;
         try
         {
@@ -82,45 +75,11 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
                     : []);
 
             pipe = new TaskAlertPipeServer(coordinator, factory.WriteLog);
-            monitor = new VirpilShiftModeMonitor(
-                new VirpilShiftModeReader(),
-                coordinator.SetDetectedBank,
-                factory.WriteLog);
-            var snapshot = coordinator.GetSnapshot();
-            led = CreateLedOutput(snapshot, paths, factory.WriteLog);
-            guardian = new GuardianController(
-                Path.Combine(AppContext.BaseDirectory, "Joydex.Guardian.exe"),
-                factory.WriteLog,
-                paths.GuardianRecovery);
-            deviceChangeMonitor = new DeviceChangeMonitor();
-
-            owner = new TaskAlertProductionOwner(
-                factory,
-                windowsSta,
-                coordinator,
-                pipe,
-                monitor,
-                led,
-                guardian,
-                deviceChangeMonitor);
+            virpil = VirpilProductionPlugin.Start(coordinator, paths, factory.WriteLog, generation);
+            owner = new TaskAlertProductionOwner(factory, windowsSta, coordinator, pipe, virpil);
             coordinator.Changed += owner.OnChanged;
-            led.ProfileDirtyChanged += owner.OnProfileDirtyChanged;
-            deviceChangeMonitor.DevicesChanged += owner.OnDevicesChanged;
             SystemEvents.PowerModeChanged += owner.OnPowerModeChanged;
             SystemEvents.SessionEnding += owner.OnSessionEnding;
-            owner.UpdateGuardian(snapshot);
-            if (snapshot.Enabled && snapshot.Assignments.Count > 0)
-            {
-                guardian.Start();
-                guardian.SetRestoreRequired(led.RestorePending);
-                led.RestoreAndReplay(replay: true);
-            }
-            else
-            {
-                led.Apply(snapshot);
-            }
-
-            monitor.Start();
             pipe.Start();
             return owner;
         }
@@ -136,22 +95,10 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
                 catch (Exception exception) { cleanupFailures.Add(exception); }
                 try { coordinator!.Changed -= owner.OnChanged; }
                 catch (Exception exception) { cleanupFailures.Add(exception); }
-                try { led!.ProfileDirtyChanged -= owner.OnProfileDirtyChanged; }
-                catch (Exception exception) { cleanupFailures.Add(exception); }
-                try { deviceChangeMonitor!.DevicesChanged -= owner.OnDevicesChanged; }
-                catch (Exception exception) { cleanupFailures.Add(exception); }
             }
-            try { monitor?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
-            catch (Exception exception) { cleanupFailures.Add(exception); }
             try { pipe?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
             catch (Exception exception) { cleanupFailures.Add(exception); }
-            try { led?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
-            catch (Exception exception) { cleanupFailures.Add(exception); }
-            try { guardian?.SignalCleanExit(); }
-            catch (Exception exception) { cleanupFailures.Add(exception); }
-            try { guardian?.Dispose(); }
-            catch (Exception exception) { cleanupFailures.Add(exception); }
-            try { deviceChangeMonitor?.Dispose(); }
+            try { virpil?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
             catch (Exception exception) { cleanupFailures.Add(exception); }
             try { coordinator?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
             catch (Exception exception) { cleanupFailures.Add(exception); }
@@ -174,85 +121,29 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
 
     public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-        {
-            return ValueTask.CompletedTask;
-        }
-
-        return new ValueTask(_windowsSta.InvokeAsync(DisposeOnStaAsync));
+        lock (_disposeGate)
+            return new ValueTask(_disposeTask ??= _windowsSta.InvokeAsync(DisposeOnStaAsync));
     }
 
     private async Task DisposeOnStaAsync()
     {
+        Interlocked.Exchange(ref _disposed, 1);
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         SystemEvents.SessionEnding -= OnSessionEnding;
         _factory.ClearTaskAlerts(this);
         _coordinator.Changed -= OnChanged;
-        _ledOutput.ProfileDirtyChanged -= OnProfileDirtyChanged;
-        _deviceChangeMonitor.DevicesChanged -= OnDevicesChanged;
         var failures = new List<Exception>();
-        try
-        {
-            _deviceChangeMonitor.Dispose();
-        }
-        catch (Exception exception)
-        {
-            failures.Add(exception);
-        }
-        await TryDisposeAsync(_shiftMonitor, failures);
         await TryDisposeAsync(_pipe, failures);
-        try
-        {
-            _ledOutput.SetPaused(true);
-            await _ledOutput.DisposeAsync();
-        }
-        catch (Exception exception)
-        {
-            failures.Add(exception);
-        }
-        try
-        {
-            _guardian.SignalCleanExit();
-        }
-        catch (Exception exception)
-        {
-            failures.Add(exception);
-        }
-        try
-        {
-            _guardian.Dispose();
-        }
-        catch (Exception exception)
-        {
-            failures.Add(exception);
-        }
+        await TryDisposeAsync(_virpil, failures);
         await TryDisposeAsync(_coordinator, failures);
         _ownedCompletion.TrySetResult();
-        if (failures.Count > 0)
-        {
-            throw new AggregateException("Task-alert owner cleanup did not complete.", failures);
-        }
+        if (failures.Count > 0) throw new AggregateException("Task-alert owner cleanup did not complete.", failures);
     }
 
     private void OnChanged(object? sender, TaskAlertSnapshot snapshot)
     {
-        UpdateGuardian(snapshot);
-        if (snapshot.Enabled && snapshot.Assignments.Count > 0)
-        {
-            _guardian.Start();
-            _guardian.SetRestoreRequired(_ledOutput.RestorePending);
-        }
-        _ledOutput.Apply(snapshot);
+        _virpil.Apply(snapshot);
         _factory.PublishTaskAlerts(this, snapshot);
-    }
-
-    private void OnProfileDirtyChanged(object? sender, bool dirty) =>
-        _guardian.SetRestoreRequired(dirty);
-
-    private void OnDevicesChanged(object? sender, EventArgs eventArgs)
-    {
-        _factory.WriteLog("Device-change notification; task-alert profile restore/replay requested.");
-        _ledOutput.RestoreAndReplay(Snapshot.Enabled);
     }
 
     private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs eventArgs)
@@ -284,13 +175,7 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
                 {
                     return;
                 }
-                _ledOutput.SetPaused(paused);
-                if (!paused)
-                {
-                    var snapshot = Snapshot;
-                    _ledOutput.Apply(snapshot);
-                    _ledOutput.RestoreAndReplay(snapshot.Enabled);
-                }
+                _virpil.SetPaused(paused, Snapshot);
             });
         }
         catch (Exception exception)
@@ -300,53 +185,6 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
                 _ownedCompletion.TrySetException(exception);
             }
         }
-    }
-
-    private void UpdateGuardian(TaskAlertSnapshot snapshot)
-    {
-        try
-        {
-            _guardian.UpdateRecovery(snapshot);
-        }
-        catch (Exception exception) when (exception is IOException
-            or UnauthorizedAccessException
-            or System.Text.Json.JsonException
-            or NotSupportedException)
-        {
-            _factory.WriteLog("Could not update LED guardian recovery state: " + exception.Message);
-        }
-    }
-
-    private static ITaskAlertLedOutput CreateLedOutput(
-        TaskAlertSnapshot snapshot,
-        ProductionRuntimePaths paths,
-        Action<string> log)
-    {
-        var options = snapshot.EffectiveLedOutput;
-        if (options.Mode == TaskAlertLedOutputMode.DirectHid)
-        {
-            return new DirectVirpilLedService(
-                new VirpilHidTransportFactory(),
-                new DirectVirpilConflictDetector(),
-                log,
-                snapshot,
-                options);
-        }
-
-        try
-        {
-            LinkToolProfileWriter.Write(paths.LinkToolProfile, options);
-            log($"Joydex LinkTool profile written to {paths.LinkToolProfile}.");
-        }
-        catch (Exception exception)
-        {
-            log("Could not write the Joydex LinkTool profile: " + exception.Message);
-        }
-        return new LinkToolLedService(
-            new UdpLinkToolTelemetrySender(),
-            new VpcConflictDetector(),
-            log,
-            snapshot);
     }
 
     private static async Task TryDisposeAsync(IAsyncDisposable disposable, List<Exception> failures)

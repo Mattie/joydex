@@ -5,7 +5,16 @@ using Joydex.Virpil;
 
 namespace Joydex.Windows.TaskAlerts;
 
-public sealed class GuardianController : IDisposable
+/// <summary>Lifecycle operations that the in-process VIRPIL owner keeps with its LED writer.</summary>
+public interface IVirpilGuardian : IDisposable
+{
+    bool Start();
+    void SetRestoreRequired(bool required);
+    void UpdateRecovery(TaskAlertSnapshot snapshot);
+    void SignalCleanExit();
+}
+
+public sealed class GuardianController : IVirpilGuardian
 {
     private readonly string _guardianPath;
     private readonly Action<string> _log;
@@ -143,13 +152,18 @@ public sealed class GuardianController : IDisposable
 
     public void SignalCleanExit()
     {
-        _cleanEvent?.Set();
-        if (_process is { HasExited: false })
-        {
-            _process.WaitForExit(2000);
-        }
+        CompleteCleanExit(
+            () => _cleanEvent?.Set(),
+            () => _process is null || _process.HasExited || _process.WaitForExit(2000),
+            TryDeleteRecovery);
+    }
 
-        TryDeleteRecovery();
+    internal static void CompleteCleanExit(Action signal, Func<bool> waitForExit, Action deleteRecovery)
+    {
+        signal();
+        if (!waitForExit())
+            throw new TimeoutException("LED Guardian exit is unconfirmed; preserving recovery state.");
+        deleteRecovery();
     }
 
     public void Dispose()

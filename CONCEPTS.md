@@ -283,6 +283,10 @@ Pebble Index uses a separate supervised receiver process under
 [ADR 0012](docs/adr/0012-isolate-pebble-index-in-a-worker-process.md), preserving
 its inbox, sender contract and at-most-one automatic delivery attempt. Restarting
 the worker does not retry stored deliveries.
+DirectInput and VIRPIL remain in RuntimeHost under
+[ADR 0013](docs/adr/0013-keep-device-plugins-with-the-runtime-hardware-owner.md).
+DirectInput polls independently of ordered action dispatch. VIRPIL keeps shift reads,
+LED writes and Guardian recovery together under the same hardware ownership.
 
 **Active / Desired Configuration**:
 Active configuration describes what an owner is using. Desired configuration is a validated,

@@ -1,4 +1,5 @@
 using Joydex.App;
+using Joydex.RuntimeHost.Plugins;
 using Joydex.Contracts;
 using Joydex.Core.Config;
 using Joydex.Core.Mapping;
@@ -24,6 +25,31 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
     private IReadOnlyDictionary<string, RuntimeInputSourceCatalogEntry> _catalogEntries =
         new Dictionary<string, RuntimeInputSourceCatalogEntry>(StringComparer.OrdinalIgnoreCase);
     private int _disposed;
+    private long _generation;
+    private bool _cleanupFailed;
+    private Task? _disposeTask;
+    private readonly object _disposeGate = new();
+
+    internal BundledPluginHealth HealthSnapshot
+    {
+        get
+        {
+            lock (_disposeGate)
+            {
+                var state = _cleanupFailed || _workers.Any(worker => worker.CleanupPending)
+                    ? BundledPluginLifecycleState.Blocked
+                    : _disposed != 0 ? (_disposeTask?.IsCompleted == true ? BundledPluginLifecycleState.Stopped : BundledPluginLifecycleState.Stopping)
+                    : _workers.Any(worker => !worker.IsRunning) ? BundledPluginLifecycleState.Faulted
+                    : BundledPluginLifecycleState.Ready;
+                return new("joydex.directinput", state, _generation,
+                    state == BundledPluginLifecycleState.Ready
+                        ? "Controller acquisition owners running; inspect Controllers for individual connections."
+                        : state == BundledPluginLifecycleState.Blocked ? "Controller cleanup is unconfirmed; replacement is blocked."
+                        : "Controller acquisition owners " + state.ToString().ToLowerInvariant() + ".",
+                    false, false);
+            }
+        }
+    }
 
     private CompanionProductionOwner(
         WindowsProductionRuntimeOwnerFactory factory,
@@ -51,7 +77,8 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
         ProductionWindowsStaHost windowsSta,
         RuntimeInputHost inputHost,
         IJoystickSourceFactory inputSources,
-        SettingsBundle activeSettings)
+        SettingsBundle activeSettings,
+        long generation = 1)
     {
         ArgumentNullException.ThrowIfNull(factory);
         ArgumentNullException.ThrowIfNull(windowsSta);
@@ -133,6 +160,7 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
                 workers,
                 promptPicker)
             {
+                _generation = generation,
                 _catalogEntries = entries.ToDictionary(
                     entry => entry.Source.SourceId,
                     StringComparer.OrdinalIgnoreCase),
@@ -196,12 +224,11 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
 
     public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        lock (_disposeGate)
         {
-            return ValueTask.CompletedTask;
+            _disposed = 1;
+            return new ValueTask(_disposeTask ??= _windowsSta.InvokeAsync(DisposeOnStaAsync));
         }
-
-        return new ValueTask(_windowsSta.InvokeAsync(DisposeOnStaAsync));
     }
 
     private async Task DisposeOnStaAsync()
@@ -216,6 +243,7 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
         _ownedCompletion.TrySetResult();
         if (failures.Count > 0)
         {
+            lock (_disposeGate) _cleanupFailed = true;
             throw new AggregateException("Controller cleanup did not complete.", failures);
         }
     }

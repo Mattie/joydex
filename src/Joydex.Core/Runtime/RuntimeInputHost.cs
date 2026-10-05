@@ -98,7 +98,8 @@ public sealed class RuntimeInputHost : IDisposable
     /// <summary>Registers the current acquisition owner and returns its generation token.</summary>
     public InputSourceSession ConnectSource(
         InputSourceDescriptor source,
-        Action prepareForCapture)
+        Action prepareForCapture,
+        Func<long>? captureRequested = null)
     {
         source = ValidateDescriptor(source);
         ArgumentNullException.ThrowIfNull(prepareForCapture);
@@ -128,6 +129,8 @@ public sealed class RuntimeInputHost : IDisposable
             entry.Connected = true;
             entry.LastSnapshot = null;
             entry.PrepareForCapture = prepareForCapture;
+            entry.CaptureRequested = captureRequested;
+            entry.CaptureWatermark = 0;
             session = new InputSourceSession(source.SourceId, entry.Generation);
         }
 
@@ -152,6 +155,7 @@ public sealed class RuntimeInputHost : IDisposable
             entry.Connected = false;
             entry.LastSnapshot = null;
             entry.PrepareForCapture = null;
+            entry.CaptureRequested = null;
             CompleteCaptureForSourceLocked(
                 source.SourceId,
                 InputCaptureStatus.SourceDisconnected,
@@ -172,7 +176,8 @@ public sealed class RuntimeInputHost : IDisposable
         InputSourceSession source,
         JoystickSnapshot snapshot,
         IReadOnlyList<JoystickEvent> events,
-        Func<RoutedInput, Task<T>> consume)
+        Func<RoutedInput, Task<T>> consume,
+        long? acquisitionSequence = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(events);
@@ -195,7 +200,7 @@ public sealed class RuntimeInputHost : IDisposable
         await entry.DispatchGate.WaitAsync().ConfigureAwait(false);
         try
         {
-            var captureUpdates = PreparePendingCapture(source, entry, snapshot);
+            var captureUpdates = PreparePendingCapture(source, entry, snapshot, acquisitionSequence);
             PublishCaptureUpdates(captureUpdates);
 
             InputObservation observation;
@@ -211,6 +216,7 @@ public sealed class RuntimeInputHost : IDisposable
                 }
 
                 ExpireCapturesLocked(_timeProvider.GetUtcNow(), captureUpdates);
+                RejectSupersededAcquisition(entry, acquisitionSequence);
                 entry.LastSnapshot = CloneSnapshot(snapshot);
                 var routedEvents = RouteEventsLocked(source, events, captureUpdates);
                 routedInput = new RoutedInput(
@@ -279,6 +285,10 @@ public sealed class RuntimeInputHost : IDisposable
             }
             else
             {
+                // This callback only atomically records the acquisition watermark; it must not
+                // acquire locks, call the host, or perform cleanup under this visibility fence.
+                if (source.CaptureRequested is not null)
+                    source.CaptureWatermark = Math.Max(source.CaptureWatermark, source.CaptureRequested());
                 var capture = new CaptureState(
                     Guid.NewGuid(),
                     request.ConnectionId.Trim(),
@@ -511,13 +521,15 @@ public sealed class RuntimeInputHost : IDisposable
     private List<InputCaptureChangedEventArgs> PreparePendingCapture(
         InputSourceSession session,
         SourceEntry source,
-        JoystickSnapshot currentSnapshot)
+        JoystickSnapshot currentSnapshot,
+        long? acquisitionSequence)
     {
         CaptureState? capture;
         JoystickSnapshot? baseline;
         var updates = new List<InputCaptureChangedEventArgs>();
         lock (_gate)
         {
+            RejectSupersededAcquisition(source, acquisitionSequence);
             if (_disposed
                 || !source.Connected
                 || source.Generation != session.Generation
@@ -736,6 +748,13 @@ public sealed class RuntimeInputHost : IDisposable
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 
+    private static void RejectSupersededAcquisition(SourceEntry source, long? sequence)
+    {
+        // This check shares the capture visibility lock and persists after capture cancellation.
+        if (sequence is { } value && value <= source.CaptureWatermark)
+            throw new InputSourceFrameSupersededException();
+    }
+
     private sealed class SourceEntry(InputSourceDescriptor descriptor)
     {
         public InputSourceDescriptor Descriptor { get; set; } = descriptor;
@@ -743,6 +762,8 @@ public sealed class RuntimeInputHost : IDisposable
         public bool Connected { get; set; }
         public JoystickSnapshot? LastSnapshot { get; set; }
         public Action? PrepareForCapture { get; set; }
+        public Func<long>? CaptureRequested { get; set; }
+        public long CaptureWatermark { get; set; }
         public SemaphoreSlim DispatchGate { get; } = new(1, 1);
     }
 
@@ -766,4 +787,10 @@ public sealed class RuntimeInputHost : IDisposable
     }
 
     private readonly record struct SuppressedControl(string SourceId, long Generation, int ControlIndex);
+}
+
+/// <summary>A queued acquisition frame predates a capture request and must be discarded and rebaselined.</summary>
+public sealed class InputSourceFrameSupersededException : InvalidOperationException
+{
+    public InputSourceFrameSupersededException() : base("The acquisition frame predates the latest capture request.") { }
 }

@@ -40,7 +40,7 @@ public sealed class PadPluginTests
     }
 
     [Fact]
-    public void CatalogRegistersCanonicalPadVoiceAndPebbleWorkers()
+    public void CatalogRegistersCanonicalBundledPlugins()
     {
         Assert.Collection(
             BundledPluginCatalog.Registrations,
@@ -58,6 +58,16 @@ public sealed class PadPluginTests
             {
                 Assert.Equal(Joydex.Contracts.RuntimePluginIds.PebbleIndex, registration.Id);
                 Assert.Equal(BundledPluginExecutionModel.WorkerProcess, registration.Execution);
+            },
+            registration =>
+            {
+                Assert.Equal(Joydex.Contracts.RuntimePluginIds.DirectInput, registration.Id);
+                Assert.Equal(BundledPluginExecutionModel.InProcess, registration.Execution);
+            },
+            registration =>
+            {
+                Assert.Equal(Joydex.Contracts.RuntimePluginIds.Virpil, registration.Id);
+                Assert.Equal(BundledPluginExecutionModel.InProcess, registration.Execution);
             });
     }
 
@@ -90,8 +100,8 @@ public sealed class PadPluginTests
         Assert.Equal(inspect.Kind, inspected.Kind);
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Completed, inspected.Status);
         var plugins = Assert.IsType<Joydex.Contracts.RuntimePluginSnapshot>(inspected.Payload?.Plugins);
-        Assert.Equal(3, plugins.Registrations.Length);
-        Assert.Equal(3, plugins.Health.Length);
+        Assert.Equal(5, plugins.Registrations.Length);
+        Assert.Equal(5, plugins.Health.Length);
         Assert.False(plugins.Registrations.Single(item =>
             item.Id == Joydex.Contracts.RuntimePluginIds.VoicePe).ExecutionInProcess);
         Assert.Equal(Joydex.Contracts.RuntimePluginState.Disabled, plugins.Health.Single(item =>
