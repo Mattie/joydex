@@ -12,6 +12,7 @@ internal sealed record BundledPluginRegistration(
 internal enum BundledPluginExecutionModel
 {
     InProcess,
+    WorkerProcess,
 }
 
 /// <summary>Reports the latest lifecycle state of one bundled plugin without domain payloads.</summary>

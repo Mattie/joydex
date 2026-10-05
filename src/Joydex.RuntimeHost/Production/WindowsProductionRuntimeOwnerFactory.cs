@@ -9,15 +9,18 @@ using Joydex.WirelessPanel;
 using Joydex.Windows.Actions;
 using Joydex.Windows.Input;
 using Joydex.Windows.TaskAlerts;
+using Joydex.Windows.Voice;
 
 namespace Joydex.RuntimeHost.Production;
 
 internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     IProductionRuntimeOwnerFactory,
-    IPadPluginHostServices
+    IPadPluginHostServices,
+    IVoicePluginHostServices
 {
     private readonly object _stateGate = new();
     private readonly RuntimeInputHost _inputHost;
+    private readonly CancellationToken _runtimeCancellationToken;
     private readonly ProductionRuntimePaths _paths;
     private readonly bool _existingCompanionInstall;
     private readonly FileLog _log;
@@ -33,6 +36,14 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     private readonly ProductionRuntimeUiProjector _ui = new();
     private CodexKeybindingService? _keybindings;
     private TaskAlertProductionOwner? _taskAlerts;
+    private VoiceProductionOwner? _voiceOwner;
+    private BundledPluginHealth _voiceHealth = new(
+        BundledPluginCatalog.VoiceId,
+        BundledPluginLifecycleState.Disabled,
+        0,
+        "Room Voice is disabled.",
+        CanRestart: false,
+        CanReload: false);
     private bool _disposed;
 
     public WindowsProductionRuntimeOwnerFactory(
@@ -42,6 +53,7 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         CancellationToken runtimeCancellationToken)
     {
         _inputHost = inputHost ?? throw new ArgumentNullException(nameof(inputHost));
+        _runtimeCancellationToken = runtimeCancellationToken;
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _existingCompanionInstall = existingCompanionInstall;
         _log = new FileLog(paths.Log);
@@ -84,7 +96,7 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
                 TimeSpan.FromSeconds(1 << Math.Min(attempt - 1, 2)),
                 cancellationToken),
             runtimeCancellationToken);
-        _padCommands = new PadPluginCommandHandler(_pad, WriteLog);
+        _padCommands = new PadPluginCommandHandler(_pad, WriteLog, GetVoiceHealth);
     }
 
     public event Action? VoiceBecameIdle;
@@ -105,7 +117,9 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     internal BundledPluginHealth GetPluginHealth(string pluginId)
     {
         _ = BundledPluginCatalog.GetRequired(pluginId);
-        return _pad.Health;
+        return string.Equals(pluginId, BundledPluginCatalog.PadId, StringComparison.Ordinal)
+            ? _pad.Health
+            : GetVoiceHealth();
     }
 
     public async Task RefreshPluginsAsync(
@@ -129,11 +143,18 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
                 $"{BundledPluginCatalog.PadId}: shared policy refresh failed "
                 + $"({exception.GetType().Name}).");
         }
+        VoiceProductionOwner? voice;
+        lock (_stateGate) { voice = _voiceOwner; }
+        voice?.RefreshPolicy(activeSettings);
     }
 
     internal Task RestartPluginAsync(string pluginId, CancellationToken cancellationToken)
     {
         _ = BundledPluginCatalog.GetRequired(pluginId);
+        if (!string.Equals(pluginId, BundledPluginCatalog.PadId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Room Voice is managed by its existing Voice controls.");
+        }
         ThrowIfDisposed();
         return _pad.RestartAsync(cancellationToken);
     }
@@ -141,6 +162,10 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     internal Task ReloadPluginAsync(string pluginId, CancellationToken cancellationToken)
     {
         _ = BundledPluginCatalog.GetRequired(pluginId);
+        if (!string.Equals(pluginId, BundledPluginCatalog.PadId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Room Voice is managed by its existing Voice controls.");
+        }
         ThrowIfDisposed();
         return _pad.ReloadAsync(cancellationToken);
     }
@@ -303,6 +328,34 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         internalAction: internalAction,
         injectedKeyStateOwner: _injectedKeys);
 
+    VoiceHostCommandPolicy IVoicePluginHostServices.CreateVoiceHostPolicy(
+        SettingsBundle activeSettings)
+    {
+        var navigator = new PinnedVoiceTargetNavigator(
+            activeSettings.Companion.Safety,
+            WriteLog);
+        var executor = CreateActionExecutor(activeSettings.Companion);
+        return new VoiceHostCommandPolicy(
+            activeSettings.Voice.Normalize(),
+            activeSettings.Companion.Safety,
+            navigator,
+            executor.ExecuteAsync);
+    }
+
+    void IVoicePluginHostServices.PublishVoice(ProductionVoiceState state, bool reset) =>
+        PublishVoice(state, reset);
+
+    void IVoicePluginHostServices.PublishVoiceBecameIdle() => PublishVoiceBecameIdle();
+
+    void IVoicePluginHostServices.PublishVoiceHealth(
+        VoiceProductionOwner owner,
+        BundledPluginHealth health) => PublishVoiceHealth(owner, health);
+
+    void IVoicePluginHostServices.ClearVoiceOwner(VoiceProductionOwner owner) =>
+        ClearVoiceOwner(owner);
+
+    void IVoicePluginHostServices.WriteLog(string message) => WriteLog(message);
+
     internal void PublishTaskAlerts(TaskAlertProductionOwner owner, TaskAlertSnapshot snapshot)
     {
         lock (_stateGate)
@@ -362,6 +415,28 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     internal void PublishVoice(ProductionVoiceState state, bool reset = false) =>
         _ui.PublishVoice(state, reset);
 
+    internal void PublishVoiceHealth(VoiceProductionOwner owner, BundledPluginHealth health)
+    {
+        lock (_stateGate)
+        {
+            if (_voiceOwner is null || ReferenceEquals(_voiceOwner, owner))
+            {
+                _voiceHealth = health;
+            }
+        }
+    }
+
+    internal void ClearVoiceOwner(VoiceProductionOwner owner)
+    {
+        lock (_stateGate)
+        {
+            if (ReferenceEquals(_voiceOwner, owner))
+            {
+                _voiceOwner = null;
+            }
+        }
+    }
+
     internal void PublishDesktopTasks(IReadOnlyList<DesktopTaskSummary> tasks) =>
         _ui.PublishDesktopTasks(tasks);
 
@@ -369,6 +444,40 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     {
         var normalized = SetActiveVoicePreferences(preferences);
         _ui.RefreshVoiceMessaging(normalized);
+    }
+
+    public void CommitVoiceActivation(VoicePePreferences preferences)
+    {
+        var normalized = preferences.Normalize();
+        VoiceProductionOwner? owner;
+        lock (_stateGate) { owner = _voiceOwner; }
+        if (normalized.Enabled)
+        {
+            if (owner is null || !owner.MatchesPreferences(normalized))
+            {
+                return;
+            }
+            ApplyVoiceTaskAlertExclusion(normalized);
+            owner.Commit();
+        }
+        else
+        {
+            ApplyVoiceTaskAlertExclusion(normalized);
+        }
+        _ui.RefreshVoiceMessaging(normalized);
+        if (!normalized.Enabled)
+        {
+            lock (_stateGate)
+            {
+                _voiceHealth = new BundledPluginHealth(
+                    BundledPluginCatalog.VoiceId,
+                    BundledPluginLifecycleState.Disabled,
+                    _voiceHealth.Generation,
+                    "Room Voice is disabled.",
+                    CanRestart: false,
+                    CanReload: false);
+            }
+        }
     }
 
     internal void WriteActivity(string message)
@@ -460,7 +569,6 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         {
             if (!preferences.Enabled)
             {
-                ApplyVoiceTaskAlertExclusion(preferences);
                 _ui.ClearVoice();
                 return null;
             }
@@ -471,9 +579,14 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
                     _paths,
                     _desktopBroker,
                     activeSettings,
+                    _runtimeCancellationToken,
                     cancellationToken)
                 .ConfigureAwait(false);
-            ApplyVoiceTaskAlertExclusion(preferences);
+            lock (_stateGate)
+            {
+                _voiceOwner = owner;
+                _voiceHealth = owner.HealthSnapshot;
+            }
             return owner;
         }
         catch (Exception startupFailure)
@@ -593,6 +706,11 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         {
             _taskAlerts?.SetInternallySuppressedTaskIds(taskIds);
         }
+    }
+
+    private BundledPluginHealth GetVoiceHealth()
+    {
+        lock (_stateGate) { return _voiceHealth; }
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

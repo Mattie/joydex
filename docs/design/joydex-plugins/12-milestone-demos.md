@@ -373,8 +373,80 @@ PAD disconnect/reconnect, and full release/rollback acceptance remain unverified
 
 ## Milestone 4 — Voice plugin extraction
 
-Status: implementation authorized 2026-09-12 following the physical PAD canary.
-Preserve the running canary while extracting the existing Voice aggregate and
-supervision into the bundled plugin boundary. Retain media STA ownership, session
-and archive behavior, active/desired configuration, and existing fallback mode.
-Use background-safe validation; further physical Voice testing is a separate step.
+Status: implemented 2026-09-12 through `4c4d465`, following the physical PAD canary.
+Independent review accepted `0d5b22fc6c3610bc7f48d3d8d5953c16cbc761db`. The integrated
+source, tests, project and publish files match that reviewed checkpoint exactly.
+
+The 2026-10-04 mainline migration preserves the later reviewed settings and PAD
+fixes. Synthetic worker authentication tests use the existing current-process
+test seam; the native child probe still requires an unelevated runner. The
+checkpoint results below are historical evidence, not a new physical Voice canary.
+
+`Joydex.VoiceWorker.exe` owns the existing Voice aggregate, media STA, dedicated
+owner, conversation model and archive. RuntimeHost supervises authenticated worker
+generations and retains settings activation, PendingIdle, rollback, task exclusion
+and guarded actions. Voice is registered as `joydex.voice-pe`; existing Room Voice
+controls remain the management surface. See [ADR 0011](../../adr/0011-isolate-voice-media-in-a-worker-process.md).
+
+Review corrections cover bounded authenticated startup, confirmed process/job
+cleanup before replacement, retained cleanup uncertainty, stale-generation and
+pre-commit callback rejection, runtime-owned supervision cancellation, persistent
+restart backoff, committed task exclusion, fallback lifetime, coalesced snapshot
+publication, synchronized idle edges and bounded complete-entry conversation pages.
+The five reused media source files and two Voice assets are unchanged from the
+physical PAD checkpoint. RuntimeHost no longer compiles those media sources or
+references WebView2; the worker carries that dependency and its native loader.
+
+Final verification ran from a clean detached checkout of `4c4d465`, using SDK
+8.0.423, Release warnings as errors and `JOYDEX_RUN_ATTENDED_TESTS=0`. Both selected
+runs passed with no failures, skips or build warnings:
+
+| Audited selection | Passed |
+|---|---:|
+| `VoiceProductionOwnerTests` | 6 |
+| `VoiceWorkerProcessGenerationTests` | 4 |
+| `VoiceWorkerServiceTests` | 3 |
+| Selected `ProductionRuntimeCompositionTests` | 5 |
+| Selected `PadPluginTests` | 2 |
+| Selected `RuntimeRoomVoiceWindowAdapterTests` | 4 |
+| Selected `VoiceMediaStaHostTests` | 2 |
+| Selected `CodexDedicatedVoiceOwnerTests` | 2 |
+| Selected `VoiceSessionArchiveTests` | 1 |
+| **Total** | **29** |
+
+The selected composition checks were `ActiveVoiceDefersActivationAndIdlePublishesBoundary`,
+`IncompleteVoiceStartupCleanupIsTerminalAndNeverRetried`,
+`DependentVoiceFailureRollsBackCompanionAndVoice`,
+`VoiceExclusionAuthorityCommitsOnlySuccessfulGenerationAndSurvivesRollback`, and
+`DesktopTaskListWithoutAnExplicitSourcePreservesVoiceRoutingAndExclusion`.
+The PAD checks were `CatalogRegistersCanonicalPadAndVoiceWorker` and
+`TypedDispatchInspectsFullCatalogAndRejectsUnknownPlugin`.
+
+The Room Voice checks were `MatchingSnapshotsAndEventsDriveTheExistingWindowModels`,
+`CompleteConversationUsesVersionedPagesAndKeepsRawText`,
+`MessagingUsesPrivateReadsTypedActionsAndAuthorityOwnedTargetSelection`, and
+`DisposeCancelsPendingWorkAndRejectsLaterUse`. The media selection used only the
+fake `RuntimeGateCancelsAndDrainsOldGenerationPublications` and
+`StartupRollbackDisposesEveryPartialOwnerInRuntimeOrder` methods. Dedicated-owner
+checks were `ResumesExactTaskAndRetainsClientUntilOwnerDisposal` and
+`RejectsOwnerReadinessWhenRealtimeV3VoiceCapabilityIsMissing`; the archive check was
+`WritesUtf8ConversationAndSessionLifecycleMetadata`.
+
+The process-generation class uses isolated current-user pipes and a synthetic
+ProcessProbe. Its native case launches only the probe and a no-media descendant,
+then confirms the Windows job is empty on disposal. It does not initialize Voice,
+WebView2, hardware or normal configuration. The other selections use fake services
+and temporary state; no visible UI was driven.
+
+The clean package is `artifacts/Joydex/voice-plugin-4c4d465-win-x64`, with a sibling
+SHA-256 manifest covering all 116 nonempty files. Publishing succeeded with only
+the known Guardian/HidSharp IL2104 trimming warning. Eleven selected required
+components were present; ten assets, notices and native-loader files matched their
+sources by hash. Published dependency metadata confirms WebView2 moved out of
+RuntimeHost and is present in VoiceWorker. No executable from this package was
+launched, and the running PAD canary was left untouched.
+
+Physical Voice microphone/speaker and multi-response call continuity remain
+unverified for the new worker package. The earlier Settings Capture/Apply/process
+restart and full release/rollback gaps also remain open. The next implementation
+slice is PEBBLEPLUGIN; this checkpoint does not claim attended Voice acceptance.

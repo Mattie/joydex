@@ -504,6 +504,37 @@ public sealed class ProductionRuntimeCompositionTests
     }
 
     [Fact]
+    public async Task VoiceExclusionAuthorityCommitsOnlySuccessfulGenerationAndSurvivesRollback()
+    {
+        var first = VoicePePreferences.Default with
+        {
+            Enabled = true,
+            DeviceEndpoint = "http://127.0.0.1/",
+            PinnedTaskId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            ConversationSpeakerGain = 2,
+        };
+        var candidate = first with
+        {
+            PinnedTaskId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            ConversationSpeakerGain = 3,
+        };
+        var factory = new FakeFactory();
+        await using var composition = new ProductionRuntimeComposition(factory, default);
+        composition.Refresh(Bundle() with { Voice = first });
+        factory.FailCreateOnAttempts[SettingsAggregateId.Voice] = [2];
+
+        var result = await composition.ActivateAsync(
+            SettingsAggregateId.Voice,
+            Bundle() with { Voice = candidate },
+            2,
+            default);
+
+        Assert.Equal(SettingsActivationState.Failed, result.State);
+        Assert.Equal([first.Normalize(), first.Normalize()], factory.VoiceActivationCommits);
+        Assert.Equal([null, first.Normalize(), first.Normalize()], factory.VoiceActivationSeenAtCreate);
+    }
+
+    [Fact]
     public async Task FailedCompanionRollbackDoesNotRestoreDependentVoice()
     {
         var factory = new FakeFactory();
@@ -1366,6 +1397,8 @@ public sealed class ProductionRuntimeCompositionTests
         public Dictionary<SettingsAggregateId, int[]> FailCreateOnAttempts { get; } = [];
         public List<VoicePePreferences> VoiceMessagingRefreshes { get; } = [];
         public List<SettingsBundle> PluginRefreshes { get; } = [];
+        public List<VoicePePreferences> VoiceActivationCommits { get; } = [];
+        public List<VoicePePreferences?> VoiceActivationSeenAtCreate { get; } = [];
         public Joydex.RuntimeHost.Plugins.PadPlugin? Plugin { get; set; }
         public Exception? VoiceMessagingFailure { get; set; }
         public string? VoiceProjectionPath { get; init; }
@@ -1381,6 +1414,10 @@ public sealed class ProductionRuntimeCompositionTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Created.Add(aggregate);
+            if (aggregate == SettingsAggregateId.Voice)
+            {
+                VoiceActivationSeenAtCreate.Add(VoiceActivationCommits.LastOrDefault());
+            }
             var attempt = Created.Count(item => item == aggregate);
             if (FailNextCreate.Remove(aggregate, out var failure))
             {
@@ -1447,6 +1484,9 @@ public sealed class ProductionRuntimeCompositionTests
             }
             VoiceMessagingRefreshes.Add(preferences);
         }
+
+        public void CommitVoiceActivation(VoicePePreferences preferences) =>
+            VoiceActivationCommits.Add(preferences.Normalize());
 
         public void ReportFailure(SettingsAggregateId aggregate, Exception exception) { }
 
@@ -1549,7 +1589,10 @@ public sealed class ProductionRuntimeCompositionTests
                 0),
             []);
 
-        public RuntimeVoiceConversationPage GetConversationPage(string? continuationToken) => new([]);
+        public Task<RuntimeVoiceConversationPage> GetConversationPageAsync(
+            string? continuationToken,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new RuntimeVoiceConversationPage([]));
     }
 
     private sealed class FakeDesktopBrokerStarter(params object[] outcomes)

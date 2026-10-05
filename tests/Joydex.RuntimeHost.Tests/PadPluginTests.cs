@@ -40,12 +40,20 @@ public sealed class PadPluginTests
     }
 
     [Fact]
-    public void CatalogRegistersOnlyTheCanonicalBundledPad()
+    public void CatalogRegistersCanonicalPadAndVoiceWorker()
     {
-        var registration = Assert.Single(BundledPluginCatalog.Registrations);
-
-        Assert.Equal(Joydex.Contracts.RuntimePluginIds.Pad, registration.Id);
-        Assert.Equal(BundledPluginExecutionModel.InProcess, registration.Execution);
+        Assert.Collection(
+            BundledPluginCatalog.Registrations,
+            registration =>
+            {
+                Assert.Equal(Joydex.Contracts.RuntimePluginIds.Pad, registration.Id);
+                Assert.Equal(BundledPluginExecutionModel.InProcess, registration.Execution);
+            },
+            registration =>
+            {
+                Assert.Equal(Joydex.Contracts.RuntimePluginIds.VoicePe, registration.Id);
+                Assert.Equal(BundledPluginExecutionModel.WorkerProcess, registration.Execution);
+            });
     }
 
     [Fact]
@@ -65,13 +73,27 @@ public sealed class PadPluginTests
                 Joydex.Contracts.RuntimeCommandKind.RestartPlugin,
                 new Joydex.Contracts.RuntimeCommandArguments(PluginId: "other.pad")),
             default);
+        var voice = await commands.ExecuteAsync(
+            new Joydex.Contracts.RuntimeCommandRequest(
+                Guid.NewGuid(),
+                Joydex.Contracts.RuntimeCommandKind.RestartPlugin,
+                new Joydex.Contracts.RuntimeCommandArguments(
+                    PluginId: Joydex.Contracts.RuntimePluginIds.VoicePe)),
+            default);
 
         Assert.Equal(inspect.OperationId, inspected.OperationId);
         Assert.Equal(inspect.Kind, inspected.Kind);
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Completed, inspected.Status);
-        Assert.Single(Assert.IsType<Joydex.Contracts.RuntimePluginSnapshot>(inspected.Payload?.Plugins).Registrations);
+        var plugins = Assert.IsType<Joydex.Contracts.RuntimePluginSnapshot>(inspected.Payload?.Plugins);
+        Assert.Equal(2, plugins.Registrations.Length);
+        Assert.False(plugins.Registrations.Single(item =>
+            item.Id == Joydex.Contracts.RuntimePluginIds.VoicePe).ExecutionInProcess);
+        Assert.Equal(Joydex.Contracts.RuntimePluginState.Disabled, plugins.Health.Single(item =>
+            item.PluginId == Joydex.Contracts.RuntimePluginIds.VoicePe).State);
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Rejected, unknown.Status);
         Assert.NotNull(unknown.Payload?.Plugins);
+        Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Rejected, voice.Status);
+        Assert.Contains("existing Voice controls", voice.Detail, StringComparison.Ordinal);
         await plugin.DisposeAsync();
     }
 
@@ -92,9 +114,9 @@ public sealed class PadPluginTests
             Joydex.Contracts.RuntimeCommandKind.ReloadPluginConfiguration), default);
 
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Completed, restarted.Status);
-        Assert.Equal(Joydex.Contracts.RuntimePluginState.Ready, restarted.Payload?.Plugins?.Health.Single().State);
+        Assert.Equal(Joydex.Contracts.RuntimePluginState.Ready, PadHealth(restarted).State);
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Completed, reloaded.Status);
-        Assert.Equal(Joydex.Contracts.RuntimePluginState.Ready, reloaded.Payload?.Plugins?.Health.Single().State);
+        Assert.Equal(Joydex.Contracts.RuntimePluginState.Ready, PadHealth(reloaded).State);
         Assert.Equal(3, instances.Starts.Count);
         await plugin.DisposeAsync();
     }
@@ -117,7 +139,7 @@ public sealed class PadPluginTests
             Joydex.Contracts.RuntimeCommandKind.ReloadPluginConfiguration), default);
 
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Rejected, result.Status);
-        Assert.Equal(Joydex.Contracts.RuntimePluginState.Ready, result.Payload?.Plugins?.Health.Single().State);
+        Assert.Equal(Joydex.Contracts.RuntimePluginState.Ready, PadHealth(result).State);
         Assert.False(running.Disposed);
         Assert.DoesNotContain("leaked-secret", result.Detail ?? string.Empty, StringComparison.Ordinal);
         await plugin.DisposeAsync();
@@ -139,7 +161,7 @@ public sealed class PadPluginTests
             Joydex.Contracts.RuntimeCommandKind.RestartPlugin), default);
 
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Failed, result.Status);
-        Assert.Equal(Joydex.Contracts.RuntimePluginState.Blocked, result.Payload?.Plugins?.Health.Single().State);
+        Assert.Equal(Joydex.Contracts.RuntimePluginState.Blocked, PadHealth(result).State);
         Assert.DoesNotContain("leaked-secret", result.Detail ?? string.Empty, StringComparison.Ordinal);
         await Assert.ThrowsAsync<PadPluginCleanupException>(async () => await plugin.DisposeAsync());
     }
@@ -159,7 +181,7 @@ public sealed class PadPluginTests
             Joydex.Contracts.RuntimeCommandKind.RestartPlugin), default);
 
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Failed, result.Status);
-        Assert.Equal(Joydex.Contracts.RuntimePluginState.Faulted, result.Payload?.Plugins?.Health.Single().State);
+        Assert.Equal(Joydex.Contracts.RuntimePluginState.Faulted, PadHealth(result).State);
         Assert.Equal(2, instances.Starts.Count);
         await plugin.DisposeAsync();
     }
@@ -453,6 +475,12 @@ public sealed class PadPluginTests
         kind,
         new Joydex.Contracts.RuntimeCommandArguments(
             PluginId: Joydex.Contracts.RuntimePluginIds.Pad));
+
+    private static Joydex.Contracts.RuntimePluginHealth PadHealth(
+        Joydex.Contracts.RuntimeCommandResult result) =>
+        Assert.Single(
+            Assert.IsType<Joydex.Contracts.RuntimePluginSnapshot>(result.Payload?.Plugins).Health,
+            health => health.PluginId == Joydex.Contracts.RuntimePluginIds.Pad);
 
     private static WirelessPanelConfiguration Configuration(
         string password,

@@ -29,6 +29,17 @@ internal static partial class WindowsPipePeerVerifier
         return VerifyProcess(checked((int)processId), expectedSessionId);
     }
 
+    public static RuntimeIpcPeer VerifyClient(
+        NamedPipeServerStream pipe,
+        int expectedSessionId,
+        int expectedProcessId,
+        long expectedStartTimeUtcTicks)
+    {
+        var peer = VerifyClient(pipe, expectedSessionId);
+        VerifyExactProcess(peer, expectedProcessId, expectedStartTimeUtcTicks);
+        return peer;
+    }
+
     public static RuntimeIpcPeer VerifyServer(NamedPipeClientStream pipe, int expectedSessionId)
     {
         ArgumentNullException.ThrowIfNull(pipe);
@@ -37,6 +48,30 @@ internal static partial class WindowsPipePeerVerifier
             throw Win32Failure("The runtime client could not identify the named-pipe server.");
         }
         return VerifyProcess(checked((int)processId), expectedSessionId);
+    }
+
+    public static RuntimeIpcPeer VerifyServer(
+        NamedPipeClientStream pipe,
+        int expectedSessionId,
+        int expectedProcessId,
+        long expectedStartTimeUtcTicks)
+    {
+        var peer = VerifyServer(pipe, expectedSessionId);
+        VerifyExactProcess(peer, expectedProcessId, expectedStartTimeUtcTicks);
+        return peer;
+    }
+
+    private static void VerifyExactProcess(
+        RuntimeIpcPeer peer,
+        int expectedProcessId,
+        long expectedStartTimeUtcTicks)
+    {
+        if (peer.ProcessId != expectedProcessId
+            || peer.ProcessStartTimeUtc.UtcTicks != expectedStartTimeUtcTicks)
+        {
+            throw new RuntimeIpcAuthenticationException(
+                "The named-pipe peer is not the expected process generation.");
+        }
     }
 
     private static RuntimeIpcPeer VerifyProcess(int processId, int expectedSessionId)
