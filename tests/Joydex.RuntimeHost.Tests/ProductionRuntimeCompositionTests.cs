@@ -201,6 +201,56 @@ public sealed class ProductionRuntimeCompositionTests
     }
 
     [Fact]
+    public async Task LedPreflightFailureLeavesEveryOwnerRunning()
+    {
+        var factory = new FakeFactory();
+        await using var composition = new ProductionRuntimeComposition(factory, default);
+        var active = Bundle();
+        composition.Refresh(active);
+        var originals = factory.LatestOwners();
+        factory.PrepareLed = (_, _) => throw new InvalidOperationException("competing writer");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => composition.ActivateAsync(
+            SettingsAggregateId.TaskAlerts, active, 2, default));
+
+        foreach (var (aggregate, owner) in originals)
+        {
+            Assert.Same(owner, factory.Latest(aggregate));
+            Assert.False(owner.Disposed);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LedTransitionCommitsOnlySuccessfulReplacement(bool fail)
+    {
+        var startup = new VirpilSettingsTransitionTests.MemoryStartup { Command = "original" };
+        var factory = new FakeFactory();
+        await using var composition = new ProductionRuntimeComposition(factory, default);
+        var active = Bundle();
+        composition.Refresh(active);
+        var originals = factory.LatestOwners();
+        factory.PrepareLed = (_, _) => VirpilSettingsTransition.Prepare(
+            TaskAlertLedOptions.CreateDefault(),
+            TaskAlertLedOptions.CreateDefault() with { Mode = TaskAlertLedOutputMode.DirectHid },
+            () => { }, startup, "unused");
+        if (fail) { factory.FailNextCreate[SettingsAggregateId.TaskAlerts] = new IOException("startup failed"); }
+
+        var result = await composition.ActivateAsync(SettingsAggregateId.TaskAlerts, active, 2, default);
+
+        Assert.Equal(fail ? SettingsActivationState.Failed : SettingsActivationState.Applied, result.State);
+        Assert.Equal(fail ? "original" : null, startup.Command);
+        Assert.True(originals[SettingsAggregateId.TaskAlerts].Disposed);
+        Assert.False(factory.Latest(SettingsAggregateId.TaskAlerts).Disposed);
+        foreach (var (aggregate, owner) in originals.Where(item => item.Key != SettingsAggregateId.TaskAlerts))
+        {
+            Assert.Same(owner, factory.Latest(aggregate));
+            Assert.False(owner.Disposed);
+        }
+    }
+
+    [Fact]
     public async Task UnrelatedApplyKeepsExactPebbleOwnerAndCommit()
     {
         var factory = new FakeFactory();
@@ -1452,6 +1502,11 @@ public sealed class ProductionRuntimeCompositionTests
         public bool Disposed { get; private set; }
         public RuntimeUiSnapshot UiSnapshot { get; } = new();
         public Task Completion => _completion.Task;
+
+        public Func<SettingsBundle, SettingsBundle, VirpilSettingsTransition?>? PrepareLed { get; set; }
+
+        public VirpilSettingsTransition? PrepareTaskAlertTransition(SettingsBundle previous, SettingsBundle candidate) =>
+            PrepareLed?.Invoke(previous, candidate);
 
         public Task<IProductionRuntimeOwner?> CreateAsync(
             SettingsAggregateId aggregate,

@@ -8,6 +8,8 @@ internal static class BundledPluginCatalog
     internal const string PadId = RuntimePluginIds.Pad;
     internal const string VoiceId = RuntimePluginIds.VoicePe;
     internal const string PebbleId = RuntimePluginIds.PebbleIndex;
+    internal const string DirectInputId = RuntimePluginIds.DirectInput;
+    internal const string VirpilId = RuntimePluginIds.Virpil;
 
     public static IReadOnlyList<BundledPluginRegistration> Registrations { get; } =
     [
@@ -32,6 +34,20 @@ internal static class BundledPluginCatalog
             MinimumHostApiMinor: 3,
             SettingsSchemaVersion: 1,
             Execution: BundledPluginExecutionModel.WorkerProcess),
+        new(
+            DirectInputId,
+            Version: "1.0.0",
+            HostApiMajor: 1,
+            MinimumHostApiMinor: 3,
+            SettingsSchemaVersion: 1,
+            Execution: BundledPluginExecutionModel.InProcess),
+        new(
+            VirpilId,
+            Version: "1.0.0",
+            HostApiMajor: 1,
+            MinimumHostApiMinor: 3,
+            SettingsSchemaVersion: 1,
+            Execution: BundledPluginExecutionModel.InProcess),
     ];
 
     public static BundledPluginRegistration GetRequired(string pluginId)

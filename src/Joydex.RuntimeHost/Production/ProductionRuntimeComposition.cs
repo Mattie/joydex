@@ -457,6 +457,9 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
         }
 
         var previousBundle = _activeBundle;
+        using var ledTransition = aggregate == SettingsAggregateId.TaskAlerts && previousBundle is not null
+            ? _factory.PrepareTaskAlertTransition(previousBundle, activationCandidate)
+            : null;
         var hadInitializedOwner = _initialized.Contains(aggregate);
         _owners.Remove(aggregate, out var previousOwner);
         _initialized.Remove(aggregate);
@@ -504,6 +507,7 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
                 await _factory.RefreshPluginsAsync(activationCandidate, _runtimeCancellationToken)
                     .ConfigureAwait(false);
             }
+            ledTransition?.Commit();
             return new SettingsActivationResult(SettingsActivationState.Applied);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1107,6 +1111,8 @@ internal interface IProductionRuntimeOwnerFactory : IAsyncDisposable
     void CommitVoiceActivation(VoicePePreferences preferences) { }
 
     void CommitPebbleActivation(PebbleIndexPreferences preferences) { }
+
+    VirpilSettingsTransition? PrepareTaskAlertTransition(SettingsBundle previous, SettingsBundle candidate) => null;
 
     Task RefreshPluginsAsync(
         SettingsBundle activeSettings,

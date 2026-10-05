@@ -2,12 +2,14 @@ using Joydex.Contracts;
 
 namespace Joydex.RuntimeHost.Plugins;
 
-/// <summary>Dispatches the three typed management commands for the bundled PAD.</summary>
+/// <summary>Inspects bundled plugins and dispatches PAD's independent management commands.</summary>
 internal sealed class PadPluginCommandHandler(
     PadPlugin pad,
     Action<string> log,
     Func<BundledPluginHealth>? voiceHealth = null,
-    Func<BundledPluginHealth>? pebbleHealth = null)
+    Func<BundledPluginHealth>? pebbleHealth = null,
+    Func<BundledPluginHealth>? directInputHealth = null,
+    Func<BundledPluginHealth>? virpilHealth = null)
 {
     private readonly PadPlugin _pad = pad ?? throw new ArgumentNullException(nameof(pad));
     private readonly Action<string> _log = log ?? throw new ArgumentNullException(nameof(log));
@@ -25,6 +27,20 @@ internal sealed class PadPluginCommandHandler(
         "Pebble Index is disabled.",
         false,
         false));
+    private readonly Func<BundledPluginHealth> _directInputHealth = directInputHealth ?? (() => new(
+        BundledPluginCatalog.DirectInputId,
+        BundledPluginLifecycleState.Stopped,
+        0,
+        "Controller acquisition has not started.",
+        false,
+        false));
+    private readonly Func<BundledPluginHealth> _virpilHealth = virpilHealth ?? (() => new(
+        BundledPluginCatalog.VirpilId,
+        BundledPluginLifecycleState.Stopped,
+        0,
+        "VIRPIL hardware ownership has not started.",
+        false,
+        false));
 
     public async Task<RuntimeCommandResult> ExecuteAsync(
         RuntimeCommandRequest request,
@@ -37,6 +53,14 @@ internal sealed class PadPluginCommandHandler(
         }
 
         var pluginId = request.Arguments?.PluginId;
+        if (string.Equals(pluginId, BundledPluginCatalog.DirectInputId, StringComparison.Ordinal)
+            || string.Equals(pluginId, BundledPluginCatalog.VirpilId, StringComparison.Ordinal))
+        {
+            return Result(
+                request,
+                RuntimeCommandStatus.Rejected,
+                "Controller and VIRPIL configuration is managed by the existing settings Apply flow.");
+        }
         if (string.Equals(pluginId, BundledPluginCatalog.VoiceId, StringComparison.Ordinal))
         {
             return Result(
@@ -129,7 +153,8 @@ internal sealed class PadPluginCommandHandler(
         detail,
         new RuntimeCommandPayload(Plugins: new RuntimePluginSnapshot(
             BundledPluginCatalog.Registrations.Select(MapRegistration).ToArray(),
-            [MapHealth(_pad.Health), MapHealth(_voiceHealth()), MapHealth(_pebbleHealth())])));
+            [MapHealth(_pad.Health), MapHealth(_voiceHealth()), MapHealth(_pebbleHealth()),
+                MapHealth(_directInputHealth()), MapHealth(_virpilHealth())])));
 
     private static RuntimePluginRegistration MapRegistration(
         BundledPluginRegistration registration) => new(

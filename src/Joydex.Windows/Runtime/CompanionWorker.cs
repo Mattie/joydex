@@ -40,9 +40,17 @@ public sealed class CompanionWorker(
     private CancellationTokenSource? _cancellation;
     private Task? _runTask;
     private InputSourceSession? _inputSession;
+    private bool _capturePrepared;
+    private Exception? _capturePreparationFailure;
     private readonly HashSet<InputSourceSession> _keyCleanupBacklog = [];
 
     public event EventHandler<string>? StatusChanged;
+
+    public string Status { get; private set; } = "Stopped";
+    public bool IsRunning => _runTask is { IsCompleted: false };
+    public bool CleanupPending => _keyCleanupBacklog.Count != 0;
+    private Task? _disposeTask;
+    private readonly object _disposeGate = new();
 
     public void Start()
     {
@@ -80,6 +88,10 @@ public sealed class CompanionWorker(
         {
         }
 
+        if (_keyCleanupBacklog.Count != 0)
+        {
+            throw new InvalidOperationException("Controller injected-key cleanup is unconfirmed; replacement is blocked.");
+        }
         _runTask = null;
         _cancellation.Dispose();
         _cancellation = null;
@@ -88,7 +100,15 @@ public sealed class CompanionWorker(
         SetStatus("Stopped");
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
+    {
+        lock (_disposeGate)
+        {
+            return new ValueTask(_disposeTask ??= DisposeCoreAsync());
+        }
+    }
+
+    private async Task DisposeCoreAsync()
     {
         await StopAsync().ConfigureAwait(false);
         source.Dispose();
@@ -144,6 +164,10 @@ public sealed class CompanionWorker(
                 if (source.TryConnect(_deviceSelector, out var connectionMessage))
                 {
                     _engine.Reset();
+                    _capturePrepared = false;
+                    _capturePreparationFailure = null;
+                    var acquisition = new DirectInputAcquisition(source, config.Polling);
+                    long captureWatermark = 0;
                     var connected = source.ConnectedDevice!;
                     InputSourceSession session = default;
                     session = _inputHost.ConnectSource(
@@ -151,59 +175,125 @@ public sealed class CompanionWorker(
                             _deviceId,
                             connected.ProductName,
                             connected.InstanceGuid.ToString("D")),
-                        () => PrepareForCapture(session));
+                        () =>
+                        {
+                            if (_capturePreparationFailure is { } failure)
+                            {
+                                _capturePreparationFailure = null;
+                                throw failure;
+                            }
+                            if (!_capturePrepared)
+                            {
+                                PrepareForCapture(session);
+                            }
+                        },
+                        () =>
+                        {
+                            var watermark = acquisition.LatestSequence;
+                            Interlocked.Exchange(ref captureWatermark, watermark);
+                            return watermark;
+                        });
                     _inputSession = session;
                     log(connectionMessage);
                     SetStatus(config.Safety.DryRun
                         ? $"Connected (dry run): {source.ConnectedDevice?.ProductName}"
                         : $"Connected: {source.ConnectedDevice?.ProductName}");
-                    await Task.Delay(config.Polling.ConnectWarmupMs, cancellationToken).ConfigureAwait(false);
-
-                    if (source.TryRead(out var baseline, out _) && baseline is not null)
-                    {
-                        await ProcessSnapshotAsync(baseline, [], session, cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-
-                    continue;
+                    await RunConnectedGenerationAsync(session, acquisition, () => Interlocked.Read(ref captureWatermark), cancellationToken).ConfigureAwait(false);
+                    ReleaseCurrentSource("controller disconnect");
+                    RetryKeyCleanupBacklog("controller disconnect");
+                    _engine.Reset();
+                    SetStatus("Controller disconnected");
                 }
                 else
                 {
                     SetStatus("Waiting for controller");
-                    await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
+                }
+                await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                throw new InvalidOperationException("The controller remained connected after its acquisition generation ended.");
+            }
+        }
+    }
+
+    private async Task RunConnectedGenerationAsync(InputSourceSession session,
+        DirectInputAcquisition acquisition, Func<long> getCaptureWatermark, CancellationToken cancellationToken)
+    {
+        using var generation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        long consumedWatermark = 0;
+        var polling = Task.Run(() => acquisition.RunAsync(generation.Token), CancellationToken.None);
+        var dispatch = ConsumeAsync();
+        try
+        {
+            await Task.WhenAny(polling, dispatch).ConfigureAwait(false);
+        }
+        finally
+        {
+            // A disconnect/overflow invalidates all queued work. Join any action already in flight
+            // before releasing this generation's keys or letting a replacement acquire the device.
+            generation.Cancel();
+            try
+            {
+                await Task.WhenAll(polling, dispatch).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (generation.IsCancellationRequested) { }
+            catch (IOException exception) { log(exception.Message); }
+            finally
+            {
+                _capturePrepared = false;
+                _capturePreparationFailure = null;
+                source.Disconnect();
+            }
+        }
+
+        async Task ConsumeAsync()
+        {
+            var seedBaseline = false;
+            await foreach (var frame in acquisition.Frames.ReadAllAsync(generation.Token).ConfigureAwait(false))
+            {
+                generation.Token.ThrowIfCancellationRequested();
+                if (_capturePreparationFailure is null
+                    && !RetryKeyCleanupBacklog("input dispatch"))
+                {
+                    SetStatus("Waiting for injected-key cleanup");
                     continue;
                 }
-            }
 
-            if (!source.TryRead(out var snapshot, out var readError) || snapshot is null)
-            {
-                if (!string.IsNullOrWhiteSpace(readError))
+                var watermark = getCaptureWatermark();
+                if (watermark > consumedWatermark)
                 {
-                    log($"DirectInput disconnected: {readError}");
+                    // A request reserves input even if its client goes away while an action is
+                    // completing. Discarding an old release therefore requires source cleanup.
+                    try
+                    {
+                        PrepareForCapture(session);
+                        _capturePrepared = true;
+                    }
+                    catch (Exception exception)
+                    {
+                        _capturePreparationFailure = exception;
+                    }
+                    _engine.Reset();
+                    consumedWatermark = watermark;
+                    seedBaseline = true;
                 }
-
-                ReleaseCurrentSource("controller disconnect");
-                RetryKeyCleanupBacklog("controller disconnect");
-                _engine.Reset();
-                SetStatus("Controller disconnected");
-                await Task.Delay(config.Polling.ReconnectIntervalMs, cancellationToken).ConfigureAwait(false);
-                continue;
+                if (frame.Sequence <= consumedWatermark) continue;
+                try
+                {
+                    await ProcessSnapshotAsync(frame.Snapshot, seedBaseline ? [] : frame.Events, session,
+                        generation.Token, frame.Sequence).ConfigureAwait(false);
+                }
+                catch (InputSourceFrameSupersededException)
+                {
+                    // A capture request won the host gate after our earlier watermark read.
+                    // The next iteration cleans up and resets observation before accepting input.
+                    continue;
+                }
+                _capturePreparationFailure = null;
+                _capturePrepared = false;
+                seedBaseline = false;
             }
-
-            var currentSession = _inputSession;
-            if (currentSession is null)
-            {
-                throw new InvalidOperationException("The connected controller has no runtime input session.");
-            }
-
-            await ProcessSnapshotAsync(
-                    snapshot,
-                    source.LatestBufferedButtonEvents,
-                    currentSession.Value,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            await Task.Delay(config.Polling.PollIntervalMs, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -211,7 +301,8 @@ public sealed class CompanionWorker(
         JoystickSnapshot snapshot,
         IReadOnlyList<JoystickEvent> bufferedButtonEvents,
         InputSourceSession session,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        long acquisitionSequence)
     {
         var observedEvents = _engine.Observe(snapshot, bufferedButtonEvents);
         return _inputHost.RouteAsync(
@@ -228,7 +319,7 @@ public sealed class CompanionWorker(
                 var result = _engine.ProcessRouted(routedInput.Snapshot, routedInput.Events);
                 await DispatchAsync(result, session, cancellationToken).ConfigureAwait(false);
                 return result;
-            });
+            }, acquisitionSequence);
     }
 
     private async Task DispatchAsync(
@@ -430,5 +521,9 @@ public sealed class CompanionWorker(
         }
     }
 
-    private void SetStatus(string status) => StatusChanged?.Invoke(this, status);
+    private void SetStatus(string status)
+    {
+        Status = status;
+        StatusChanged?.Invoke(this, status);
+    }
 }

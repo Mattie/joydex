@@ -320,7 +320,11 @@ public sealed class DemoRuntimeCompositionTests
                 StringComparer.OrdinalIgnoreCase);
             return true;
         });
-        return result!;
+        // Connection registration precedes the first acquisition frame. Let both
+        // sources establish their held-state baseline before advancing the clock.
+        await Task.WhenAll(result!.Keys.Select(sourceId =>
+            WaitForObservationAfterAsync(inputHost, sourceId, 0)));
+        return result;
     }
 
     private static async Task<InputObservation> AdvanceUntilObservedAsync(

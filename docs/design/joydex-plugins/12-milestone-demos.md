@@ -599,3 +599,109 @@ remained byte-for-byte unchanged. No manual or automatic replay was performed.
 This passes the small physical phone-to-receiver-to-Desktop delivery canary.
 The repaired package remains running. Broader restart/disconnect/rollback scenarios
 and the separately recorded Voice/media and Settings acceptance gaps remain open.
+
+## Milestone 6 — Controller and VIRPIL plugin extraction
+
+Authorized by the user's CONTINUE after the successful Pebble physical canary.
+Baseline `7405596`; integrated source `44ebb8a`. The unrelated local AGENTS.md edit
+was preserved. Builder commits `c353c58` and `6a4b9fd` were integrated with the
+host-owned catalog, tray health, and settings transaction changes. Independent
+critical-review and unit-test-review found no remaining material blockers.
+
+The 2026-10-04 mainline migration also preserves reviewed injected-key cleanup,
+capture failure handling, and sleep/resume restoration through the VIRPIL owner.
+The validation and physical canary below describe the original checkpoint.
+
+`joydex.directinput` and `joydex.virpil` are bundled in-process registrations.
+Controller acquisition runs independently from ordered action dispatch, with immutable
+buffered input and a bounded queue. Capture watermarks are established under the host
+lock and checked at both routing phases, so queued input cannot become a fresh capture
+after a slow action. Cancellation still releases and rebaselines that source. Disconnect
+joins in-flight dispatch before source-key cleanup; failed cleanup prevents replacement.
+
+VIRPIL keeps shift reads, both LED backends, device notifications and Guardian together.
+Cleanup joins the hardware services and checks restoration before signaling a clean
+Guardian exit. An unconfirmed Guardian exit retains recovery and blocks replacement.
+The extraction also repairs a production settings parity gap: explicit LED changes now
+validate competing writers/expected devices before teardown and restore the exact
+LinkTool startup command or profile bytes when activation fails. Desired/active settings
+semantics remain unchanged; a failed activation can leave a saved desired revision.
+
+### Background validation
+
+All **61/61** selected cases passed on integrated `44ebb8a`, using SDK 8.0.423,
+Release, warnings as errors, and `JOYDEX_RUN_ATTENDED_TESTS=0`.
+
+| Audited scope | Passed |
+|---|---:|
+| DeviceAcquisitionTests | 11 |
+| CompanionWorkerTests | 3 |
+| RuntimeInputHostTests | 11 |
+| InjectedKeyStateOwnerTests | 5 |
+| RuntimeInputSourceProviderTests | 2 |
+| DirectVirpilLedServiceTests | 6 |
+| DevicePluginCommandTests | 5 |
+| VirpilSettingsTransitionTests | 6 |
+| VirpilPluginLifecycleTests | 4 |
+| Selected catalog/command tests | 2 |
+| Selected composition tests | 6 |
+
+The selected catalog methods were `CatalogRegistersCanonicalBundledPlugins` and
+`TypedDispatchInspectsFullCatalogAndRejectsUnknownPlugin`. Composition methods were
+`LedPreflightFailureLeavesEveryOwnerRunning`, both cases of
+`LedTransitionCommitsOnlySuccessfulReplacement`,
+`UnrelatedApplyKeepsExactPebbleOwnerAndCommit`,
+`AggregateReplacementPreservesUnrelatedOwners`, and
+`CleanupFailureMakesAggregateTerminalAndShutdownRemainFailed`.
+
+New capture tests force the two routing interleavings, cancellation, queue overflow,
+and permanent cleanup failure. The existing worker fixture now joins its logging worker
+before enumerating captured diagnostics. Tests use synthetic devices, input senders,
+Guardian boundaries and disposable files; they do not demonstrate native hardware recovery.
+
+### Packaged candidate and remaining acceptance
+
+Published all components together from a clean checkout at `44ebb8a` using the complete
+Publish-Joydex.ps1 script. Candidate:
+`artifacts/Joydex/device-plugins-44ebb8a-win-x64`, with sibling `.sha256` manifest.
+All 121 files are nonempty and the relative inventory matches the repaired Pebble package.
+Publishing succeeded with only the existing Guardian/HidSharp IL2104 trimming warning.
+All callers are rebuilt together because the optional RuntimeInputHost parameters preserve
+source compatibility, not compatibility with previously compiled assemblies.
+
+The candidate has not been launched. The repaired Pebble package was left running.
+No normal configuration, controller, firmware, startup registry entry, or held Pebble
+delivery was changed by validation. Next is an attended controller canary covering
+normal profiles, shared holds/capture, disconnect/reconnect, and LED backend/recovery.
+Hard-process-death keyboard cleanup is still unproven; Guardian restores LEDs/LinkTool.
+The earlier Voice, Settings and broader release/rollback acceptance gaps remain open.
+
+### Physical device canary — startup and ordinary controls
+
+The user authorized the device canary and exited the repaired Pebble package through
+the tray. No Joydex processes or receiver listener remained before launch. All 121
+candidate hashes were verified again. Settings, panel preferences, startup entries and
+22 existing inbox records were backed up under
+`D:\Temp\joydex-device-canary-44ebb8a-backup-20260912-221220`.
+
+Started `device-plugins-44ebb8a-win-x64`: App PID 52664, RuntimeHost 6296,
+Guardian 59176, VoiceWorker 61900, PebbleWorker 60112. These are observation-time
+identities, not reusable process authorization. Every Joydex process used the candidate
+directory; the receiver on loopback port 5187 reported ready. Static preferences,
+startup entries and all 22 prior delivery records remained unchanged.
+
+With Configure left open and Codex brought forward, the user tried familiar controls
+on both configured controllers and checked the LEDs, reporting “Yeah, looking good!”
+This passes the small ordinary-controls/LED check with settings open.
+
+After the requested unplug/reconnect check, the user reported “Looking good.” This
+passes the small disconnect/reconnect check while the other controller remains usable.
+The subsequent capture check accepted input from the selected joystick and ignored the
+other joystick. In a follow-up, the user confirmed that the captured button avoided its
+ordinary action while ordinary buttons on the other joystick continued working. This
+passes the small physical capture isolation check.
+
+The user also reported minor UI flakiness and considered it unrelated. No reproduction or
+cause was established. Shared held-key behavior, backend switching and crash recovery
+remain physical acceptance gaps. The device candidate remains running after the successful
+ordinary-controls, reconnect and capture isolation canaries.
