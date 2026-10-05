@@ -151,6 +151,9 @@ public sealed class DemoRuntimeCompositionTests
             0,
             "DRY RUN new-task press from always/button 12;");
 
+        // The running source can activate a lease as soon as BeginCapture returns.
+        var activeCapture = WaitForCaptureAsync(inputHost, update =>
+            update.Lease.SourceId == "cm3" && update.Lease.Status == InputCaptureStatus.Active);
         var started = inputHost.BeginCapture(new InputCaptureRequest(
             "settings-client",
             "cm3",
@@ -159,10 +162,9 @@ public sealed class DemoRuntimeCompositionTests
             TimeSpan.FromSeconds(10)));
         Assert.True(started.Accepted);
         var captureId = started.Lease!.CaptureId;
-        var activeCapture = WaitForCaptureAsync(inputHost, captureId, InputCaptureStatus.Active);
 
         Assert.True(composition.ObserveForCapture(captureId, "cm3"));
-        await activeCapture;
+        Assert.Equal(captureId, (await activeCapture).Lease.CaptureId);
 
         await AdvanceUntilObservedAsync(
             inputHost,
@@ -170,7 +172,8 @@ public sealed class DemoRuntimeCompositionTests
             "cm3",
             TimeSpan.FromMilliseconds(2000),
             snapshot => !snapshot.Buttons[11]);
-        var captured = WaitForCaptureAsync(inputHost, captureId, InputCaptureStatus.Completed);
+        var captured = WaitForCaptureAsync(inputHost, update =>
+            update.Lease.CaptureId == captureId && update.Lease.Status == InputCaptureStatus.Completed);
         var capturedObservation = await AdvanceUntilObservedAsync(
             inputHost,
             time,
@@ -355,14 +358,13 @@ public sealed class DemoRuntimeCompositionTests
 
     private static async Task<InputCaptureChangedEventArgs> WaitForCaptureAsync(
         RuntimeInputHost inputHost,
-        Guid captureId,
-        InputCaptureStatus status)
+        Func<InputCaptureChangedEventArgs, bool> predicate)
     {
         var reached = new TaskCompletionSource<InputCaptureChangedEventArgs>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         void OnChanged(object? sender, InputCaptureChangedEventArgs update)
         {
-            if (update.Lease.CaptureId == captureId && update.Lease.Status == status)
+            if (predicate(update))
             {
                 reached.TrySetResult(update);
             }
