@@ -10,6 +10,7 @@
     <ProjectReference Include="..\Joydex.Ipc\Joydex.Ipc.csproj" />
     <ProjectReference Include="..\Joydex.RuntimeHost\Joydex.RuntimeHost.csproj"
                       ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Joydex.Secrets\Joydex.Secrets.csproj" />
     <ProjectReference Include="..\Joydex.WirelessPanel\Joydex.WirelessPanel.csproj" />
     <ProjectReference Include="..\Joydex.Windows\Joydex.Windows.csproj" />
   </ItemGroup>

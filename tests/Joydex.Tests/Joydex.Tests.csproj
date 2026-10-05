@@ -32,6 +32,10 @@
     <ProjectReference Include="..\..\src\Joydex.Virpil\Joydex.Virpil.csproj" />
     <ProjectReference Include="..\..\src\Joydex.App\Joydex.App.csproj" />
     <ProjectReference Include="..\..\src\Joydex.Contracts\Joydex.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Joydex.Secrets\Joydex.Secrets.csproj" />
+    <ProjectReference Include="..\..\src\Joydex.SecretsHost\Joydex.SecretsHost.csproj" />
+    <ProjectReference Include="..\Joydex.Secrets.ProcessFixture\Joydex.Secrets.ProcessFixture.csproj" />
+    <ProjectReference Include="..\..\tools\Joydex.Secrets.Cli\Joydex.Secrets.Cli.csproj" />
     <ProjectReference Include="..\..\src\Joydex.RuntimeHost\Joydex.RuntimeHost.csproj"
                       Aliases="RuntimeHost" />
   </ItemGroup>

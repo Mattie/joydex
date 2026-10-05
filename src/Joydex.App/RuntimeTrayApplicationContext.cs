@@ -4,6 +4,7 @@ using Joydex.Contracts;
 using Joydex.Core.Config;
 using Joydex.Core.TaskAlerts;
 using Joydex.Ipc;
+using Joydex.Secrets;
 using Joydex.Windows.Actions;
 
 namespace Joydex.App;
@@ -31,6 +32,15 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _controllersItem;
     private readonly ToolStripMenuItem _voiceItem;
     private readonly ToolStripMenuItem _pluginsItem;
+    private readonly ToolStripMenuItem _secretsItem;
+    private readonly ToolStripMenuItem _secretsModeStatusItem;
+    private readonly ToolStripMenuItem _secretsRequestsItem;
+    private readonly ToolStripMenuItem _secretsExecutionsItem;
+    private readonly ToolStripMenuItem _secretsApprovedItem;
+    private readonly ToolStripMenuItem _secretsDeniedItem;
+    private readonly ToolStripMenuItem _secretsAutoAllowItem;
+    private readonly ToolStripMenuItem _secretsDenyAllItem;
+    private readonly ToolStripMenuItem _secretsAskItem;
     private readonly ToolStripMenuItem _padItem;
     private readonly ToolStripMenuItem _padHealthItem;
     private readonly ToolStripMenuItem _directInputHealthItem;
@@ -50,6 +60,9 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private readonly RuntimePromptPickerWindowAdapter _promptPicker;
     private readonly RuntimeConfigurationInputClient _input = new();
     private readonly RuntimeTaskAlertsConnectionServices _taskAlerts;
+    private readonly SecretsBrokerProcess? _secretsBroker;
+    private readonly SecretsOperatingModeStore _secretsOperatingMode;
+    private readonly SecretsMetricsStore _secretsMetrics;
     private readonly RuntimePluginConnectionServices _plugins = new();
     private readonly ForegroundProcessGuard _foreground = new();
     private readonly LoginStartupRegistration? _joydexLoginStartup;
@@ -111,6 +124,9 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             SendCommandAsync);
         _taskAlerts = new RuntimeTaskAlertsConnectionServices(_ui);
         _taskAlerts.Changed += OnTaskAlertsChanged;
+        _secretsOperatingMode = new SecretsOperatingModeStore(
+            SecretsPaths.GetOperatingModePath(_dataRoot));
+        _secretsMetrics = new SecretsMetricsStore(SecretsPaths.GetMetricsPath(_dataRoot));
 
         _connectionItem = new ToolStripMenuItem("Runtime: Starting…") { Enabled = false };
         _controllersItem = new ToolStripMenuItem("Controllers: Starting…") { Enabled = false };
@@ -153,11 +169,46 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
         _padItem.DropDownOpening += OnPadMenuOpening;
         _directInputHealthItem = new ToolStripMenuItem("Controllers: Runtime starting…") { Enabled = false };
         _virpilHealthItem = new ToolStripMenuItem("VIRPIL: Runtime starting…") { Enabled = false };
+        _secretsModeStatusItem = new ToolStripMenuItem("Mode: Loading…") { Enabled = false };
+        _secretsRequestsItem = new ToolStripMenuItem("Requests: Loading…") { Enabled = false };
+        _secretsExecutionsItem = new ToolStripMenuItem("Secrets used: Loading…") { Enabled = false };
+        _secretsApprovedItem = new ToolStripMenuItem("Approved: Loading…") { Enabled = false };
+        _secretsDeniedItem = new ToolStripMenuItem("Denied: Loading…") { Enabled = false };
+        _secretsAutoAllowItem = new ToolStripMenuItem(
+            "⚠ Auto-allow all for 24 hours…",
+            image: null,
+            OnSecretsAutoAllow);
+        _secretsDenyAllItem = new ToolStripMenuItem(
+            "Deny all until further notice",
+            image: null,
+            OnSecretsDenyAll);
+        _secretsAskItem = new ToolStripMenuItem(
+            "Use normal approvals",
+            image: null,
+            OnSecretsAsk);
+        _secretsItem = new ToolStripMenuItem("Secrets")
+        {
+            DropDownItems =
+            {
+                _secretsModeStatusItem,
+                new ToolStripSeparator(),
+                _secretsRequestsItem,
+                _secretsExecutionsItem,
+                _secretsApprovedItem,
+                _secretsDeniedItem,
+                new ToolStripSeparator(),
+                _secretsAutoAllowItem,
+                _secretsDenyAllItem,
+                _secretsAskItem,
+            },
+        };
+        _secretsItem.DropDownOpening += OnSecretsMenuOpening;
         _pluginsItem = new ToolStripMenuItem("Plugins")
         {
-            Enabled = false,
-            DropDownItems = { _padItem, _directInputHealthItem, _virpilHealthItem },
+            Enabled = !_demoMode,
+            DropDownItems = { _secretsItem, _padItem, _directInputHealthItem, _virpilHealthItem },
         };
+        _pluginsItem.DropDownOpening += OnSecretsMenuOpening;
         _pluginsItem.DropDownOpening += OnPadMenuOpening;
         _configureItem = new ToolStripMenuItem(
             demoMode ? "Demo inspector…" : "Configure…",
@@ -278,6 +329,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             Visible = true,
         };
         _notifyIcon.DoubleClick += OnConfigure;
+        _secretsBroker = _demoMode ? null : SecretsBrokerProcess.TryStart(_dataRoot);
         _connectTask = ConnectLoopAsync();
     }
 
@@ -562,7 +614,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             new RuntimeRpcCommandRunner(connection.Rpc),
             supported: !_demoMode && connection.SupportsPluginManagement,
             engineEpoch: snapshot.EngineEpoch);
-        _pluginsItem.Enabled = _plugins.IsAvailable;
+        _pluginsItem.Enabled = _plugins.IsAvailable || !_demoMode;
         SetPadUnavailable(_plugins.IsAvailable
             ? "Open PAD to refresh its health."
             : "This runtime does not support PAD management.");
@@ -607,7 +659,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
         _configureItem.Enabled = false;
         _promptPickersItem.Enabled = false;
         _voiceItem.Enabled = false;
-        _pluginsItem.Enabled = false;
+        _pluginsItem.Enabled = !_demoMode;
         _controllersItem.Enabled = false;
         _taskAlertsItem.Enabled = false;
         _taskAlertsStatusItem.Enabled = false;
@@ -850,6 +902,101 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             && pending.OperationId == operationId)
         {
             _pendingCommands.Remove(kind);
+        }
+    }
+
+    private void OnSecretsMenuOpening(object? sender, EventArgs eventArgs) =>
+        RefreshSecretsMenu();
+
+    private void OnSecretsAutoAllow(object? sender, EventArgs eventArgs)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!SecretsOperatingModeUi.ConfirmAutoAllow(null, now)) return;
+        ChangeSecretsMode(() => _secretsOperatingMode.AutoAllowFor24Hours(now));
+    }
+
+    private void OnSecretsDenyAll(object? sender, EventArgs eventArgs) =>
+        ChangeSecretsMode(() => _secretsOperatingMode.DenyAll(DateTimeOffset.UtcNow));
+
+    private void OnSecretsAsk(object? sender, EventArgs eventArgs) =>
+        ChangeSecretsMode(() => _secretsOperatingMode.Ask(DateTimeOffset.UtcNow));
+
+    private void ChangeSecretsMode(Func<SecretsOperatingModeSnapshot> change)
+    {
+        try
+        {
+            _ = change();
+            RefreshSecretsMenu();
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException
+            or OverflowException
+            or TimeoutException
+            or UnauthorizedAccessException)
+        {
+            ShowFailure("Joydex Secrets could not change approval mode", exception);
+            RefreshSecretsMenu();
+        }
+    }
+
+    private void RefreshSecretsMenu()
+    {
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var mode = _secretsOperatingMode.Read(now);
+            _secretsItem.Text = SecretsOperatingModeUi.MenuTitle(mode);
+            _secretsModeStatusItem.Text = "Mode: " + SecretsOperatingModeUi.Status(mode);
+            _secretsModeStatusItem.ToolTipText = string.Empty;
+            _secretsAutoAllowItem.Checked = mode.Mode == SecretsOperatingMode.AutoAllow24Hours;
+            _secretsDenyAllItem.Checked = mode.Mode == SecretsOperatingMode.DenyAll;
+            _secretsAskItem.Checked = mode.Mode == SecretsOperatingMode.Ask;
+            _secretsAutoAllowItem.Enabled = !_demoMode;
+            _secretsDenyAllItem.Enabled = !_demoMode && mode.Mode != SecretsOperatingMode.DenyAll;
+            _secretsAskItem.Enabled = !_demoMode && mode.Mode != SecretsOperatingMode.Ask;
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException
+            or OverflowException
+            or TimeoutException
+            or UnauthorizedAccessException)
+        {
+            _secretsItem.Text = "Secrets — Unavailable";
+            _secretsModeStatusItem.Text = "Secrets state could not be read";
+            _secretsModeStatusItem.ToolTipText = exception.Message;
+            _secretsRequestsItem.Text = "Requests: Unavailable";
+            _secretsExecutionsItem.Text = "Secrets used: Unavailable";
+            _secretsApprovedItem.Text = "Approved: Unavailable";
+            _secretsDeniedItem.Text = "Denied: Unavailable";
+            _secretsAutoAllowItem.Enabled = false;
+            _secretsDenyAllItem.Enabled = false;
+            _secretsAskItem.Enabled = false;
+        }
+
+        try
+        {
+            var metrics = _secretsMetrics.Read(DateTimeOffset.UtcNow);
+            _secretsRequestsItem.Text = SecretsOperatingModeUi.Metric(
+                "Requests", metrics.RequestsTotal, metrics.Requests24Hours);
+            _secretsExecutionsItem.Text = SecretsOperatingModeUi.Metric(
+                "Secrets used", metrics.ExecutionsTotal, metrics.Executions24Hours);
+            _secretsApprovedItem.Text = SecretsOperatingModeUi.Metric(
+                "Approved", metrics.ApprovedTotal, metrics.Approved24Hours);
+            _secretsDeniedItem.Text = SecretsOperatingModeUi.Metric(
+                "Denied", metrics.DeniedTotal, metrics.Denied24Hours);
+            _secretsRequestsItem.ToolTipText = string.Empty;
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException
+            or OverflowException
+            or TimeoutException
+            or UnauthorizedAccessException)
+        {
+            _secretsRequestsItem.Text = "Requests: Unavailable";
+            _secretsRequestsItem.ToolTipText = exception.Message;
+            _secretsExecutionsItem.Text = "Secrets used: Unavailable";
+            _secretsApprovedItem.Text = "Approved: Unavailable";
+            _secretsDeniedItem.Text = "Denied: Unavailable";
         }
     }
 
@@ -1701,6 +1848,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             await _promptPicker.DisposeAsync().ConfigureAwait(true);
             _buttonMaps.Dispose();
             _voiceAdapter.Dispose();
+            _secretsBroker?.Dispose();
         }
         finally
         {

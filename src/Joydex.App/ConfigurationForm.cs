@@ -33,6 +33,7 @@ internal sealed class ConfigurationForm : ThemedForm
     private readonly bool _demoMode;
     private readonly RoomVoiceSettingsControl? _roomVoiceSettings;
     private readonly PebbleIndexSettingsControl? _pebbleIndexSettings;
+    private readonly SecretsSettingsControl _secretsSettings;
     private readonly Func<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?, bool> _saveConfiguration;
     private readonly Func<CompanionConfig, VoicePePreferences?, PebbleIndexPreferences?, CancellationToken, Task<RuntimeSettingsWriteResult>>? _applyConfiguration;
     private SettingsBundle _authoritativeSettings;
@@ -117,6 +118,9 @@ internal sealed class ConfigurationForm : ThemedForm
         _demoMode = demoMode;
         _roomVoiceSettings = roomVoiceSettings;
         _pebbleIndexSettings = pebbleIndexSettings;
+        _secretsSettings = new SecretsSettingsControl(
+            Path.GetDirectoryName(Path.GetFullPath(configPath))!,
+            allowChanges: !documentationMode && !demoMode);
         _inputClient = inputClient;
         _inputSession = inputSession ?? inputClient as IConfigurationInputSession;
         _applyConfiguration = applyConfiguration;
@@ -337,6 +341,7 @@ internal sealed class ConfigurationForm : ThemedForm
         {
             AddNavigationPage("Pebble Index", BuildPebbleIndexPage(), navigation);
         }
+        AddNavigationPage("Secrets", BuildSecretsPage(), navigation);
         AddNavigationPage("General", BuildGeneralPage(), navigation);
         ShowPage(0, focusNavigation: false);
 
@@ -420,6 +425,7 @@ internal sealed class ConfigurationForm : ThemedForm
                 "Button Maps" => NavGlyph.ButtonMaps,
                 "Room Voice" => NavGlyph.RoomVoice,
                 "Pebble Index" => NavGlyph.RoomVoice,
+                "Secrets" => NavGlyph.Secrets,
                 "General" => NavGlyph.General,
                 _ => NavGlyph.None,
             },
@@ -515,6 +521,13 @@ internal sealed class ConfigurationForm : ThemedForm
     {
         var page = CreatePage(new Padding(0));
         if (_pebbleIndexSettings is not null) page.Controls.Add(_pebbleIndexSettings);
+        return page;
+    }
+
+    private Control BuildSecretsPage()
+    {
+        var page = CreatePage(new Padding(0));
+        page.Controls.Add(_secretsSettings);
         return page;
     }
 
@@ -2251,6 +2264,7 @@ internal sealed class ConfigurationForm : ThemedForm
                 ApplyAuthoritativeSettings(result.Snapshot.Desired);
                 if (closeAfterSuccess)
                 {
+                    SetSettingsOperationActive(active: false);
                     DialogResult = DialogResult.OK;
                     Close();
                 }
