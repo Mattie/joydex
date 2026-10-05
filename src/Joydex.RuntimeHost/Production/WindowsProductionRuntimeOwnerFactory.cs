@@ -4,6 +4,7 @@ using Joydex.Core.Config;
 using Joydex.Core.Runtime;
 using Joydex.Core.TaskAlerts;
 using Joydex.Core.Voice;
+using Joydex.Ipc;
 using Joydex.RuntimeHost.Plugins;
 using Joydex.WirelessPanel;
 using Joydex.Windows.Actions;
@@ -16,7 +17,8 @@ namespace Joydex.RuntimeHost.Production;
 internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     IProductionRuntimeOwnerFactory,
     IPadPluginHostServices,
-    IVoicePluginHostServices
+    IVoicePluginHostServices,
+    IPebblePluginHostServices
 {
     private readonly object _stateGate = new();
     private readonly RuntimeInputHost _inputHost;
@@ -37,11 +39,19 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     private CodexKeybindingService? _keybindings;
     private TaskAlertProductionOwner? _taskAlerts;
     private VoiceProductionOwner? _voiceOwner;
+    private PebbleIndexProductionOwner? _pebbleOwner;
     private BundledPluginHealth _voiceHealth = new(
         BundledPluginCatalog.VoiceId,
         BundledPluginLifecycleState.Disabled,
         0,
         "Room Voice is disabled.",
+        CanRestart: false,
+        CanReload: false);
+    private BundledPluginHealth _pebbleHealth = new(
+        BundledPluginCatalog.PebbleId,
+        BundledPluginLifecycleState.Disabled,
+        0,
+        "Pebble Index is disabled.",
         CanRestart: false,
         CanReload: false);
     private bool _disposed;
@@ -96,7 +106,11 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
                 TimeSpan.FromSeconds(1 << Math.Min(attempt - 1, 2)),
                 cancellationToken),
             runtimeCancellationToken);
-        _padCommands = new PadPluginCommandHandler(_pad, WriteLog, GetVoiceHealth);
+        _padCommands = new PadPluginCommandHandler(
+            _pad,
+            WriteLog,
+            GetVoiceHealth,
+            GetPebbleHealth);
     }
 
     public event Action? VoiceBecameIdle;
@@ -117,9 +131,12 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     internal BundledPluginHealth GetPluginHealth(string pluginId)
     {
         _ = BundledPluginCatalog.GetRequired(pluginId);
-        return string.Equals(pluginId, BundledPluginCatalog.PadId, StringComparison.Ordinal)
-            ? _pad.Health
-            : GetVoiceHealth();
+        return pluginId switch
+        {
+            BundledPluginCatalog.PadId => _pad.Health,
+            BundledPluginCatalog.VoiceId => GetVoiceHealth(),
+            _ => GetPebbleHealth(),
+        };
     }
 
     public async Task RefreshPluginsAsync(
@@ -153,7 +170,8 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         _ = BundledPluginCatalog.GetRequired(pluginId);
         if (!string.Equals(pluginId, BundledPluginCatalog.PadId, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("Room Voice is managed by its existing Voice controls.");
+            throw new InvalidOperationException(
+                "This plugin is managed by its existing runtime controls.");
         }
         ThrowIfDisposed();
         return _pad.RestartAsync(cancellationToken);
@@ -164,7 +182,8 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         _ = BundledPluginCatalog.GetRequired(pluginId);
         if (!string.Equals(pluginId, BundledPluginCatalog.PadId, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("Room Voice is managed by its existing Voice controls.");
+            throw new InvalidOperationException(
+                "This plugin is managed by its existing runtime controls.");
         }
         ThrowIfDisposed();
         return _pad.ReloadAsync(cancellationToken);
@@ -356,6 +375,18 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
 
     void IVoicePluginHostServices.WriteLog(string message) => WriteLog(message);
 
+    void IPebblePluginHostServices.PublishPebble(PebbleWorkerStatus status) =>
+        PublishPebbleIndexStatus(status);
+
+    void IPebblePluginHostServices.PublishPebbleHealth(
+        PebbleIndexProductionOwner owner,
+        BundledPluginHealth health) => PublishPebbleHealth(owner, health);
+
+    void IPebblePluginHostServices.ClearPebbleOwner(PebbleIndexProductionOwner owner) =>
+        ClearPebbleOwner(owner);
+
+    void IPebblePluginHostServices.WriteLog(string message) => WriteLog(message);
+
     internal void PublishTaskAlerts(TaskAlertProductionOwner owner, TaskAlertSnapshot snapshot)
     {
         lock (_stateGate)
@@ -390,7 +421,7 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
 
     internal void PublishVoiceBecameIdle() => VoiceBecameIdle?.Invoke();
 
-    internal void PublishPebbleIndexStatus(PebbleIndexReceiverStatus status)
+    internal void PublishPebbleIndexStatus(PebbleWorkerStatus status)
     {
         WriteLog(status.Message);
         _ui.PublishPebble(status, _paths.PebbleIndexInbox);
@@ -437,6 +468,30 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         }
     }
 
+    internal void PublishPebbleHealth(
+        PebbleIndexProductionOwner owner,
+        BundledPluginHealth health)
+    {
+        lock (_stateGate)
+        {
+            if (_pebbleOwner is null || ReferenceEquals(_pebbleOwner, owner))
+            {
+                _pebbleHealth = health;
+            }
+        }
+    }
+
+    internal void ClearPebbleOwner(PebbleIndexProductionOwner owner)
+    {
+        lock (_stateGate)
+        {
+            if (ReferenceEquals(_pebbleOwner, owner))
+            {
+                _pebbleOwner = null;
+            }
+        }
+    }
+
     internal void PublishDesktopTasks(IReadOnlyList<DesktopTaskSummary> tasks) =>
         _ui.PublishDesktopTasks(tasks);
 
@@ -474,6 +529,34 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
                     BundledPluginLifecycleState.Disabled,
                     _voiceHealth.Generation,
                     "Room Voice is disabled.",
+                    CanRestart: false,
+                    CanReload: false);
+            }
+        }
+    }
+
+    public void CommitPebbleActivation(PebbleIndexPreferences preferences)
+    {
+        var normalized = preferences.Normalize();
+        PebbleIndexProductionOwner? owner;
+        lock (_stateGate) { owner = _pebbleOwner; }
+        if (normalized.Enabled)
+        {
+            if (owner is null || !owner.MatchesPreferences(normalized))
+            {
+                return;
+            }
+            owner.Commit();
+        }
+        else
+        {
+            lock (_stateGate)
+            {
+                _pebbleHealth = new BundledPluginHealth(
+                    BundledPluginCatalog.PebbleId,
+                    BundledPluginLifecycleState.Disabled,
+                    _pebbleHealth.Generation,
+                    "Pebble Index is disabled.",
                     CanRestart: false,
                     CanReload: false);
             }
@@ -650,18 +733,26 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         SettingsBundle activeSettings,
         CancellationToken cancellationToken)
     {
-        if (!activeSettings.PebbleIndex.Normalize().Enabled)
+        var preferences = activeSettings.PebbleIndex.Normalize();
+        if (!preferences.Enabled)
         {
             return null;
         }
 
-        return await PebbleIndexProductionOwner.StartAsync(
+        var owner = await PebbleIndexProductionOwner.StartAsync(
                 this,
                 _paths,
                 _desktopBroker,
-                activeSettings.PebbleIndex,
+                preferences,
+                _runtimeCancellationToken,
                 cancellationToken)
             .ConfigureAwait(false);
+        lock (_stateGate)
+        {
+            _pebbleOwner = owner;
+            _pebbleHealth = owner.HealthSnapshot;
+        }
+        return owner;
     }
 
     private CodexKeybindingService GetKeybindings() => _keybindings
@@ -711,6 +802,11 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
     private BundledPluginHealth GetVoiceHealth()
     {
         lock (_stateGate) { return _voiceHealth; }
+    }
+
+    private BundledPluginHealth GetPebbleHealth()
+    {
+        lock (_stateGate) { return _pebbleHealth; }
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

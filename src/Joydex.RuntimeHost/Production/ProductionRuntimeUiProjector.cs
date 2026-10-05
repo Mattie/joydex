@@ -4,6 +4,7 @@ using Joydex.Contracts;
 using Joydex.Core.Config;
 using Joydex.Core.TaskAlerts;
 using Joydex.Core.Voice;
+using Joydex.Ipc;
 using Joydex.Windows.TaskAlerts;
 
 namespace Joydex.RuntimeHost.Production;
@@ -267,7 +268,7 @@ internal sealed class ProductionRuntimeUiProjector
         }
     }
 
-    public void PublishPebble(PebbleIndexReceiverStatus status, string inboxPath)
+    public void PublishPebble(PebbleWorkerStatus status, string inboxPath)
     {
         var projected = new RuntimePebbleIndexSnapshot(
             status.Running,
@@ -276,7 +277,7 @@ internal sealed class ProductionRuntimeUiProjector
             status.Latest is null
                 ? null
                 : new RuntimePebbleIndexDeliveryStatus(
-                    status.Latest.Id,
+                    status.Latest.HashedId,
                     status.Latest.State,
                     Limit(status.Latest.Detail)),
             inboxPath);

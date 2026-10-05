@@ -1,32 +1,33 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
-namespace Joydex.RuntimeHost.Plugins.Voice;
+namespace Joydex.RuntimeHost.Plugins;
 
-internal interface IVoiceWorkerJob : IDisposable
+internal interface IWorkerProcessJob : IDisposable
 {
     int ActiveProcessCount { get; }
 
-    void Assign(IVoiceWorkerNativeProcess process);
+    void Assign(IRuntimeWorkerProcess process);
 
     void Terminate();
 }
 
-internal sealed class VoiceWorkerJob : IVoiceWorkerJob
+internal sealed class WorkerProcessJob : IWorkerProcessJob
 {
     private const uint JobObjectLimitKillOnJobClose = 0x00002000;
     private readonly SafeJobHandle _handle;
     private int _disposed;
 
-    private VoiceWorkerJob(SafeJobHandle handle) => _handle = handle;
+    private WorkerProcessJob(SafeJobHandle handle) => _handle = handle;
 
-    public static VoiceWorkerJob Create()
+    public static WorkerProcessJob Create()
     {
         var handle = CreateJobObject(IntPtr.Zero, null);
         if (handle.IsInvalid)
         {
-            throw Win32Failure("The Voice worker job could not be created.");
+            throw Win32Failure("The worker process job could not be created.");
         }
         try
         {
@@ -43,9 +44,9 @@ internal sealed class VoiceWorkerJob : IVoiceWorkerJob
                     ref information,
                     (uint)Marshal.SizeOf<JobObjectExtendedLimitInformation>()))
             {
-                throw Win32Failure("The Voice worker job lifetime policy could not be configured.");
+                throw Win32Failure("The worker process job lifetime policy could not be configured.");
             }
-            return new VoiceWorkerJob(handle);
+            return new WorkerProcessJob(handle);
         }
         catch
         {
@@ -54,13 +55,13 @@ internal sealed class VoiceWorkerJob : IVoiceWorkerJob
         }
     }
 
-    public void Assign(IVoiceWorkerNativeProcess process)
+    public void Assign(IRuntimeWorkerProcess process)
     {
         ArgumentNullException.ThrowIfNull(process);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         if (!AssignProcessToJobObject(_handle, process.ProcessHandle))
         {
-            throw Win32Failure("The Voice worker process could not be assigned to its lifetime job.");
+            throw Win32Failure("The worker process could not be assigned to its lifetime job.");
         }
     }
 
@@ -69,7 +70,7 @@ internal sealed class VoiceWorkerJob : IVoiceWorkerJob
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         if (!TerminateJobObject(_handle, 1))
         {
-            throw Win32Failure("The Voice worker job could not be terminated.");
+            throw Win32Failure("The worker process job could not be terminated.");
         }
     }
 
@@ -85,7 +86,7 @@ internal sealed class VoiceWorkerJob : IVoiceWorkerJob
                     (uint)Marshal.SizeOf<JobObjectBasicAccountingInformation>(),
                     out _))
             {
-                throw Win32Failure("The Voice worker job state could not be inspected.");
+                throw Win32Failure("The worker process job state could not be inspected.");
             }
             return checked((int)information.ActiveProcesses);
         }
@@ -96,6 +97,24 @@ internal sealed class VoiceWorkerJob : IVoiceWorkerJob
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
             _handle.Dispose();
+        }
+    }
+
+    public static async Task WaitForEmptyAsync(
+        IWorkerProcessJob job,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (job.ActiveProcessCount != 0)
+        {
+            if (stopwatch.Elapsed >= timeout)
+            {
+                throw new TimeoutException(
+                    "Worker process descendant cleanup was not confirmed.");
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 

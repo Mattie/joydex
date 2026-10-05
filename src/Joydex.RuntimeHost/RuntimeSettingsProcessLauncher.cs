@@ -829,7 +829,7 @@ internal interface IRuntimeSettingsProcess : IAsyncDisposable
     void Kill();
 }
 
-internal interface IVoiceWorkerNativeProcess
+internal interface IRuntimeWorkerProcess
 {
     SafeProcessHandle ProcessHandle { get; }
 
@@ -882,7 +882,7 @@ internal sealed class WindowsRuntimeSettingsProcessFactory : IRuntimeSettingsPro
     }
 }
 
-internal sealed class WindowsRuntimeSettingsProcess : IRuntimeSettingsProcess, IVoiceWorkerNativeProcess
+internal sealed class WindowsRuntimeSettingsProcess : IRuntimeSettingsProcess, IRuntimeWorkerProcess
 {
     private readonly Task _completion;
     private readonly Task _standardOutput;
@@ -907,12 +907,12 @@ internal sealed class WindowsRuntimeSettingsProcess : IRuntimeSettingsProcess, I
 
     public Task Completion => _completion;
 
-    SafeProcessHandle IVoiceWorkerNativeProcess.ProcessHandle => Process.SafeHandle;
+    SafeProcessHandle IRuntimeWorkerProcess.ProcessHandle => Process.SafeHandle;
 
-    long IVoiceWorkerNativeProcess.ProcessStartTimeUtcTicks =>
+    long IRuntimeWorkerProcess.ProcessStartTimeUtcTicks =>
         Process.StartTime.ToUniversalTime().Ticks;
 
-    int IVoiceWorkerNativeProcess.SessionId => Process.SessionId;
+    int IRuntimeWorkerProcess.SessionId => Process.SessionId;
 
     public void CloseInput()
     {

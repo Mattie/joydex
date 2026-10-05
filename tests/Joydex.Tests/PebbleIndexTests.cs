@@ -610,6 +610,185 @@ public sealed class PebbleIndexTests : IDisposable
     }
 
     [Fact]
+    public async Task DisabledReceiverDoesNotCreateItsTokenOrInbox()
+    {
+        var secretPath = Path.Combine(_directory, "disabled", "pebble-index.secret");
+        var inbox = Path.Combine(_directory, "disabled", "inbox");
+        var target = Guid.NewGuid().ToString("D");
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            PebbleIndexReceiverRuntime.StartAsync(
+                new PebbleIndexPreferences(
+                    Enabled: false,
+                    Port: ReservePort(),
+                    TargetTaskId: target,
+                    TargetHostId: "local",
+                    TargetTaskLabel: "Target"),
+                secretPath,
+                inbox,
+                "unused-test-pipe",
+                _ => { },
+                _ => { }));
+
+        Assert.Contains("disabled", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(secretPath));
+        Assert.False(Directory.Exists(inbox));
+    }
+
+    [Fact]
+    public async Task InvalidReceiverPreferencesDoNotCreateItsTokenOrInbox()
+    {
+        var secretPath = Path.Combine(_directory, "invalid", "pebble-index.secret");
+        var inbox = Path.Combine(_directory, "invalid", "inbox");
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            PebbleIndexReceiverRuntime.StartAsync(
+                new PebbleIndexPreferences(
+                    Enabled: true,
+                    Port: PebbleIndexPreferences.MinimumPort - 1,
+                    TargetTaskId: Guid.NewGuid().ToString("D"),
+                    TargetHostId: "local",
+                    TargetTaskLabel: "Target"),
+                secretPath,
+                inbox,
+                "unused-test-pipe",
+                _ => { },
+                _ => { }));
+
+        Assert.False(File.Exists(secretPath));
+        Assert.False(Directory.Exists(inbox));
+    }
+
+    [Fact]
+    public async Task ListenerBindFailureDoesNotCreateTokenAndReleasesInboxOwnership()
+    {
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        using var occupied = new TcpListener(IPAddress.Loopback, 0);
+        occupied.Start();
+        var port = ((IPEndPoint)occupied.LocalEndpoint).Port;
+        var secretPath = Path.Combine(_directory, "bind-failure", "pebble-index.secret");
+        var inbox = Path.Combine(_directory, "bind-failure", "inbox");
+        var preferences = new PebbleIndexPreferences(
+            Enabled: true,
+            Port: port,
+            TargetTaskId: target.Id,
+            TargetHostId: target.HostId,
+            TargetTaskLabel: target.Title);
+
+        await Assert.ThrowsAsync<SocketException>(() =>
+            PebbleIndexReceiverRuntime.StartAsync(
+                preferences,
+                secretPath,
+                inbox,
+                "unused-test-pipe",
+                _ => { },
+                _ => { }));
+        Assert.False(File.Exists(secretPath));
+
+        occupied.Stop();
+        await using var replacement = await PebbleIndexReceiverRuntime.StartAsync(
+            preferences,
+            "test-secret",
+            inbox,
+            new RecordingBridge(target),
+            _ => { },
+            _ => { });
+    }
+
+    [Fact]
+    public async Task SecondReceiverForSameInboxDoesNotCreateTokenBindOrStart()
+    {
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var inbox = Path.Combine(_directory, "shared-owner-inbox");
+        var firstPort = ReservePort();
+        await using var first = await PebbleIndexReceiverRuntime.StartAsync(
+            new PebbleIndexPreferences(
+                Enabled: true,
+                Port: firstPort,
+                TargetTaskId: target.Id,
+                TargetHostId: target.HostId,
+                TargetTaskLabel: target.Title),
+            "test-secret",
+            inbox,
+            new RecordingBridge(target),
+            _ => { },
+            _ => { });
+        var secondPort = ReservePort();
+        var secretPath = Path.Combine(_directory, "shared-owner.secret");
+        var startedStatuses = new List<PebbleIndexReceiverStatus>();
+
+        var exception = await Assert.ThrowsAsync<IOException>(() =>
+            PebbleIndexReceiverRuntime.StartAsync(
+                new PebbleIndexPreferences(
+                    Enabled: true,
+                    Port: secondPort,
+                    TargetTaskId: target.Id,
+                    TargetHostId: target.HostId,
+                    TargetTaskLabel: target.Title),
+                secretPath,
+                inbox,
+                "unused-test-pipe",
+                startedStatuses.Add,
+                _ => { }));
+
+        Assert.Contains("already owned", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(secretPath));
+        Assert.Empty(startedStatuses);
+        using var portProbe = new TcpListener(IPAddress.Loopback, secondPort);
+        portProbe.Start();
+    }
+
+    [Fact]
+    public async Task ReceiverStartupDoesNotReplayStoredReceivedOrUncertainDeliveries()
+    {
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var inbox = Path.Combine(_directory, "no-startup-replay-inbox");
+        var preferences = new PebbleIndexPreferences(
+            Enabled: true,
+            Port: ReservePort(),
+            TargetTaskId: target.Id,
+            TargetHostId: target.HostId,
+            TargetTaskLabel: target.Title);
+        var store = new PebbleIndexDeliveryStore(inbox);
+        var received = store.Accept("held", "1000", "ring", "", "held-one", preferences);
+        var uncertain = store.Accept("uncertain", "1001", "ring", "", "uncertain-one", preferences);
+        store.Update(
+            uncertain.Delivery.Id,
+            PebbleIndexDeliveryState.DeliveryUncertain,
+            "Desktop delivery was not confirmed.");
+        var acceptStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new RecordingBridge(target);
+
+        await using var receiver = await PebbleIndexReceiverRuntime.StartAsync(
+            preferences,
+            "test-secret",
+            inbox,
+            bridge,
+            _ => { },
+            _ => { },
+            acceptClient: async cancellationToken =>
+            {
+                acceptStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                return new TcpClient();
+            });
+        await acceptStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var replayObservation = await Task.WhenAny(
+            bridge.ResolveObserved.Task,
+            Task.Delay(TimeSpan.FromMilliseconds(200)));
+        Assert.NotSame(bridge.ResolveObserved.Task, replayObservation);
+        Assert.Equal(0, bridge.ResolveCount);
+        Assert.Equal(0, bridge.SendCount);
+        var stored = store.Recent(10).ToDictionary(delivery => delivery.Id, StringComparer.Ordinal);
+        Assert.Equal(PebbleIndexDeliveryState.Received, stored[received.Delivery.Id].State);
+        Assert.Equal(PebbleIndexDeliveryState.DeliveryUncertain, stored[uncertain.Delivery.Id].State);
+    }
+
+    [Fact]
     public async Task UnauthorizedRequestIsRejectedBeforeItsDeclaredBodyArrives()
     {
         var port = ReservePort();
@@ -1070,8 +1249,10 @@ public sealed class PebbleIndexTests : IDisposable
     public async Task ReceiverWaitsForActiveClientsDuringShutdown()
     {
         var port = ReservePort();
+        var replacementPort = ReservePort();
         var target = new DesktopTaskSummary(
             Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var inbox = Path.Combine(_directory, "shutdown-inbox");
         var releaseEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var allowRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var receiver = await PebbleIndexReceiverRuntime.StartAsync(
@@ -1079,7 +1260,7 @@ public sealed class PebbleIndexTests : IDisposable
                 Enabled: true, Port: port, TargetTaskId: target.Id,
                 TargetHostId: target.HostId, TargetTaskLabel: target.Title),
             "test-secret",
-            Path.Combine(_directory, "shutdown-inbox"),
+            inbox,
             new RecordingBridge(target),
             _ => { },
             _ => { },
@@ -1088,24 +1269,153 @@ public sealed class PebbleIndexTests : IDisposable
                 releaseEntered.TrySetResult();
                 await allowRelease.Task.ConfigureAwait(false);
             });
-        using var client = new TcpClient();
-        await client.ConnectAsync(IPAddress.Loopback, port);
-        await client.GetStream().WriteAsync(Encoding.ASCII.GetBytes(
-            "POST /pebble-index HTTP/1.1\r\nHost: localhost\r\n"));
-        await WaitForActiveClientCountAsync(receiver, 1);
-
-        var disposing = receiver.DisposeAsync().AsTask();
         try
         {
-            await releaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
-            Assert.False(disposing.IsCompleted);
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            await client.GetStream().WriteAsync(Encoding.ASCII.GetBytes(
+                "POST /pebble-index HTTP/1.1\r\nHost: localhost\r\n"));
+            await WaitForActiveClientCountAsync(receiver, 1);
+
+            var disposing = receiver.DisposeAsync().AsTask();
+            Assert.Same(disposing, receiver.DisposeAsync().AsTask());
+            try
+            {
+                await releaseEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+                Assert.False(disposing.IsCompleted);
+                await Assert.ThrowsAsync<IOException>(() =>
+                    PebbleIndexReceiverRuntime.StartAsync(
+                        new PebbleIndexPreferences(
+                            Enabled: true,
+                            Port: replacementPort,
+                            TargetTaskId: target.Id,
+                            TargetHostId: target.HostId,
+                            TargetTaskLabel: target.Title),
+                        "replacement-secret",
+                        inbox,
+                        new RecordingBridge(target),
+                        _ => { },
+                        _ => { }));
+            }
+            finally
+            {
+                allowRelease.TrySetResult();
+                await disposing.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            Assert.Equal(0, receiver.ActiveClientCount);
+
+            await using var replacement = await PebbleIndexReceiverRuntime.StartAsync(
+                new PebbleIndexPreferences(
+                    Enabled: true,
+                    Port: replacementPort,
+                    TargetTaskId: target.Id,
+                    TargetHostId: target.HostId,
+                    TargetTaskLabel: target.Title),
+                "replacement-secret",
+                inbox,
+                new RecordingBridge(target),
+                _ => { },
+                _ => { });
         }
         finally
         {
             allowRelease.TrySetResult();
-            await disposing.WaitAsync(TimeSpan.FromSeconds(2));
+            await receiver.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
         }
-        Assert.Equal(0, receiver.ActiveClientCount);
+    }
+
+    [Fact]
+    public async Task ReceiverHoldsInboxOwnershipWhileDeliveryCleanupIsPending()
+    {
+        var port = ReservePort();
+        var replacementPort = ReservePort();
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Target", "idle", null, null, 0);
+        var inbox = Path.Combine(_directory, "delivery-shutdown-inbox");
+        var sendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowSendToFinish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bridge = new RecordingBridge(
+            target,
+            sendMessage: async _ =>
+            {
+                sendStarted.TrySetResult();
+                await allowSendToFinish.Task.ConfigureAwait(false);
+                return new DesktopTaskDeliveryResult(
+                    target.Id,
+                    target.HostId,
+                    target.Title,
+                    Queued: false,
+                    Detail: "Delivered.");
+            });
+        var receiver = await PebbleIndexReceiverRuntime.StartAsync(
+            new PebbleIndexPreferences(
+                Enabled: true,
+                Port: port,
+                TargetTaskId: target.Id,
+                TargetHostId: target.HostId,
+                TargetTaskLabel: target.Title),
+            "test-secret",
+            inbox,
+            bridge,
+            _ => { },
+            _ => { });
+        try
+        {
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+                "Bearer",
+                "test-secret");
+            using (var form = CreateForm("hello", "6000"))
+            using (var response = await client.PostAsync(
+                $"http://127.0.0.1:{port}/pebble-index",
+                form))
+            {
+                Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            }
+            await sendStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var disposing = receiver.DisposeAsync().AsTask();
+            try
+            {
+                Assert.False(disposing.IsCompleted);
+                await Assert.ThrowsAsync<IOException>(() =>
+                    PebbleIndexReceiverRuntime.StartAsync(
+                        new PebbleIndexPreferences(
+                            Enabled: true,
+                            Port: replacementPort,
+                            TargetTaskId: target.Id,
+                            TargetHostId: target.HostId,
+                            TargetTaskLabel: target.Title),
+                        "replacement-secret",
+                        inbox,
+                        new RecordingBridge(target),
+                        _ => { },
+                        _ => { }));
+            }
+            finally
+            {
+                allowSendToFinish.TrySetResult();
+                await disposing.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+
+            await using var replacement = await PebbleIndexReceiverRuntime.StartAsync(
+                new PebbleIndexPreferences(
+                    Enabled: true,
+                    Port: replacementPort,
+                    TargetTaskId: target.Id,
+                    TargetHostId: target.HostId,
+                    TargetTaskLabel: target.Title),
+                "replacement-secret",
+                inbox,
+                new RecordingBridge(target),
+                _ => { },
+                _ => { });
+        }
+        finally
+        {
+            allowSendToFinish.TrySetResult();
+            await receiver.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+        }
     }
 
     [Fact]
@@ -1179,15 +1489,28 @@ public sealed class PebbleIndexTests : IDisposable
         Exception? sendError = null,
         Action? beforeSend = null,
         Func<Task<DesktopTaskCatalog>>? listTasks = null,
-        Func<Task<DesktopTaskSummary>>? resolveTask = null) : IDesktopTaskBridgeClient
+        Func<Task<DesktopTaskSummary>>? resolveTask = null,
+        Func<CancellationToken, Task<DesktopTaskDeliveryResult>>? sendMessage = null)
+        : IDesktopTaskBridgeClient
     {
+        public int ResolveCount;
         public int SendCount;
         public TaskCompletionSource Delivered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ResolveObserved { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         public Task<bool> IsAvailableAsync(string sourceThreadId, CancellationToken cancellationToken = default) => Task.FromResult(true);
         public Task<DesktopTaskCatalog> ListTasksAsync(string sourceThreadId, string? excludedThreadId = null, CancellationToken cancellationToken = default) =>
             listTasks?.Invoke() ?? Task.FromResult(new DesktopTaskCatalog([target]));
-        public Task<DesktopTaskSummary> ResolveTaskAsync(string sourceThreadId, string targetThreadId, string targetHostId, CancellationToken cancellationToken = default) =>
-            resolveTask?.Invoke() ?? Task.FromResult(target);
+        public Task<DesktopTaskSummary> ResolveTaskAsync(
+            string sourceThreadId,
+            string targetThreadId,
+            string targetHostId,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref ResolveCount);
+            ResolveObserved.TrySetResult();
+            return resolveTask?.Invoke() ?? Task.FromResult(target);
+        }
         public Task<string> ReadTaskAsync(string sourceThreadId, DesktopTaskSummary selected, CancellationToken cancellationToken = default) =>
             Task.FromResult(string.Empty);
         public Task<DesktopTaskDeliveryResult> SendMessageAsync(
@@ -1195,6 +1518,10 @@ public sealed class PebbleIndexTests : IDisposable
         {
             Interlocked.Increment(ref SendCount);
             beforeSend?.Invoke();
+            if (sendMessage is not null)
+            {
+                return sendMessage(cancellationToken);
+            }
             if (sendError is not null)
             {
                 return Task.FromException<DesktopTaskDeliveryResult>(sendError);

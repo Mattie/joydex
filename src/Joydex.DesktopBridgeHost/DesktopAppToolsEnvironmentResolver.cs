@@ -7,6 +7,7 @@ internal static class DesktopAppToolsEnvironmentResolver
 {
     private const int ProcessBasicInformation = 0;
     private const int ProcessCommandLineInformation = 60;
+    private const int MaximumEnvironmentBytes = 128 * 1024;
     private const string PipeVariable = "CODEX_APP_TOOLS_PIPE_PATH";
     private const string NodeVariable = "CODEX_MCP_NODE_PATH";
     private const string AdapterRootVariable = "JOYDEX_CODEX_APP_TOOLS_ROOT";
@@ -27,7 +28,7 @@ internal static class DesktopAppToolsEnvironmentResolver
         }
         using (appServer)
         {
-            return TryPrepareFromAppServer(appServer, log, out error);
+            return TryPrepareFromAppServer(appServer, log, allowInheritedDescriptor: true, out error);
         }
     }
 
@@ -39,7 +40,7 @@ internal static class DesktopAppToolsEnvironmentResolver
         try
         {
             using var appServer = Process.GetProcessById(processId);
-            return TryPrepareFromAppServer(appServer, log, out error);
+            return TryPrepareFromAppServer(appServer, log, allowInheritedDescriptor: false, out error);
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
         {
@@ -69,8 +70,15 @@ internal static class DesktopAppToolsEnvironmentResolver
                     }
                 }
 
-                if (!TryReadCommandLine(candidate, out var commandLine, out _)
-                    || !TryExtractAppToolsEnvironment(commandLine, out _, out _, out _))
+                var hasCommandLineDescriptor = TryReadCommandLine(candidate, out var commandLine, out _)
+                    && TryExtractAppToolsEnvironment(commandLine, out _, out _, out _);
+                var hasEnvironmentDescriptor = TryReadEnvironmentVariable(
+                        candidate,
+                        PipeVariable,
+                        out var environmentPipe,
+                        out _)
+                    && IsLocalPipePath(environmentPipe);
+                if (!hasCommandLineDescriptor && !hasEnvironmentDescriptor)
                 {
                     continue;
                 }
@@ -102,7 +110,11 @@ internal static class DesktopAppToolsEnvironmentResolver
         return true;
     }
 
-    private static bool TryPrepareFromAppServer(Process appServer, Action<string>? log, out string error)
+    private static bool TryPrepareFromAppServer(
+        Process appServer,
+        Action<string>? log,
+        bool allowInheritedDescriptor,
+        out string error)
     {
         error = string.Empty;
         if (!string.Equals(appServer.ProcessName, "codex", StringComparison.OrdinalIgnoreCase))
@@ -114,6 +126,7 @@ internal static class DesktopAppToolsEnvironmentResolver
         {
             return false;
         }
+        string? packagedAdapterRoot = null;
         using (desktop)
         {
             if (!string.Equals(desktop.ProcessName, "ChatGPT", StringComparison.OrdinalIgnoreCase))
@@ -121,6 +134,7 @@ internal static class DesktopAppToolsEnvironmentResolver
                 error = "The bridge was not launched by Codex Desktop.";
                 return false;
             }
+            packagedAdapterRoot = FindPackagedAdapterRoot(desktop);
         }
 
         if (TryReadCommandLine(appServer, out var commandLine, out var commandLineError)
@@ -146,8 +160,26 @@ internal static class DesktopAppToolsEnvironmentResolver
             return true;
         }
 
+        if (TryReadEnvironmentVariable(appServer, PipeVariable, out var environmentPipe, out _)
+            && IsLocalPipePath(environmentPipe))
+        {
+            Environment.SetEnvironmentVariable(PipeVariable, environmentPipe);
+            if (TryReadEnvironmentVariable(appServer, NodeVariable, out var environmentNode, out _)
+                && File.Exists(environmentNode))
+            {
+                Environment.SetEnvironmentVariable(NodeVariable, environmentNode);
+            }
+            else
+            {
+                Environment.SetEnvironmentVariable(NodeVariable, null);
+            }
+            Environment.SetEnvironmentVariable(AdapterRootVariable, packagedAdapterRoot);
+            log?.Invoke("Recovered the Codex Desktop task broker from the owning App Server environment.");
+            return true;
+        }
+
         var inheritedPipe = Environment.GetEnvironmentVariable(PipeVariable)?.Trim();
-        if (IsLocalPipePath(inheritedPipe))
+        if (allowInheritedDescriptor && IsLocalPipePath(inheritedPipe))
         {
             log?.Invoke("Using the Codex Desktop task broker supplied to this bridge process.");
             return true;
@@ -157,6 +189,38 @@ internal static class DesktopAppToolsEnvironmentResolver
             ? "The owning Codex Desktop App Server did not expose a compatible task broker descriptor."
             : commandLineError;
         return false;
+    }
+
+    private static string? FindPackagedAdapterRoot(Process desktop)
+    {
+        try
+        {
+            var executable = desktop.MainModule?.FileName;
+            var appDirectory = string.IsNullOrWhiteSpace(executable)
+                ? null
+                : Path.GetDirectoryName(executable);
+            if (appDirectory is null)
+            {
+                return null;
+            }
+
+            var candidate = Path.Combine(
+                appDirectory,
+                "resources",
+                "plugins",
+                "openai-bundled",
+                "plugins",
+                "codex-app-tools");
+            return File.Exists(Path.Combine(candidate, "server.mjs"))
+                ? candidate
+                : null;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or System.ComponentModel.Win32Exception
+            or NotSupportedException)
+        {
+            return null;
+        }
     }
 
     internal static bool TryExtractAppToolsEnvironment(
@@ -332,6 +396,168 @@ internal static class DesktopAppToolsEnvironmentResolver
         }
     }
 
+    internal static bool TryReadEnvironmentVariable(
+        Process process,
+        string name,
+        out string value,
+        out string error)
+    {
+        ArgumentNullException.ThrowIfNull(process);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        value = string.Empty;
+        error = string.Empty;
+
+        if (name.IndexOfAny(['=', '\0', '\r', '\n']) >= 0)
+        {
+            error = "The requested environment variable name is invalid.";
+            return false;
+        }
+
+        try
+        {
+            // Codex 26.908 passes the app-tools descriptor through the App Server environment
+            // instead of serializing it on the command line. The packaged processes are x64;
+            // treat any unavailable or changed Windows-internal PEB layout as a retryable miss.
+            var information = new ProcessBasicInformationRecord();
+            var status = NtQueryInformationProcess(
+                process.Handle,
+                ProcessBasicInformation,
+                ref information,
+                Marshal.SizeOf<ProcessBasicInformationRecord>(),
+                out _);
+            if (status < 0 || information.PebBaseAddress == IntPtr.Zero)
+            {
+                error = $"The owning Codex App Server environment was unavailable (NTSTATUS 0x{status:X8}).";
+                return false;
+            }
+
+            var processParametersOffset = IntPtr.Size == sizeof(long) ? 0x20 : 0x10;
+            if (!TryReadPointer(
+                    process.Handle,
+                    IntPtr.Add(information.PebBaseAddress, processParametersOffset),
+                    out var processParameters)
+                || processParameters == IntPtr.Zero)
+            {
+                error = "The owning Codex App Server process parameters were unavailable.";
+                return false;
+            }
+
+            var environmentOffset = IntPtr.Size == sizeof(long) ? 0x80 : 0x48;
+            if (!TryReadPointer(
+                    process.Handle,
+                    IntPtr.Add(processParameters, environmentOffset),
+                    out var environment)
+                || environment == IntPtr.Zero)
+            {
+                error = "The owning Codex App Server environment block was unavailable.";
+                return false;
+            }
+
+            if (!TryReadEnvironmentBlock(process.Handle, environment, out var environmentText))
+            {
+                error = "The owning Codex App Server environment block could not be read.";
+                return false;
+            }
+
+            var prefix = name + "=";
+            foreach (var entry in environmentText.Split('\0'))
+            {
+                if (!entry.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                value = entry[prefix.Length..];
+                return value.Length > 0;
+            }
+
+            error = $"The owning Codex App Server did not provide {name}.";
+            return false;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or OverflowException
+            or System.ComponentModel.Win32Exception)
+        {
+            error = $"The owning Codex App Server environment was unavailable: {exception.Message}";
+            return false;
+        }
+    }
+
+    private static bool TryReadEnvironmentBlock(
+        IntPtr processHandle,
+        IntPtr environment,
+        out string text)
+    {
+        const int chunkSize = 4096;
+        text = string.Empty;
+        using var buffer = new MemoryStream();
+        while (buffer.Length < MaximumEnvironmentBytes)
+        {
+            var remaining = MaximumEnvironmentBytes - checked((int)buffer.Length);
+            var requested = Math.Min(chunkSize, remaining);
+            byte[]? chunk = null;
+            var count = 0;
+            while (requested >= sizeof(char) && count == 0)
+            {
+                chunk = new byte[requested];
+                _ = ReadProcessMemory(
+                    processHandle,
+                    IntPtr.Add(environment, checked((int)buffer.Length)),
+                    chunk,
+                    chunk.Length,
+                    out var bytesRead);
+                count = checked((int)bytesRead);
+                requested = (requested / 2) & ~1;
+            }
+            if (count <= 0)
+            {
+                return false;
+            }
+
+            buffer.Write(chunk!, 0, count);
+            var bytes = buffer.GetBuffer();
+            var end = FindEnvironmentBlockEnd(bytes, checked((int)buffer.Length));
+            if (end >= 0)
+            {
+                text = System.Text.Encoding.Unicode.GetString(bytes, 0, end);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int FindEnvironmentBlockEnd(byte[] bytes, int count)
+    {
+        for (var index = 0; index + 3 < count; index += sizeof(char))
+        {
+            if (bytes[index] == 0
+                && bytes[index + 1] == 0
+                && bytes[index + 2] == 0
+                && bytes[index + 3] == 0)
+            {
+                return index + 4;
+            }
+        }
+        return -1;
+    }
+
+    private static bool TryReadPointer(IntPtr processHandle, IntPtr address, out IntPtr value)
+    {
+        value = IntPtr.Zero;
+        var bytes = new byte[IntPtr.Size];
+        if (!ReadProcessMemory(processHandle, address, bytes, bytes.Length, out var bytesRead)
+            || bytesRead != (IntPtr)bytes.Length)
+        {
+            return false;
+        }
+
+        value = IntPtr.Size == sizeof(long)
+            ? new IntPtr(BitConverter.ToInt64(bytes))
+            : new IntPtr(BitConverter.ToInt32(bytes));
+        return true;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct ProcessBasicInformationRecord
     {
@@ -358,6 +584,15 @@ internal static class DesktopAppToolsEnvironmentResolver
         ref ProcessBasicInformationRecord processInformation,
         int processInformationLength,
         out int returnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ReadProcessMemory(
+        IntPtr processHandle,
+        IntPtr baseAddress,
+        byte[] buffer,
+        int size,
+        out IntPtr bytesRead);
 
     [DllImport("ntdll.dll")]
     private static extern int NtQueryInformationProcess(

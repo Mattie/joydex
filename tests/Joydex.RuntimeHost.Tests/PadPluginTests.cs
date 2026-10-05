@@ -40,7 +40,7 @@ public sealed class PadPluginTests
     }
 
     [Fact]
-    public void CatalogRegistersCanonicalPadAndVoiceWorker()
+    public void CatalogRegistersCanonicalPadVoiceAndPebbleWorkers()
     {
         Assert.Collection(
             BundledPluginCatalog.Registrations,
@@ -52,6 +52,11 @@ public sealed class PadPluginTests
             registration =>
             {
                 Assert.Equal(Joydex.Contracts.RuntimePluginIds.VoicePe, registration.Id);
+                Assert.Equal(BundledPluginExecutionModel.WorkerProcess, registration.Execution);
+            },
+            registration =>
+            {
+                Assert.Equal(Joydex.Contracts.RuntimePluginIds.PebbleIndex, registration.Id);
                 Assert.Equal(BundledPluginExecutionModel.WorkerProcess, registration.Execution);
             });
     }
@@ -85,16 +90,45 @@ public sealed class PadPluginTests
         Assert.Equal(inspect.Kind, inspected.Kind);
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Completed, inspected.Status);
         var plugins = Assert.IsType<Joydex.Contracts.RuntimePluginSnapshot>(inspected.Payload?.Plugins);
-        Assert.Equal(2, plugins.Registrations.Length);
+        Assert.Equal(3, plugins.Registrations.Length);
+        Assert.Equal(3, plugins.Health.Length);
         Assert.False(plugins.Registrations.Single(item =>
             item.Id == Joydex.Contracts.RuntimePluginIds.VoicePe).ExecutionInProcess);
         Assert.Equal(Joydex.Contracts.RuntimePluginState.Disabled, plugins.Health.Single(item =>
             item.PluginId == Joydex.Contracts.RuntimePluginIds.VoicePe).State);
+        Assert.False(plugins.Registrations.Single(item =>
+            item.Id == Joydex.Contracts.RuntimePluginIds.PebbleIndex).ExecutionInProcess);
+        var pebbleHealth = plugins.Health.Single(item =>
+            item.PluginId == Joydex.Contracts.RuntimePluginIds.PebbleIndex);
+        Assert.Equal(Joydex.Contracts.RuntimePluginState.Disabled, pebbleHealth.State);
+        Assert.False(pebbleHealth.CanRestart);
+        Assert.False(pebbleHealth.CanReload);
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Rejected, unknown.Status);
         Assert.NotNull(unknown.Payload?.Plugins);
         Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Rejected, voice.Status);
         Assert.Contains("existing Voice controls", voice.Detail, StringComparison.Ordinal);
         await plugin.DisposeAsync();
+    }
+
+    [Theory]
+    [InlineData(Joydex.Contracts.RuntimeCommandKind.RestartPlugin)]
+    [InlineData(Joydex.Contracts.RuntimeCommandKind.ReloadPluginConfiguration)]
+    public async Task PebbleManagementStaysWithSettingsApply(Joydex.Contracts.RuntimeCommandKind kind)
+    {
+        var host = new FakeHost();
+        var instances = new FakeInstanceFactory();
+        await using var plugin = CreatePlugin(host, () => null, instances);
+        var commands = new PadPluginCommandHandler(plugin, host.WritePadLog);
+        var request = new Joydex.Contracts.RuntimeCommandRequest(
+            Guid.NewGuid(), kind,
+            new Joydex.Contracts.RuntimeCommandArguments(PluginId: Joydex.Contracts.RuntimePluginIds.PebbleIndex));
+
+        var result = await commands.ExecuteAsync(request, default);
+
+        Assert.Equal(request.OperationId, result.OperationId);
+        Assert.Equal(Joydex.Contracts.RuntimeCommandStatus.Rejected, result.Status);
+        Assert.Contains("settings Apply", result.Detail, StringComparison.Ordinal);
+        Assert.Empty(instances.Starts);
     }
 
     [Fact]

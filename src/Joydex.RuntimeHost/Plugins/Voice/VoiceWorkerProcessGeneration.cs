@@ -7,6 +7,7 @@ using Joydex.Core.Config;
 using Joydex.Core.Mapping;
 using Joydex.Core.Voice;
 using Joydex.Ipc;
+using Joydex.RuntimeHost.Plugins;
 using Joydex.RuntimeHost.Production;
 using Joydex.Windows.Actions;
 using Joydex.Windows.Voice;
@@ -71,7 +72,7 @@ internal interface IVoiceWorkerGenerationFactory
 internal sealed class VoiceWorkerProcessGenerationFactory(
     string executablePath,
     IRuntimeSettingsProcessFactory processFactory,
-    Func<IVoiceWorkerJob>? jobFactory = null) : IVoiceWorkerGenerationFactory
+    Func<IWorkerProcessJob>? jobFactory = null) : IVoiceWorkerGenerationFactory
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
@@ -79,7 +80,7 @@ internal sealed class VoiceWorkerProcessGenerationFactory(
         executablePath ?? throw new ArgumentNullException(nameof(executablePath)));
     private readonly IRuntimeSettingsProcessFactory _processFactory =
         processFactory ?? throw new ArgumentNullException(nameof(processFactory));
-    private readonly Func<IVoiceWorkerJob> _jobFactory = jobFactory ?? VoiceWorkerJob.Create;
+    private readonly Func<IWorkerProcessJob> _jobFactory = jobFactory ?? WorkerProcessJob.Create;
 
     public async Task<IVoiceWorkerGeneration> StartAsync(
         VoiceWorkerGenerationConfiguration configuration,
@@ -102,7 +103,7 @@ internal sealed class VoiceWorkerProcessGenerationFactory(
             1,
             PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-        IVoiceWorkerJob? job = null;
+        IWorkerProcessJob? job = null;
         IRuntimeSettingsProcess? process = null;
         JsonRpc? rpc = null;
         BoundedMessageStream? bounded = null;
@@ -110,7 +111,7 @@ internal sealed class VoiceWorkerProcessGenerationFactory(
         {
             job = _jobFactory();
             process = _processFactory.Start(CreateStartInfo());
-            if (process is not IVoiceWorkerNativeProcess nativeProcess)
+            if (process is not IRuntimeWorkerProcess nativeProcess)
             {
                 throw new InvalidOperationException(
                     "The production Voice worker requires a native process owner.");
@@ -266,7 +267,7 @@ internal sealed class VoiceWorkerProcessGenerationFactory(
 
     private static async Task<Exception?> CleanupFailedStartAsync(
         IRuntimeSettingsProcess? process,
-        IVoiceWorkerJob? job,
+        IWorkerProcessJob? job,
         JsonRpc? rpc,
         BoundedMessageStream? bounded,
         NamedPipeServerStream? pipe)
@@ -293,7 +294,8 @@ internal sealed class VoiceWorkerProcessGenerationFactory(
         {
             try
             {
-                await WaitForEmptyJobAsync(job, StopTimeout, CancellationToken.None).ConfigureAwait(false);
+                await WorkerProcessJob.WaitForEmptyAsync(job, StopTimeout, CancellationToken.None)
+                    .ConfigureAwait(false);
             }
             catch (Exception exception) { (confirmationFailures ??= []).Add(exception); }
             job.Dispose();
@@ -305,27 +307,12 @@ internal sealed class VoiceWorkerProcessGenerationFactory(
         return confirmationFailures is null ? null : new AggregateException(confirmationFailures);
     }
 
-    internal static async Task WaitForEmptyJobAsync(
-        IVoiceWorkerJob job,
-        TimeSpan timeout,
-        CancellationToken cancellationToken)
-    {
-        var stopwatch = Stopwatch.StartNew();
-        while (job.ActiveProcessCount != 0)
-        {
-            if (stopwatch.Elapsed >= timeout)
-            {
-                throw new TimeoutException("Voice worker descendant cleanup was not confirmed.");
-            }
-            await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken).ConfigureAwait(false);
-        }
-    }
 }
 
 internal sealed class VoiceWorkerProcessGeneration : IVoiceWorkerGeneration
 {
     private readonly IRuntimeSettingsProcess _process;
-    private readonly IVoiceWorkerJob _job;
+    private readonly IWorkerProcessJob _job;
     private readonly NamedPipeServerStream _pipe;
     private readonly JsonRpc _rpc;
     private readonly BoundedMessageStream _bounded;
@@ -337,7 +324,7 @@ internal sealed class VoiceWorkerProcessGeneration : IVoiceWorkerGeneration
     public VoiceWorkerProcessGeneration(
         long generation,
         IRuntimeSettingsProcess process,
-        IVoiceWorkerJob job,
+        IWorkerProcessJob job,
         NamedPipeServerStream pipe,
         JsonRpc rpc,
         BoundedMessageStream bounded,
@@ -421,7 +408,7 @@ internal sealed class VoiceWorkerProcessGeneration : IVoiceWorkerGeneration
             using var cleanup = new CancellationTokenSource(_stopTimeout);
             await Task.WhenAll(
                     _process.Completion.WaitAsync(cleanup.Token),
-                    VoiceWorkerProcessGenerationFactory.WaitForEmptyJobAsync(
+                    WorkerProcessJob.WaitForEmptyAsync(
                         _job,
                         _stopTimeout,
                         cleanup.Token))
