@@ -450,3 +450,152 @@ Physical Voice microphone/speaker and multi-response call continuity remain
 unverified for the new worker package. The earlier Settings Capture/Apply/process
 restart and full release/rollback gaps also remain open. The next implementation
 slice is PEBBLEPLUGIN; this checkpoint does not claim attended Voice acceptance.
+
+## Milestone 5 — Pebble Index plugin extraction
+
+Status: implemented 2026-09-12 through `b63b96b`, from the Voice checkpoint
+`413e9e7`. Independent review accepted listener ownership at
+`e55c61e35a15cdcbaff3aac214eb1b55137f3490`, the shared job helper at `2e66978`,
+and worker extraction at `73b8e0ba4d139c1628295343746e71eaab3f97d6`.
+The integrated source, tests, solution and publish script match the reviewed
+worker checkpoint exactly.
+
+The 2026-10-04 mainline migration also retains the reviewed settings/PAD fixes
+and the Voice worker authentication test setup. Results below record the original
+implementation and canary; this migration does not claim a new phone delivery test.
+
+`Joydex.PebbleWorker.exe` owns the existing loopback receiver and is registered as
+`joydex.pebble-index`. RuntimeHost retains settings Apply, candidate rollback,
+the shared Desktop broker lease and worker supervision. It no longer compiles
+the receiver. See [ADR 0012](../../adr/0012-isolate-pebble-index-in-a-worker-process.md).
+
+Startup validates enablement/preferences, acquires the stable inbox lease and
+binds the listener before loading or creating the token. Disposal shares one
+cleanup task and retains ownership until request and delivery work have finished.
+Existing wire authentication, duplicate identity, paths and secret bytes remain
+unchanged. Restart does not replay stored Received or Delivery Uncertain records.
+
+Review corrections cover initialized-listener readiness, canonical delivery-ID
+preservation, bounded nonsecret status, concurrent publication ordering, stale
+generation rejection, unavailable status on committed shutdown, candidate silence,
+and cleanup uncertainty that continues to block replacement. Ordinary worker loss
+stays local to Pebble with capped retries. Generic plugin Restart/Reload remain
+unavailable; existing Pebble settings Apply stays authoritative.
+
+Final verification ran from a clean detached checkout of `b63b96b` with SDK
+8.0.423, Release warnings as errors and `JOYDEX_RUN_ATTENDED_TESTS=0`.
+Both focused runs passed with no failures, skips or build warnings:
+
+| Audited selection | Passed |
+|---|---:|
+| `PebbleWorkerServiceTests` | 11 |
+| `PebbleIndexProductionOwnerTests` | 5 |
+| `PebbleWorkerProcessGenerationTests` | 3 |
+| `VoiceWorkerProcessGenerationTests` | 4 |
+| Selected `ProductionRuntimeCompositionTests` | 3 |
+| Selected `PadPluginTests` | 4 |
+| Selected `PebbleIndexTests` | 12 |
+| **Total** | **42** |
+
+The composition methods were `AggregateReplacementPreservesUnrelatedOwners`,
+`ActivationFailureRestoresPriorOwner`, and
+`UnrelatedApplyKeepsExactPebbleOwnerAndCommit`. The catalog/dispatch methods were
+`CatalogRegistersCanonicalPadVoiceAndPebbleWorkers`,
+`TypedDispatchInspectsFullCatalogAndRejectsUnknownPlugin`, and both cases of
+`PebbleManagementStaysWithSettingsApply`.
+
+The exact receiver methods were `DisabledReceiverDoesNotCreateItsTokenOrInbox`,
+`InvalidReceiverPreferencesDoNotCreateItsTokenOrInbox`,
+`ListenerBindFailureDoesNotCreateTokenAndReleasesInboxOwnership`,
+`SecondReceiverForSameInboxDoesNotCreateTokenBindOrStart`,
+`ReceiverStartupDoesNotReplayStoredReceivedOrUncertainDeliveries`,
+`ReceiverWaitsForActiveClientsDuringShutdown`,
+`ReceiverHoldsInboxOwnershipWhileDeliveryCleanupIsPending`,
+`UnauthorizedRequestIsRejectedBeforeItsDeclaredBodyArrives`,
+`ReceiverAuthenticatesDeliversOnceAndRejectsFiles`,
+`ReceiverDeliversToExactSavedTaskWithoutRecentCatalogEntry`,
+`FailedDesktopSendIsPersistedAsDeliveryUncertain`, and
+`ImmediateListenerFailureLeavesTerminalUnavailableStatus`.
+
+Receiver tests use temporary inboxes, fake Desktop delivery and ephemeral loopback
+ports. Pebble generation tests use same-process authenticated pipes and fake jobs.
+The existing Voice native probe verifies descendant termination through the shared
+Windows job helper. No real phone, Desktop send, hardware or visible UI is involved.
+
+The separate package is `artifacts/Joydex/pebble-plugin-b63b96b-win-x64`, with a
+sibling SHA-256 manifest covering all 121 nonempty files. Thirteen selected required
+components were present; ten assets, notices and native-loader files matched their
+sources by hash. Published dependencies keep the worker and WebView2 outside
+RuntimeHost. Publishing succeeded with only the known Guardian/HidSharp IL2104
+trimming warning. No packaged executable was launched; the running PAD canary
+was left untouched.
+
+Physical phone-to-Desktop delivery remains unverified for this package, along with
+the previously recorded Voice/media and Settings/release acceptance gaps. An
+upgrade must stop the older runtime first because it does not participate in the
+new inbox lease. This is an implementation checkpoint, not attended acceptance.
+
+### Physical Pebble canary
+
+On 2026-09-12 the user exited the prior PAD canary normally. All Joydex processes
+were confirmed stopped before `pebble-plugin-b63b96b-win-x64` launched with the
+existing configuration. Configuration, token and the 20 existing inbox records
+were backed up. The manifest verified all 121 package files before launch.
+
+The new Pebble worker owned the loopback listener and returned `ready`. Its token
+and all 20 prior inbox records remained unchanged. One user-originated physical
+transcription created exactly one new record. It remained Received with the detail
+`Held before send: Desktop task bridge threads.read timed out after 30 seconds.`
+The worker stayed healthy with the same process identity; no stored record was
+replayed or manually resent.
+
+A separate read-only probe through the published Joydex bridge client reported
+the bridge unavailable, while the Codex App's own task-read operation could read
+the destination. This establishes successful physical ingress and a failure before
+Desktop delivery, not a successful end-to-end canary. Bridge availability requires
+diagnosis before repeating the delivery check. The canary package remains running;
+the prior package and backup remain available for rollback.
+
+### Desktop bridge compatibility repair
+
+The failure was isolated to discovery: the packaged resolver rejected the running
+Desktop-owned App Server because Codex 26.908 supplies its App Tools pipe descriptor
+through the process environment, while the resolver searched only launch arguments.
+The existing local compatibility patch had not been included in the frozen package.
+
+The reviewed repair at `d2e4013` (integrated as `60780ea`) reads the bounded
+environment of the verified Desktop-owned App Server, resolves the adapter beside
+the verified Desktop executable, and prevents explicit discovery from falling back
+to a stale inherited pipe. Five focused parser/environment regression cases passed
+with SDK 8.0.423, Release warnings as errors and attended tests disabled.
+
+The separate `pebble-bridge-fix-d2e4013-win-x64` package published successfully with
+the known HidSharp IL2104 warning. Its 121-file inventory matches the prior package;
+all files are nonempty and covered by a sibling SHA-256 manifest. The published
+bridge's read-only App Server probe recovered the environment descriptor, initialized
+the adapter and verified the required tool inventory against the running Codex App.
+No transcription was sent or replayed by this probe. Switching the running canary
+to this repaired package and repeating physical delivery were pending at that
+checkpoint; the subsequent result is recorded below.
+
+### Repaired physical canary result
+
+After the user exited the first Pebble canary, all Joydex processes were confirmed
+stopped. The verified `pebble-bridge-fix-d2e4013-win-x64` package then launched
+against the existing configuration. A read-only client probe used the exact
+runtime-owned broker pipe, confirmed availability and resolved the saved task
+successfully. The destination's current title was **Pebble HTML Email and Routing**;
+its saved identity was unchanged. The earlier default-pipe availability probe was
+not a probe of this runtime's dynamically named broker; the independent resolver
+failure and held-delivery timeout established the original fault.
+
+The user sent a fresh physical Pebble transcription. It created one new inbox
+record at 21:32:55.725 local time on 2026-09-12, then persisted Sent with
+`Delivered.` at 21:32:56.603, approximately 0.88 seconds later. This is Desktop's
+delivery confirmation through the repaired production bridge. The receiver still
+reported ready; all 21 preexisting records, including the earlier held canary,
+remained byte-for-byte unchanged. No manual or automatic replay was performed.
+
+This passes the small physical phone-to-receiver-to-Desktop delivery canary.
+The repaired package remains running. Broader restart/disconnect/rollback scenarios
+and the separately recorded Voice/media and Settings acceptance gaps remain open.

@@ -1,20 +1,16 @@
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text.Json;
-using Joydex.Contracts;
-using Joydex.Core.Config;
-using Joydex.Core.Mapping;
 using Joydex.Core.Voice;
 using Joydex.Ipc;
-using Joydex.RuntimeHost.Plugins.Voice;
 using Joydex.RuntimeHost.Plugins;
+using Joydex.RuntimeHost.Plugins.Pebble;
 using Joydex.RuntimeHost.Production;
-using Joydex.Windows.Actions;
 using StreamJsonRpc;
 
 namespace Joydex.RuntimeHost.Tests;
 
-public sealed class VoiceWorkerProcessGenerationTests
+public sealed class PebbleWorkerProcessGenerationTests
 {
     [Fact]
     public async Task SyntheticWorkerIsJobAssignedAndExactlyAuthenticatedBeforeStart()
@@ -22,8 +18,8 @@ public sealed class VoiceWorkerProcessGenerationTests
         var processFactory = new SyntheticProcessFactory();
         var job = new FakeJob();
         var callbacks = new RecordingCallbacks();
-        var factory = new VoiceWorkerProcessGenerationFactory(
-            Path.Combine(Path.GetTempPath(), "synthetic-voice-worker.exe"),
+        var factory = new PebbleWorkerProcessGenerationFactory(
+            Path.Combine(Path.GetTempPath(), "synthetic-pebble-worker.exe"),
             processFactory,
             () => job);
 
@@ -36,8 +32,8 @@ public sealed class VoiceWorkerProcessGenerationTests
         Assert.True(processFactory.Process.PeerVerified);
         Assert.True(processFactory.Process.CapabilityMatched);
         Assert.True(processFactory.Process.AssignedBeforeTicketRead);
-        Assert.Equal(2, generation.Snapshot.Sequence);
-        Assert.Empty(callbacks.Snapshots);
+        Assert.Equal(2, generation.Status.Sequence);
+        Assert.Empty(callbacks.Statuses);
 
         var initial = generation.ActivateCallbacks();
 
@@ -49,8 +45,8 @@ public sealed class VoiceWorkerProcessGenerationTests
     {
         var processFactory = new SyntheticProcessFactory(invalidProtocol: true);
         var job = new FakeJob();
-        var factory = new VoiceWorkerProcessGenerationFactory(
-            Path.Combine(Path.GetTempPath(), "synthetic-voice-worker.exe"),
+        var factory = new PebbleWorkerProcessGenerationFactory(
+            Path.Combine(Path.GetTempPath(), "synthetic-pebble-worker.exe"),
             processFactory,
             () => job);
 
@@ -69,8 +65,8 @@ public sealed class VoiceWorkerProcessGenerationTests
     {
         var processFactory = new SyntheticProcessFactory(reportWrongStartTime: true);
         var job = new FakeJob();
-        var factory = new VoiceWorkerProcessGenerationFactory(
-            Path.Combine(Path.GetTempPath(), "synthetic-voice-worker.exe"),
+        var factory = new PebbleWorkerProcessGenerationFactory(
+            Path.Combine(Path.GetTempPath(), "synthetic-pebble-worker.exe"),
             processFactory,
             () => job);
 
@@ -83,52 +79,28 @@ public sealed class VoiceWorkerProcessGenerationTests
         Assert.Equal(0, job.ActiveProcessCount);
     }
 
-    [NonElevatedRuntimeIpcFact]
-    public async Task NativeProbeJobKillsDescendantAndConfirmsEmptyBeforeDisposeReturns()
-    {
-        var executable = Path.Combine(
-            AppContext.BaseDirectory,
-            "ProcessProbe",
-            "Joydex.ProcessProbe.exe");
-        var factory = new VoiceWorkerProcessGenerationFactory(
-            executable,
-            WindowsRuntimeSettingsProcessFactory.Instance);
-        var callbacks = new RecordingCallbacks();
-        await using var generation = await factory.StartAsync(
-            Configuration(11),
-            callbacks,
-            CancellationToken.None);
-
-        var initial = generation.ActivateCallbacks();
-        await generation.DisposeAsync();
-
-        Assert.Equal(2, initial.Sequence);
-    }
-
-    private static VoiceWorkerGenerationConfiguration Configuration(long generation) => new(
+    private static PebbleWorkerGenerationConfiguration Configuration(long generation) => new(
         generation,
-        VoicePePreferences.Default with
+        PebbleIndexPreferences.Default with
         {
             Enabled = true,
-            DeviceEndpoint = "http://127.0.0.1/",
-            PinnedTaskId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            TargetTaskId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            TargetHostId = "local",
+            TargetTaskLabel = "Pebble",
         },
-        CompanionConfig.CreateSafeDefault().Safety,
-        Path.GetTempPath(),
-        Path.Combine(Path.GetTempPath(), "active-voice.json"),
-        Path.Combine(Path.GetTempPath(), "broker.exe"),
+        Path.Combine(Path.GetTempPath(), "pebble.secret"),
+        Path.Combine(Path.GetTempPath(), "pebble-inbox"),
         "Joydex.Test.Broker");
 
     private sealed class SyntheticProcessFactory(
         bool invalidProtocol = false,
-        bool reportWrongStartTime = false)
-        : IRuntimeSettingsProcessFactory
+        bool reportWrongStartTime = false) : IRuntimeSettingsProcessFactory
     {
         public SyntheticProcess Process { get; } = new(invalidProtocol, reportWrongStartTime);
 
         public IRuntimeSettingsProcess Start(ProcessStartInfo startInfo)
         {
-            Assert.Equal("--voice-worker", startInfo.Arguments);
+            Assert.Equal("--pebble-worker", startInfo.Arguments);
             Assert.True(startInfo.CreateNoWindow);
             Assert.Equal(ProcessWindowStyle.Hidden, startInfo.WindowStyle);
             return Process;
@@ -165,7 +137,7 @@ public sealed class VoiceWorkerProcessGenerationTests
         {
             AssignedBeforeTicketRead = _job?.Assigned == true;
             _input.Position = 0;
-            var ticket = JsonSerializer.Deserialize<VoiceWorkerLaunchTicket>(_input)
+            var ticket = JsonSerializer.Deserialize<PebbleWorkerLaunchTicket>(_input)
                 ?? throw new InvalidDataException();
             _client = RunClientAsync(ticket);
         }
@@ -184,7 +156,7 @@ public sealed class VoiceWorkerProcessGenerationTests
             _current.Dispose();
         }
 
-        private async Task RunClientAsync(VoiceWorkerLaunchTicket ticket)
+        private async Task RunClientAsync(PebbleWorkerLaunchTicket ticket)
         {
             try
             {
@@ -209,49 +181,49 @@ public sealed class VoiceWorkerProcessGenerationTests
                     await rpc.Completion.WaitAsync(_lifetime.Token).ConfigureAwait(false);
                 }
             }
-            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
-            finally { _completion.TrySetResult(); }
+            catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+            {
+            }
+            finally
+            {
+                _completion.TrySetResult();
+            }
         }
 
         private sealed class SyntheticTarget(
-            VoiceWorkerLaunchTicket ticket,
+            PebbleWorkerLaunchTicket ticket,
             JsonRpc rpc,
             SyntheticProcess owner,
             bool invalidProtocol)
         {
-            [JsonRpcMethod(VoiceWorkerProtocol.Start)]
-            public async Task<VoiceWorkerStartResponse> StartAsync(
-                VoiceWorkerStartRequest request,
+            [JsonRpcMethod(PebbleWorkerProtocol.Start)]
+            public async Task<PebbleWorkerStartResponse> StartAsync(
+                PebbleWorkerStartRequest request,
                 CancellationToken cancellationToken)
             {
                 owner.CapabilityMatched = request.Capability == ticket.Capability;
-                var newer = Snapshot(request.Generation, 2);
+                var newer = Status(request.Generation, 2);
                 await rpc.InvokeWithCancellationAsync(
-                    VoiceWorkerProtocol.PublishSnapshot,
+                    PebbleWorkerProtocol.PublishStatus,
                     [newer],
                     cancellationToken).ConfigureAwait(false);
-                return new VoiceWorkerStartResponse(
-                    invalidProtocol ? VoiceWorkerProtocol.MajorVersion + 1 : VoiceWorkerProtocol.MajorVersion,
-                    VoiceWorkerProtocol.MinorVersion,
-                    Snapshot(request.Generation, 1));
+                return new PebbleWorkerStartResponse(
+                    invalidProtocol
+                        ? PebbleWorkerProtocol.MajorVersion + 1
+                        : PebbleWorkerProtocol.MajorVersion,
+                    PebbleWorkerProtocol.MinorVersion,
+                    Status(request.Generation, 1));
             }
 
-            [JsonRpcMethod(VoiceWorkerProtocol.Stop)]
-            public Task StopAsync(VoiceWorkerGenerationMessage request) => Task.CompletedTask;
+            [JsonRpcMethod(PebbleWorkerProtocol.Stop)]
+            public Task StopAsync(PebbleWorkerGenerationMessage request) => Task.CompletedTask;
 
-            private static VoiceWorkerSnapshot Snapshot(long generation, long sequence) => new(
+            private static PebbleWorkerStatus Status(long generation, long sequence) => new(
                 generation,
                 sequence,
-                new RuntimeVoiceSnapshot(
-                    RuntimeVoiceSessionState.Armed,
-                    true,
-                    false,
-                    false,
-                    false,
-                    "Armed",
-                    null,
-                    sequence),
-                []);
+                Running: true,
+                "Pebble Index receiver is listening on loopback.",
+                0);
         }
     }
 
@@ -272,14 +244,10 @@ public sealed class VoiceWorkerProcessGenerationTests
         public void Dispose() { }
     }
 
-    private sealed class RecordingCallbacks : IVoiceWorkerHostCallbacks
+    private sealed class RecordingCallbacks : IPebbleWorkerHostCallbacks
     {
-        public List<VoiceWorkerSnapshot> Snapshots { get; } = [];
-        public void PublishSnapshot(VoiceWorkerSnapshot snapshot) => Snapshots.Add(snapshot);
-        public void VoiceBecameIdle(long generation, long sequence) { }
-        public Task<bool> NavigateAsync(long generation, string taskId, CancellationToken token) => Task.FromResult(false);
-        public Task<ActionExecutionResult> ExecuteActionAsync(long generation, ActionRequest request, CancellationToken token) =>
-            Task.FromResult(ActionExecutionResult.Blocked("test"));
+        public List<PebbleWorkerStatus> Statuses { get; } = [];
+        public void PublishStatus(PebbleWorkerStatus status) => Statuses.Add(status);
         public void WriteLog(long generation, string message) { }
     }
 }

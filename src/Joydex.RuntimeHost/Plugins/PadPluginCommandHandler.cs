@@ -6,7 +6,8 @@ namespace Joydex.RuntimeHost.Plugins;
 internal sealed class PadPluginCommandHandler(
     PadPlugin pad,
     Action<string> log,
-    Func<BundledPluginHealth>? voiceHealth = null)
+    Func<BundledPluginHealth>? voiceHealth = null,
+    Func<BundledPluginHealth>? pebbleHealth = null)
 {
     private readonly PadPlugin _pad = pad ?? throw new ArgumentNullException(nameof(pad));
     private readonly Action<string> _log = log ?? throw new ArgumentNullException(nameof(log));
@@ -15,6 +16,13 @@ internal sealed class PadPluginCommandHandler(
         BundledPluginLifecycleState.Disabled,
         0,
         "Room Voice is disabled.",
+        false,
+        false));
+    private readonly Func<BundledPluginHealth> _pebbleHealth = pebbleHealth ?? (() => new(
+        BundledPluginCatalog.PebbleId,
+        BundledPluginLifecycleState.Disabled,
+        0,
+        "Pebble Index is disabled.",
         false,
         false));
 
@@ -35,6 +43,13 @@ internal sealed class PadPluginCommandHandler(
                 request,
                 RuntimeCommandStatus.Rejected,
                 "Room Voice is managed by its existing Voice controls.");
+        }
+        if (string.Equals(pluginId, BundledPluginCatalog.PebbleId, StringComparison.Ordinal))
+        {
+            return Result(
+                request,
+                RuntimeCommandStatus.Rejected,
+                "Pebble Index is managed by its existing settings Apply flow.");
         }
         if (string.IsNullOrEmpty(pluginId)
             || !string.Equals(pluginId, BundledPluginCatalog.PadId, StringComparison.Ordinal))
@@ -114,7 +129,7 @@ internal sealed class PadPluginCommandHandler(
         detail,
         new RuntimeCommandPayload(Plugins: new RuntimePluginSnapshot(
             BundledPluginCatalog.Registrations.Select(MapRegistration).ToArray(),
-            [MapHealth(_pad.Health), MapHealth(_voiceHealth())])));
+            [MapHealth(_pad.Health), MapHealth(_voiceHealth()), MapHealth(_pebbleHealth())])));
 
     private static RuntimePluginRegistration MapRegistration(
         BundledPluginRegistration registration) => new(

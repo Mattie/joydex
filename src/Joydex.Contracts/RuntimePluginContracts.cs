@@ -5,6 +5,7 @@ public static class RuntimePluginIds
 {
     public const string Pad = "joydex.pad";
     public const string VoicePe = "joydex.voice-pe";
+    public const string PebbleIndex = "joydex.pebble-index";
 }
 
 /// <summary>Wire limits for plugin identity and health presented by bundled clients.</summary>

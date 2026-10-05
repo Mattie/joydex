@@ -23,8 +23,6 @@
              Link="Production\Desktop\LoginStartupRegistration.cs" />
     <Compile Include="..\Joydex.App\VirpilLinkToolLocator.cs"
              Link="Production\Desktop\VirpilLinkToolLocator.cs" />
-    <Compile Include="..\Joydex.App\PebbleIndexReceiverRuntime.cs"
-             Link="Production\PebbleIndex\PebbleIndexReceiverRuntime.cs" />
     <Compile Include="..\Joydex.App\PromptPickerCoordinator.cs"
              Link="Production\Companion\PromptPickerCoordinator.cs" />
   </ItemGroup>

@@ -7,6 +7,7 @@ internal static class BundledPluginCatalog
 {
     internal const string PadId = RuntimePluginIds.Pad;
     internal const string VoiceId = RuntimePluginIds.VoicePe;
+    internal const string PebbleId = RuntimePluginIds.PebbleIndex;
 
     public static IReadOnlyList<BundledPluginRegistration> Registrations { get; } =
     [
@@ -19,6 +20,13 @@ internal static class BundledPluginCatalog
             Execution: BundledPluginExecutionModel.InProcess),
         new(
             VoiceId,
+            Version: "1.0.0",
+            HostApiMajor: 1,
+            MinimumHostApiMinor: 3,
+            SettingsSchemaVersion: 1,
+            Execution: BundledPluginExecutionModel.WorkerProcess),
+        new(
+            PebbleId,
             Version: "1.0.0",
             HostApiMajor: 1,
             MinimumHostApiMinor: 3,

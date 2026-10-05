@@ -180,13 +180,14 @@ public sealed class ProductionRuntimeCompositionTests
     {
         var factory = new FakeFactory();
         await using var composition = new ProductionRuntimeComposition(factory, default);
-        var active = Bundle();
+        var active = Bundle() with { PebbleIndex = EnabledPebble() };
         composition.Refresh(active);
         var originals = factory.LatestOwners();
+        var candidate = active with { PebbleIndex = active.PebbleIndex with { Port = 6123 } };
 
         var result = await composition.ActivateAsync(
             SettingsAggregateId.PebbleIndex,
-            active with { PebbleIndex = active.PebbleIndex with { Port = 6123 } },
+            candidate,
             desiredRevision: 2,
             default);
 
@@ -195,6 +196,35 @@ public sealed class ProductionRuntimeCompositionTests
         Assert.Same(originals[SettingsAggregateId.TaskAlerts], factory.Latest(SettingsAggregateId.TaskAlerts));
         Assert.Same(originals[SettingsAggregateId.Companion], factory.Latest(SettingsAggregateId.Companion));
         Assert.Same(originals[SettingsAggregateId.Voice], factory.Latest(SettingsAggregateId.Voice));
+        Assert.Equal([active.PebbleIndex, candidate.PebbleIndex], factory.PebbleActivationCommits);
+        Assert.Equal([null, active.PebbleIndex], factory.PebbleActivationSeenAtCreate);
+    }
+
+    [Fact]
+    public async Task UnrelatedApplyKeepsExactPebbleOwnerAndCommit()
+    {
+        var factory = new FakeFactory();
+        await using var composition = new ProductionRuntimeComposition(factory, default);
+        var active = Bundle() with { PebbleIndex = EnabledPebble() };
+        composition.Refresh(active);
+        var original = factory.Latest(SettingsAggregateId.PebbleIndex);
+        var candidate = active with
+        {
+            Companion = new CompanionConfig
+            {
+                Safety = new SafetyOptions { DryRun = false },
+                Polling = new PollingOptions { PollIntervalMs = 20 },
+            },
+        };
+
+        var result = await composition.ActivateAsync(
+            SettingsAggregateId.Companion, candidate, desiredRevision: 2, default);
+
+        Assert.Equal(SettingsActivationState.Applied, result.State);
+        Assert.Same(original, factory.Latest(SettingsAggregateId.PebbleIndex));
+        Assert.False(original.Disposed);
+        Assert.Single(factory.Created, aggregate => aggregate == SettingsAggregateId.PebbleIndex);
+        Assert.Equal(active.PebbleIndex, Assert.Single(factory.PebbleActivationCommits));
     }
 
     [Fact]
@@ -202,14 +232,16 @@ public sealed class ProductionRuntimeCompositionTests
     {
         var factory = new FakeFactory();
         await using var composition = new ProductionRuntimeComposition(factory, default);
-        var active = Bundle();
+        var active = Bundle() with { PebbleIndex = EnabledPebble() };
         composition.Refresh(active);
         var original = factory.Latest(SettingsAggregateId.PebbleIndex);
         factory.FailNextCreate[SettingsAggregateId.PebbleIndex] = new IOException("port busy");
+        var originals = factory.LatestOwners();
+        var candidate = active with { PebbleIndex = active.PebbleIndex with { Port = 6123 } };
 
         var result = await composition.ActivateAsync(
             SettingsAggregateId.PebbleIndex,
-            active with { PebbleIndex = active.PebbleIndex with { Port = 6123 } },
+            candidate,
             desiredRevision: 2,
             default);
 
@@ -217,6 +249,12 @@ public sealed class ProductionRuntimeCompositionTests
         Assert.True(original.Disposed);
         Assert.Equal(3, factory.Created.Count(item => item == SettingsAggregateId.PebbleIndex));
         Assert.False(factory.Latest(SettingsAggregateId.PebbleIndex).Disposed);
+        Assert.Equal([active.PebbleIndex, active.PebbleIndex], factory.PebbleActivationCommits);
+        Assert.Equal([null, active.PebbleIndex, active.PebbleIndex], factory.PebbleActivationSeenAtCreate);
+        Assert.Equal([active.PebbleIndex, candidate.PebbleIndex, active.PebbleIndex], factory.PebbleConfigurationRequests);
+        Assert.Same(originals[SettingsAggregateId.TaskAlerts], factory.Latest(SettingsAggregateId.TaskAlerts));
+        Assert.Same(originals[SettingsAggregateId.Companion], factory.Latest(SettingsAggregateId.Companion));
+        Assert.Same(originals[SettingsAggregateId.Voice], factory.Latest(SettingsAggregateId.Voice));
     }
 
     [Fact]
@@ -1354,6 +1392,11 @@ public sealed class ProductionRuntimeCompositionTests
     private static DesktopTaskBridgeOwnershipCleanupException TerminalBrokerCleanup(string message) =>
         new(message, [new IOException(message)]);
 
+    private static PebbleIndexPreferences EnabledPebble() => new(
+        Enabled: true,
+        TargetTaskId: "01a080f7-1ef7-7e42-81bb-5fba0cf083ed",
+        TargetHostId: "local");
+
     private static SettingsBundle Bundle() => new(
         CompanionConfig.CreateSafeDefault(),
         VoicePePreferences.Default,
@@ -1399,6 +1442,9 @@ public sealed class ProductionRuntimeCompositionTests
         public List<SettingsBundle> PluginRefreshes { get; } = [];
         public List<VoicePePreferences> VoiceActivationCommits { get; } = [];
         public List<VoicePePreferences?> VoiceActivationSeenAtCreate { get; } = [];
+        public List<PebbleIndexPreferences> PebbleActivationCommits { get; } = [];
+        public List<PebbleIndexPreferences?> PebbleActivationSeenAtCreate { get; } = [];
+        public List<PebbleIndexPreferences> PebbleConfigurationRequests { get; } = [];
         public Joydex.RuntimeHost.Plugins.PadPlugin? Plugin { get; set; }
         public Exception? VoiceMessagingFailure { get; set; }
         public string? VoiceProjectionPath { get; init; }
@@ -1417,6 +1463,11 @@ public sealed class ProductionRuntimeCompositionTests
             if (aggregate == SettingsAggregateId.Voice)
             {
                 VoiceActivationSeenAtCreate.Add(VoiceActivationCommits.LastOrDefault());
+            }
+            if (aggregate == SettingsAggregateId.PebbleIndex)
+            {
+                PebbleActivationSeenAtCreate.Add(PebbleActivationCommits.LastOrDefault());
+                PebbleConfigurationRequests.Add(activeSettings.PebbleIndex.Normalize());
             }
             var attempt = Created.Count(item => item == aggregate);
             if (FailNextCreate.Remove(aggregate, out var failure))
@@ -1487,6 +1538,9 @@ public sealed class ProductionRuntimeCompositionTests
 
         public void CommitVoiceActivation(VoicePePreferences preferences) =>
             VoiceActivationCommits.Add(preferences.Normalize());
+
+        public void CommitPebbleActivation(PebbleIndexPreferences preferences) =>
+            PebbleActivationCommits.Add(preferences.Normalize());
 
         public void ReportFailure(SettingsAggregateId aggregate, Exception exception) { }
 

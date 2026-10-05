@@ -43,9 +43,11 @@ _Avoid_: Desktop process handle, private relay
 **Desktop Task Bridge**:
 An experimental, current-user compatibility broker that Joydex supervises as one singleton worker,
 guarded by a cross-process named semaphore that may be released safely after asynchronous work.
-The worker discovers only a verified `ChatGPT -> codex app-server` process, recovers the exact private
-App Tools pipe descriptor and current packaged-adapter directory from that App Server's command line,
-and reconnects after Desktop restarts. It launches Desktop's packaged Codex App Tools adapter, then exposes only bounded
+The worker discovers only a verified `ChatGPT -> codex app-server` process and recovers its private
+App Tools pipe descriptor from the App Server's launch configuration or bounded environment read.
+With the environment descriptor used by Codex 26.908, it locates the adapter beside the verified
+Desktop executable. Explicit App Server discovery never falls back to a descriptor inherited from
+an earlier server. It reconnects after Desktop restarts. It launches Desktop's packaged Codex App Tools adapter, then exposes only bounded
 task status, list, read, and send operations to Joydex over a same-user named pipe. It does not expose
 task creation, resume, fork, handoff, or lifecycle mutation and therefore never becomes another task
 writer. A Desktop Attach Endpoint would expose the existing App Server itself; the Desktop Task
@@ -277,6 +279,10 @@ failures. A fatal native/CLR failure still affects RuntimeHost; see
 Voice uses a separate supervised media process under
 [ADR 0011](docs/adr/0011-isolate-voice-media-in-a-worker-process.md), while
 RuntimeHost retains settings activation and shared integration ownership.
+Pebble Index uses a separate supervised receiver process under
+[ADR 0012](docs/adr/0012-isolate-pebble-index-in-a-worker-process.md), preserving
+its inbox, sender contract and at-most-one automatic delivery attempt. Restarting
+the worker does not retry stored deliveries.
 
 **Active / Desired Configuration**:
 Active configuration describes what an owner is using. Desired configuration is a validated,

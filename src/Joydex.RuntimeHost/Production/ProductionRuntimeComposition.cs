@@ -107,6 +107,10 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
             {
                 _factory.CommitVoiceActivation(activeSettings.Voice);
             }
+            if (_initialized.Contains(SettingsAggregateId.PebbleIndex))
+            {
+                _factory.CommitPebbleActivation(activeSettings.PebbleIndex);
+            }
             if (!_pluginsInitialized)
             {
                 _factory.RefreshPluginsAsync(activeSettings, _runtimeCancellationToken)
@@ -491,6 +495,10 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
             {
                 _factory.CommitVoiceActivation(activationCandidate.Voice);
             }
+            if (aggregate == SettingsAggregateId.PebbleIndex)
+            {
+                _factory.CommitPebbleActivation(activationCandidate.PebbleIndex);
+            }
             if (aggregate == SettingsAggregateId.Companion)
             {
                 await _factory.RefreshPluginsAsync(activationCandidate, _runtimeCancellationToken)
@@ -745,6 +753,10 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
             if (aggregate == SettingsAggregateId.Voice)
             {
                 _factory.CommitVoiceActivation(previousBundle.Voice);
+            }
+            if (aggregate == SettingsAggregateId.PebbleIndex)
+            {
+                _factory.CommitPebbleActivation(previousBundle.PebbleIndex);
             }
             return null;
         }
@@ -1093,6 +1105,8 @@ internal interface IProductionRuntimeOwnerFactory : IAsyncDisposable
     void RefreshVoiceMessaging(VoicePePreferences preferences);
 
     void CommitVoiceActivation(VoicePePreferences preferences) { }
+
+    void CommitPebbleActivation(PebbleIndexPreferences preferences) { }
 
     Task RefreshPluginsAsync(
         SettingsBundle activeSettings,

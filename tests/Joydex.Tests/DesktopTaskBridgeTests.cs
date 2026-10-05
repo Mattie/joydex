@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
@@ -449,6 +450,28 @@ public sealed class DesktopTaskBridgeTests : IDisposable
         Assert.Equal(pipe, actualPipe);
         Assert.Equal(node, actualNode);
         Assert.Equal(adapter, actualAdapter);
+    }
+
+    [Fact]
+    public void DesktopBrokerDescriptorCanBeRecoveredFromAppServerEnvironment()
+    {
+        var variable = "JOYDEX_TEST_APP_SERVER_DESCRIPTOR_" + Guid.NewGuid().ToString("N");
+        var expected = @"\\.\pipe\codex-test-" + Guid.NewGuid().ToString("D");
+        using var process = Process.GetCurrentProcess();
+        Environment.SetEnvironmentVariable(variable, expected);
+        try
+        {
+            Assert.True(DesktopAppToolsEnvironmentResolver.TryReadEnvironmentVariable(
+                process,
+                variable,
+                out var actual,
+                out var error), error);
+            Assert.Equal(expected, actual);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, null);
+        }
     }
 
     [Theory]

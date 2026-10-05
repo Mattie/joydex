@@ -4,4 +4,5 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("Joydex.RuntimeHost")]
 [assembly: InternalsVisibleTo("Joydex.RuntimeHost.Tests")]
 [assembly: InternalsVisibleTo("Joydex.VoiceWorker")]
+[assembly: InternalsVisibleTo("Joydex.PebbleWorker")]
 [assembly: InternalsVisibleTo("Joydex.ProcessProbe")]

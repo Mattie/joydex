@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Joydex.Contracts\Joydex.Contracts.csproj" />
+    <ProjectReference Include="..\Joydex.Core\Joydex.Core.csproj" />
+    <ProjectReference Include="..\Joydex.Ipc\Joydex.Ipc.csproj" />
+    <ProjectReference Include="..\Joydex.Windows\Joydex.Windows.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Joydex.App\PebbleIndexReceiverRuntime.cs"
+             Link="PebbleIndexReceiverRuntime.cs" />
+  </ItemGroup>
+</Project>
