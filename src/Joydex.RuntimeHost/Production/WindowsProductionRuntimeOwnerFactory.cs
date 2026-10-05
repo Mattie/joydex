@@ -4,13 +4,17 @@ using Joydex.Core.Config;
 using Joydex.Core.Runtime;
 using Joydex.Core.TaskAlerts;
 using Joydex.Core.Voice;
+using Joydex.RuntimeHost.Plugins;
+using Joydex.WirelessPanel;
 using Joydex.Windows.Actions;
 using Joydex.Windows.Input;
 using Joydex.Windows.TaskAlerts;
 
 namespace Joydex.RuntimeHost.Production;
 
-internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProductionRuntimeOwnerFactory
+internal sealed partial class WindowsProductionRuntimeOwnerFactory :
+    IProductionRuntimeOwnerFactory,
+    IPadPluginHostServices
 {
     private readonly object _stateGate = new();
     private readonly RuntimeInputHost _inputHost;
@@ -23,6 +27,8 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
     private readonly IInputSender _inputSender = new WindowsInputSender();
     private readonly InjectedKeyStateOwner _injectedKeys;
     private readonly ProductionDesktopBrokerManager _desktopBroker;
+    private readonly PadPlugin _pad;
+    private readonly PadPluginCommandHandler _padCommands;
     private readonly Task _completion;
     private readonly ProductionRuntimeUiProjector _ui = new();
     private CodexKeybindingService? _keybindings;
@@ -70,6 +76,15 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
                 _windowsSta.Completion,
                 _desktopBroker.TerminalCompletion)
             .Unwrap();
+        _pad = new PadPlugin(
+            this,
+            static () => new WirelessPanelConfigurationStore().Load(),
+            EspHomePadPluginInstanceFactory.Instance,
+            static (attempt, cancellationToken) => Task.Delay(
+                TimeSpan.FromSeconds(1 << Math.Min(attempt - 1, 2)),
+                cancellationToken),
+            runtimeCancellationToken);
+        _padCommands = new PadPluginCommandHandler(_pad, WriteLog);
     }
 
     public event Action? VoiceBecameIdle;
@@ -83,6 +98,52 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
     internal event EventHandler<TaskAlertSnapshot>? TaskAlertsChanged;
 
     public Task Completion => _completion;
+
+    internal IReadOnlyList<BundledPluginRegistration> Catalog =>
+        BundledPluginCatalog.Registrations;
+
+    internal BundledPluginHealth GetPluginHealth(string pluginId)
+    {
+        _ = BundledPluginCatalog.GetRequired(pluginId);
+        return _pad.Health;
+    }
+
+    public async Task RefreshPluginsAsync(
+        SettingsBundle activeSettings,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(activeSettings);
+        ThrowIfDisposed();
+        try
+        {
+            await _pad.RefreshSharedConfigurationAsync(activeSettings.Companion, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            WriteLog(
+                $"{BundledPluginCatalog.PadId}: shared policy refresh failed "
+                + $"({exception.GetType().Name}).");
+        }
+    }
+
+    internal Task RestartPluginAsync(string pluginId, CancellationToken cancellationToken)
+    {
+        _ = BundledPluginCatalog.GetRequired(pluginId);
+        ThrowIfDisposed();
+        return _pad.RestartAsync(cancellationToken);
+    }
+
+    internal Task ReloadPluginAsync(string pluginId, CancellationToken cancellationToken)
+    {
+        _ = BundledPluginCatalog.GetRequired(pluginId);
+        ThrowIfDisposed();
+        return _pad.ReloadAsync(cancellationToken);
+    }
 
     public RuntimeUiSnapshot GetUiSnapshot() => _ui.GetSnapshot();
 
@@ -110,8 +171,12 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
     public Task<RuntimeCommandResult> ExecuteAsync(
         RuntimeCommandRequest request,
         SettingsBundle activeSettings,
-        CancellationToken cancellationToken) =>
-        ExecuteCommandAsync(request, activeSettings, cancellationToken);
+        CancellationToken cancellationToken) => request.Kind is
+            RuntimeCommandKind.InspectPlugins
+            or RuntimeCommandKind.RestartPlugin
+            or RuntimeCommandKind.ReloadPluginConfiguration
+                ? _padCommands.ExecuteAsync(request, cancellationToken)
+                : ExecuteCommandAsync(request, activeSettings, cancellationToken);
 
     public void ReportFailure(SettingsAggregateId aggregate, Exception exception)
     {
@@ -131,6 +196,14 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
         try
         {
             RestoreActiveVoicePreferences(preferences: null);
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+        }
+        try
+        {
+            await _pad.DisposeAsync().ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -196,6 +269,27 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory : IProduction
             return _taskAlerts?.AcknowledgeTerminal(slot, sessionId) == true;
         }
     }
+
+    event EventHandler<TaskAlertSnapshot>? IPadPluginHostServices.TaskAlertsChanged
+    {
+        add => TaskAlertsChanged += value;
+        remove => TaskAlertsChanged -= value;
+    }
+
+    TaskAlertSnapshot IPadPluginHostServices.GetTaskAlertSnapshot() =>
+        GetTaskAlertSnapshot();
+
+    bool IPadPluginHostServices.AcknowledgeTerminalTaskAlert(int slot, string sessionId) =>
+        AcknowledgeTerminalTaskAlert(slot, sessionId);
+
+    PadCommandPolicy IPadPluginHostServices.CreatePadCommandPolicy(CompanionConfig config)
+    {
+        var navigator = new TaskDeepLinkNavigator(config.Safety, WriteLog);
+        var executor = CreateActionExecutor(config);
+        return new PadCommandPolicy(navigator, executor.ExecuteAsync);
+    }
+
+    void IPadPluginHostServices.WritePadLog(string message) => WriteLog(message);
 
     internal CodexActionExecutor CreateActionExecutor(
         CompanionConfig config,

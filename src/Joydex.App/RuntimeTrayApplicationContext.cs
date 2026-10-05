@@ -30,6 +30,11 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _connectionItem;
     private readonly ToolStripMenuItem _controllersItem;
     private readonly ToolStripMenuItem _voiceItem;
+    private readonly ToolStripMenuItem _pluginsItem;
+    private readonly ToolStripMenuItem _padItem;
+    private readonly ToolStripMenuItem _padHealthItem;
+    private readonly ToolStripMenuItem _restartPadItem;
+    private readonly ToolStripMenuItem _reloadPadConfigurationItem;
     private readonly ToolStripMenuItem _configureItem;
     private readonly ToolStripMenuItem _promptPickersItem;
     private readonly ToolStripMenuItem _taskAlertsItem;
@@ -43,6 +48,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private readonly RuntimePromptPickerWindowAdapter _promptPicker;
     private readonly RuntimeConfigurationInputClient _input = new();
     private readonly RuntimeTaskAlertsConnectionServices _taskAlerts;
+    private readonly RuntimePluginConnectionServices _plugins = new();
     private readonly ForegroundProcessGuard _foreground = new();
     private readonly LoginStartupRegistration? _joydexLoginStartup;
     private readonly LoginStartupRegistration? _linkToolLoginStartup;
@@ -69,6 +75,8 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private int _consecutiveHostExits;
     private string? _lastHostExitDetail;
     private DateTimeOffset? _configurationMismatchDetectedAt;
+    private RuntimePluginHealth? _padHealth;
+    private bool _padCommandRunning;
     private bool _demoModeOpenedSettings;
     private bool _exitStarted;
 
@@ -112,6 +120,39 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
         {
             CheckOnClick = false,
             Enabled = false,
+        };
+        _padHealthItem = new ToolStripMenuItem("Lifecycle: Runtime starting…")
+        {
+            Enabled = false,
+        };
+        _restartPadItem = new ToolStripMenuItem("Restart PAD", image: null, OnRestartPad)
+        {
+            Enabled = false,
+            ToolTipText = "Restart PAD using its current effective panel configuration.",
+        };
+        _reloadPadConfigurationItem = new ToolStripMenuItem(
+            "Reload PAD configuration",
+            image: null,
+            OnReloadPadConfiguration)
+        {
+            Enabled = false,
+            ToolTipText = "Validate and adopt WirelessPanel/panel.json explicitly.",
+        };
+        _padItem = new ToolStripMenuItem("PAD")
+        {
+            DropDownItems =
+            {
+                _padHealthItem,
+                new ToolStripSeparator(),
+                _restartPadItem,
+                _reloadPadConfigurationItem,
+            },
+        };
+        _padItem.DropDownOpening += OnPadMenuOpening;
+        _pluginsItem = new ToolStripMenuItem("Plugins")
+        {
+            Enabled = false,
+            DropDownItems = { _padItem },
         };
         _configureItem = new ToolStripMenuItem(
             demoMode ? "Demo inspector…" : "Configure…",
@@ -215,6 +256,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
                     _controllersItem,
                     _taskAlertsItem,
                     _voiceItem,
+                    _pluginsItem,
                     new ToolStripSeparator(),
                     _configureItem,
                     _promptPickersItem,
@@ -510,6 +552,15 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             new RuntimeVoiceTargetWriter(connection.Rpc, connection.State),
             snapshot.Ui?.Voice,
             snapshot.EngineEpoch);
+        _plugins.BeginConnection(
+            generation,
+            new RuntimeRpcCommandRunner(connection.Rpc),
+            supported: !_demoMode && connection.SupportsPluginManagement,
+            engineEpoch: snapshot.EngineEpoch);
+        _pluginsItem.Enabled = _plugins.IsAvailable;
+        SetPadUnavailable(_plugins.IsAvailable
+            ? "Open PAD to refresh its health."
+            : "This runtime does not support PAD management.");
         ApplySnapshot(snapshot);
         SetConnectionStatus("Runtime: Connected", null);
         _configureItem.Enabled = true;
@@ -544,17 +595,20 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
         _input.EndConnection(_inputGeneration, connection.State.Current.DisconnectFailure);
         _taskAlerts.EndConnection(_connectionGeneration, connection.State.Current.DisconnectFailure);
         _voiceAdapter.EndConnection(_connectionGeneration);
+        _plugins.EndConnection(_connectionGeneration);
         _connection = null;
         _snapshot = null;
         _settingsWriter = null;
         _configureItem.Enabled = false;
         _promptPickersItem.Enabled = false;
         _voiceItem.Enabled = false;
+        _pluginsItem.Enabled = false;
         _controllersItem.Enabled = false;
         _taskAlertsItem.Enabled = false;
         _taskAlertsStatusItem.Enabled = false;
         _modeItem.Enabled = false;
         _testControlsItem.Enabled = false;
+        SetPadUnavailable("The Joydex runtime is reconnecting.");
         _activityForm?.SetConnectionStatus("Controllers: reconnecting…");
         _promptPicker.Apply(null, CompanionConfig.CreateSafeDefault());
         SetConnectionStatus("Runtime: Reconnecting…", null);
@@ -793,6 +847,191 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             _pendingCommands.Remove(kind);
         }
     }
+
+    private async void OnPadMenuOpening(object? sender, EventArgs eventArgs)
+    {
+        if (_padCommandRunning || !_plugins.IsAvailable)
+        {
+            return;
+        }
+
+        var generation = _connectionGeneration;
+        _padCommandRunning = true;
+        SetPadBusy("Lifecycle: Checking…");
+        try
+        {
+            var outcome = await _plugins.InspectAsync(_lifetime.Token).ConfigureAwait(true);
+            EnsurePadConnectionCurrent(generation);
+            ApplyPadOutcome(outcome);
+            if (outcome.Status != RuntimeCommandStatus.Completed)
+            {
+                ShowPadResult(outcome);
+            }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (OperationCanceledException exception)
+        {
+            if (_connectionGeneration == generation)
+            {
+                SetPadUnavailable(exception.Message);
+            }
+        }
+        catch (Exception exception)
+        {
+            if (_connectionGeneration == generation)
+            {
+                SetPadUnavailable("PAD health is unavailable.");
+                ShowFailure("Joydex PAD status", exception);
+            }
+        }
+        finally
+        {
+            _padCommandRunning = false;
+            UpdatePadActionAvailability();
+        }
+    }
+
+    private async void OnRestartPad(object? sender, EventArgs eventArgs) =>
+        await RunPadMutationAsync(RuntimeCommandKind.RestartPlugin).ConfigureAwait(true);
+
+    private async void OnReloadPadConfiguration(object? sender, EventArgs eventArgs) =>
+        await RunPadMutationAsync(RuntimeCommandKind.ReloadPluginConfiguration).ConfigureAwait(true);
+
+    private async Task RunPadMutationAsync(RuntimeCommandKind requestedKind)
+    {
+        if (_padCommandRunning || !_plugins.IsAvailable)
+        {
+            return;
+        }
+
+        var generation = _connectionGeneration;
+        _padCommandRunning = true;
+        SetPadBusy(requestedKind == RuntimeCommandKind.RestartPlugin
+            ? "Lifecycle: Restarting…"
+            : "Lifecycle: Reloading configuration…");
+        try
+        {
+            var outcome = requestedKind == RuntimeCommandKind.RestartPlugin
+                ? await _plugins.RestartPadAsync(_lifetime.Token).ConfigureAwait(true)
+                : await _plugins.ReloadPadConfigurationAsync(_lifetime.Token).ConfigureAwait(true);
+            EnsurePadConnectionCurrent(generation);
+            ApplyPadOutcome(outcome);
+            if (outcome.Kind != requestedKind)
+            {
+                _notifyIcon.ShowBalloonTip(
+                    5000,
+                    "Joydex PAD action reconciled",
+                    $"The earlier {PadActionName(outcome.Kind)} action was resolved as {outcome.Status}. {outcome.Detail} Choose {PadActionName(requestedKind)} again to run it.",
+                    ToolTipIcon.Info);
+                return;
+            }
+            if (outcome.Status != RuntimeCommandStatus.Completed)
+            {
+                ShowPadResult(outcome);
+            }
+
+            // Inspection is read-only and confirms the status that should be shown after the
+            // side-effecting operation was accepted, rejected, failed, or recovered.
+            var refreshed = await _plugins.InspectAsync(_lifetime.Token).ConfigureAwait(true);
+            EnsurePadConnectionCurrent(generation);
+            ApplyPadOutcome(refreshed);
+            if (refreshed.Status != RuntimeCommandStatus.Completed)
+            {
+                ShowPadResult(refreshed);
+            }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+        }
+        catch (OperationCanceledException exception)
+        {
+            if (_connectionGeneration == generation)
+            {
+                SetPadUnavailable(exception.Message);
+            }
+        }
+        catch (Exception exception)
+        {
+            if (_connectionGeneration == generation)
+            {
+                SetPadUnavailable("The PAD action result is unknown.");
+                ShowFailure("Joydex PAD", exception);
+            }
+        }
+        finally
+        {
+            _padCommandRunning = false;
+            UpdatePadActionAvailability();
+        }
+    }
+
+    private void ApplyPadOutcome(RuntimePluginCommandOutcome outcome)
+    {
+        var health = outcome.Plugins.Health.Single(item => string.Equals(
+            item.PluginId,
+            RuntimePluginIds.Pad,
+            StringComparison.Ordinal));
+        _padHealth = health;
+        RenderPadHealth();
+    }
+
+    private void EnsurePadConnectionCurrent(long generation)
+    {
+        if (_connectionGeneration != generation || !_plugins.IsAvailable)
+        {
+            throw new OperationCanceledException(
+                "The runtime connection changed before the PAD status was displayed.");
+        }
+    }
+
+    private void RenderPadHealth()
+    {
+        var health = _padHealth
+            ?? throw new InvalidOperationException("PAD health must be available before it is rendered.");
+        _padHealthItem.Text = $"Lifecycle: {health.State}";
+        _padHealthItem.ToolTipText = health.Detail;
+    }
+
+    private void SetPadBusy(string text)
+    {
+        _padHealthItem.Text = text;
+        _restartPadItem.Enabled = false;
+        _reloadPadConfigurationItem.Enabled = false;
+    }
+
+    private void SetPadUnavailable(string detail)
+    {
+        _padHealth = null;
+        _padHealthItem.Text = "Lifecycle: Unavailable";
+        _padHealthItem.ToolTipText = detail;
+        _restartPadItem.Enabled = false;
+        _reloadPadConfigurationItem.Enabled = false;
+    }
+
+    private void UpdatePadActionAvailability()
+    {
+        var available = !_padCommandRunning && _plugins.IsAvailable;
+        _restartPadItem.Enabled = available && _padHealth?.CanRestart == true;
+        _reloadPadConfigurationItem.Enabled = available && _padHealth?.CanReload == true;
+    }
+
+    private void ShowPadResult(RuntimePluginCommandOutcome outcome) =>
+        _notifyIcon.ShowBalloonTip(
+            5000,
+            "Joydex PAD",
+            outcome.Detail,
+            outcome.Status == RuntimeCommandStatus.Failed
+                ? ToolTipIcon.Error
+                : ToolTipIcon.Warning);
+
+    private static string PadActionName(RuntimeCommandKind kind) => kind switch
+    {
+        RuntimeCommandKind.RestartPlugin => "Restart PAD",
+        RuntimeCommandKind.ReloadPluginConfiguration => "Reload PAD configuration",
+        _ => "PAD status",
+    };
 
     private static string CommandFingerprint(RuntimeCommandArguments? arguments) =>
         JsonSerializer.Serialize(arguments);

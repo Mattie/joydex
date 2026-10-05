@@ -30,6 +30,10 @@ internal sealed class RuntimeClientConnection : IAsyncDisposable
 
     public Task Completion => _completion;
 
+    public bool SupportsPluginManagement => _connection.AttachResult.Capabilities.Contains(
+        RuntimeProtocol.PluginManagementCapability,
+        StringComparer.Ordinal);
+
     public static async Task<RuntimeClientConnection> ConnectAsync(
         RuntimeIpcEndpoint endpoint,
         RuntimeClientKind clientKind,

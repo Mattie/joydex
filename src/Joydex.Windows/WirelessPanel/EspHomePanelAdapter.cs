@@ -48,9 +48,12 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
     private TaskAlertSnapshot _latestSnapshot;
     private Task? _eventLoopObserverTask;
     private Task? _publisherTask;
+    private Task? _lifetimeObserverTask;
     private EspHomePanelSnapshot? _lastPublishedSnapshot;
     private long _requestedReconnectGeneration;
     private long _completedReconnectGeneration;
+    private readonly TaskCompletionSource _completion =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _started;
     private bool _disposed;
 
@@ -100,6 +103,12 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
         _stateRetryDelay = stateRetryDelay;
     }
 
+    /// <summary>
+    /// Completes on an orderly stop and faults when either owned loop ends unexpectedly. Ordinary
+    /// connection and state-publication retries remain inside the transport and adapter.
+    /// </summary>
+    public Task Completion => _completion.Task;
+
     /// <summary>Starts the outbound event loop and latest-state publisher.</summary>
     public void Start()
     {
@@ -113,11 +122,24 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
 
             _started = true;
             _publisherTask = PublishLoopAsync(_cancellation.Token);
-            _eventLoopObserverTask = ObserveEventLoopAsync(
-                _transport.RunAsync(
+            try
+            {
+                _eventLoopObserverTask = _transport.RunAsync(
                     HandlePressedAsync,
                     QueueReconnectSnapshotAsync,
-                    _cancellation.Token));
+                    _cancellation.Token);
+                _lifetimeObserverTask = ObserveLifetimeAsync(
+                    _publisherTask,
+                    _eventLoopObserverTask);
+            }
+            catch (Exception exception)
+            {
+                _cancellation.Cancel();
+                _completion.TrySetException(new InvalidOperationException(
+                    "The ESPHome panel event loop could not start.",
+                    exception));
+                throw;
+            }
         }
 
         SignalPublisher();
@@ -148,6 +170,7 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
     {
         Task? publisherTask;
         Task? eventLoopObserverTask;
+        Task? lifetimeObserverTask;
         lock (_lifecycleGate)
         {
             if (_disposed)
@@ -159,20 +182,31 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
             _cancellation.Cancel();
             publisherTask = _publisherTask;
             eventLoopObserverTask = _eventLoopObserverTask;
+            lifetimeObserverTask = _lifetimeObserverTask;
+            if (!_started)
+            {
+                _completion.TrySetResult();
+            }
         }
 
         SignalPublisher();
         if (publisherTask is not null)
         {
-            await publisherTask.ConfigureAwait(false);
+            await AwaitOperationalTaskAsync(publisherTask).ConfigureAwait(false);
         }
 
         if (eventLoopObserverTask is not null)
         {
-            await eventLoopObserverTask.ConfigureAwait(false);
+            await AwaitOperationalTaskAsync(eventLoopObserverTask).ConfigureAwait(false);
+        }
+
+        if (lifetimeObserverTask is not null)
+        {
+            await lifetimeObserverTask.ConfigureAwait(false);
         }
 
         await _transport.DisposeAsync().ConfigureAwait(false);
+        _completion.TrySetResult();
         _publishSignal.Dispose();
         _cancellation.Dispose();
         GC.SuppressFinalize(this);
@@ -572,18 +606,55 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
         await _executeAction(request, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task ObserveEventLoopAsync(Task eventLoopTask)
+    private async Task ObserveLifetimeAsync(Task publisherTask, Task eventLoopTask)
     {
+        var completed = await Task.WhenAny(publisherTask, eventLoopTask).ConfigureAwait(false);
+        Exception? failure = null;
         try
         {
-            await eventLoopTask.ConfigureAwait(false);
+            await completed.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (_cancellation.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            _log($"ESPHome panel event loop stopped: {exception.Message}");
+            failure = exception;
+        }
+
+        if (_cancellation.IsCancellationRequested)
+        {
+            _completion.TrySetResult();
+        }
+        else
+        {
+            var loopName = ReferenceEquals(completed, publisherTask)
+                ? "state publisher"
+                : "event loop";
+            try
+            {
+                _log($"ESPHome panel {loopName} stopped unexpectedly.");
+            }
+            catch
+            {
+                // Completion remains authoritative when diagnostics are unavailable.
+            }
+            _completion.TrySetException(new InvalidOperationException(
+                $"The ESPHome panel {loopName} stopped unexpectedly.",
+                failure));
+        }
+    }
+
+    private static async Task AwaitOperationalTaskAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Completion reports operational failure. Disposal only fails when cleanup itself
+            // cannot cancel and join the work or release the transport.
         }
     }
 

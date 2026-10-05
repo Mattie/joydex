@@ -6,6 +6,7 @@ using Joydex.Core.TaskAlerts;
 using Joydex.Core.Voice;
 using Joydex.RuntimeHost.Production;
 using Joydex.RuntimeHost.Settings;
+using Joydex.WirelessPanel;
 using Joydex.Windows.Voice;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -53,6 +54,83 @@ public sealed class ProductionRuntimeCompositionTests
             factory.Created);
         Assert.Single(sources);
         Assert.Equal("controller", sources[0].SourceId);
+        Assert.Single(factory.PluginRefreshes);
+    }
+
+    [Fact]
+    public async Task PadLossAndRetryStayOutsideCompositionAndUnrelatedOwnerLifetimes()
+    {
+        var factory = new FakeFactory();
+        var padHost = new PadPluginTests.FakeHost();
+        var first = new PadPluginTests.FakeInstance();
+        var replacement = new PadPluginTests.FakeInstance();
+        var padInstances = new PadPluginTests.FakeInstanceFactory(first, replacement);
+        var restart = new PadPluginTests.ManualRestartDelay();
+        factory.Plugin = new Joydex.RuntimeHost.Plugins.PadPlugin(
+            padHost,
+            () => WirelessPanelConfiguration.Create(
+                "http://panel.local/",
+                "user",
+                "secret"),
+            padInstances,
+            restart.DelayAsync,
+            default);
+        await using var composition = new ProductionRuntimeComposition(factory, default);
+        composition.Refresh(Bundle());
+        var owners = factory.LatestOwners();
+
+        first.CompleteUnexpectedly();
+        await restart.Scheduled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.False(composition.Completion.IsCompleted);
+        Assert.All(owners.Values, owner => Assert.False(owner.Disposed));
+        Assert.True(first.Disposed);
+        restart.Release.TrySetResult();
+        await padInstances.WaitForStartCountAsync(2).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(composition.Completion.IsCompleted);
+        Assert.All(owners.Values, owner => Assert.False(owner.Disposed));
+    }
+
+    [Fact]
+    public async Task PadPolicyRefreshFollowsOnlySuccessfulCompanionCommitAndRollback()
+    {
+        var factory = new FakeFactory();
+        await using var composition = new ProductionRuntimeComposition(factory, default);
+        var active = Bundle();
+        composition.Refresh(active);
+        var committed = active with
+        {
+            Companion = new CompanionConfig
+            {
+                Safety = new SafetyOptions { DryRun = false },
+                Polling = new PollingOptions { PollIntervalMs = 20 },
+            },
+        };
+
+        var applied = await composition.ActivateAsync(
+            SettingsAggregateId.Companion,
+            committed,
+            2,
+            default);
+        var rejected = committed with
+        {
+            Companion = new CompanionConfig
+            {
+                Safety = new SafetyOptions { DryRun = false },
+                Polling = new PollingOptions { PollIntervalMs = 21 },
+            },
+        };
+        factory.FailNextCreate[SettingsAggregateId.Companion] = new IOException("candidate failed");
+        var failed = await composition.ActivateAsync(
+            SettingsAggregateId.Companion,
+            rejected,
+            3,
+            default);
+
+        Assert.Equal(SettingsActivationState.Applied, applied.State);
+        Assert.Equal(SettingsActivationState.Failed, failed.State);
+        Assert.Equal([active, committed, committed], factory.PluginRefreshes);
+        Assert.DoesNotContain(rejected, factory.PluginRefreshes);
     }
 
     [Fact]
@@ -1287,6 +1365,8 @@ public sealed class ProductionRuntimeCompositionTests
         public Dictionary<SettingsAggregateId, Exception> FailNextCreate { get; } = [];
         public Dictionary<SettingsAggregateId, int[]> FailCreateOnAttempts { get; } = [];
         public List<VoicePePreferences> VoiceMessagingRefreshes { get; } = [];
+        public List<SettingsBundle> PluginRefreshes { get; } = [];
+        public Joydex.RuntimeHost.Plugins.PadPlugin? Plugin { get; set; }
         public Exception? VoiceMessagingFailure { get; set; }
         public string? VoiceProjectionPath { get; init; }
         public bool VoiceStartsActive { get; init; }
@@ -1341,6 +1421,20 @@ public sealed class ProductionRuntimeCompositionTests
 
         public RuntimeUiSnapshot GetUiSnapshot() => UiSnapshot;
 
+        public async Task RefreshPluginsAsync(
+            SettingsBundle activeSettings,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            PluginRefreshes.Add(activeSettings);
+            if (Plugin is not null)
+            {
+                await Plugin.RefreshSharedConfigurationAsync(
+                    activeSettings.Companion,
+                    cancellationToken);
+            }
+        }
+
         public void RefreshVoiceMessaging(VoicePePreferences preferences)
         {
             if (VoiceMessagingFailure is { } failure)
@@ -1356,11 +1450,14 @@ public sealed class ProductionRuntimeCompositionTests
 
         public void ReportFailure(SettingsAggregateId aggregate, Exception exception) { }
 
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
             Disposed = true;
             _completion.TrySetResult();
-            return ValueTask.CompletedTask;
+            if (Plugin is not null)
+            {
+                await Plugin.DisposeAsync();
+            }
         }
 
         public FakeOwner Latest(SettingsAggregateId aggregate) => _owners[aggregate][^1];
@@ -1373,6 +1470,7 @@ public sealed class ProductionRuntimeCompositionTests
         public void PublishUi(RuntimeUiEvent update) => UiChanged?.Invoke(this, update);
 
         public void Fail(Exception exception) => _completion.TrySetException(exception);
+
     }
 
     private class FakeOwner(SettingsAggregateId aggregate, FakeFactory factory) : IProductionRuntimeOwner

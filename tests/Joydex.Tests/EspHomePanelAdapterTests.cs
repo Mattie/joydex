@@ -532,6 +532,83 @@ public sealed class EspHomePanelAdapterTests
             message => message.Contains("state update failed", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task DisposeCompletesLifetimeAfterBothLoopsJoin()
+    {
+        var snapshot = Snapshot(enabled: true);
+        var transport = new RecordingTransport();
+        var adapter = CreateAdapter(transport, snapshot, () => snapshot);
+        adapter.Start();
+
+        await adapter.DisposeAsync();
+        await adapter.Completion;
+
+        Assert.Equal(1, transport.DisposeCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnexpectedEventLoopEndFaultsLifetimeButStillAllowsConfirmedCleanup(bool faulted)
+    {
+        var snapshot = Snapshot(enabled: true);
+        var transport = new RecordingTransport();
+        var adapter = CreateAdapter(transport, snapshot, () => snapshot);
+        adapter.Start();
+
+        if (faulted)
+        {
+            transport.FailRun(new InvalidDataException("simulated event-loop failure"));
+        }
+        else
+        {
+            transport.CompleteRun();
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => adapter.Completion.WaitAsync(TimeSpan.FromSeconds(2)));
+        await adapter.DisposeAsync();
+
+        Assert.Equal(1, transport.DisposeCount);
+    }
+
+    [Fact]
+    public async Task SynchronousRunFailureStillJoinsPublisherAndDisposesTransport()
+    {
+        var snapshot = Snapshot(enabled: true);
+        var transport = new RecordingTransport
+        {
+            SynchronousRunFailure = new InvalidOperationException("simulated startup failure"),
+        };
+        var adapter = CreateAdapter(transport, snapshot, () => snapshot);
+
+        Assert.Throws<InvalidOperationException>(adapter.Start);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => adapter.Completion);
+        await adapter.DisposeAsync();
+
+        Assert.Equal(1, transport.DisposeCount);
+    }
+
+    [Fact]
+    public async Task UnexpectedPublisherFailureFaultsLifetimeAndStillDisposesTransport()
+    {
+        var snapshot = Snapshot(enabled: true);
+        var transport = new RecordingTransport();
+        transport.FailNextState();
+        var adapter = CreateAdapter(
+            transport,
+            snapshot,
+            () => snapshot,
+            log: _ => throw new InvalidOperationException("simulated diagnostic failure"));
+        adapter.Start();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => adapter.Completion.WaitAsync(TimeSpan.FromSeconds(2)));
+        await adapter.DisposeAsync();
+
+        Assert.Equal(1, transport.DisposeCount);
+    }
+
     private static EspHomePanelAdapter CreateAdapter(
         IEspHomePanelTransport transport,
         TaskAlertSnapshot initial,
@@ -579,7 +656,7 @@ public sealed class EspHomePanelAdapterTests
     private sealed class RecordingTransport : IEspHomePanelTransport
     {
         private readonly object _sync = new();
-        private readonly TaskCompletionSource _disposed =
+        private readonly TaskCompletionSource _runCompletion =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private Func<EspHomePanelButton, CancellationToken, ValueTask>? _onPressed;
         private Func<CancellationToken, ValueTask>? _onConnected;
@@ -588,6 +665,10 @@ public sealed class EspHomePanelAdapterTests
         private bool _failNextState;
         private EspHomePanelSnapshot _currentState = EspHomePanelSnapshot.Empty;
         private EspHomePanelSnapshot _currentWorkspace = EspHomePanelSnapshot.Empty;
+
+        public Exception? SynchronousRunFailure { get; init; }
+
+        public int DisposeCount { get; private set; }
 
         public List<EspHomePanelSnapshot> States { get; } = [];
 
@@ -602,11 +683,19 @@ public sealed class EspHomePanelAdapterTests
             Func<CancellationToken, ValueTask>? onConnected = null,
             CancellationToken cancellationToken = default)
         {
+            if (SynchronousRunFailure is not null)
+            {
+                throw SynchronousRunFailure;
+            }
             _onPressed = onPressed;
             _onConnected = onConnected;
             _runCancellation = cancellationToken;
-            return WaitForDisposalAsync(cancellationToken);
+            return WaitForRunAsync(cancellationToken);
         }
+
+        public void CompleteRun() => _runCompletion.TrySetResult();
+
+        public void FailRun(Exception failure) => _runCompletion.TrySetException(failure);
 
         public async Task SetTaskStatesAsync(
             EspHomeTaskState task1,
@@ -820,15 +909,15 @@ public sealed class EspHomePanelAdapterTests
 
         public ValueTask DisposeAsync()
         {
-            _disposed.TrySetResult();
+            DisposeCount++;
             return ValueTask.CompletedTask;
         }
 
-        private async Task WaitForDisposalAsync(CancellationToken cancellationToken)
+        private async Task WaitForRunAsync(CancellationToken cancellationToken)
         {
             try
             {
-                await _disposed.Task.WaitAsync(cancellationToken);
+                await _runCompletion.Task.WaitAsync(cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

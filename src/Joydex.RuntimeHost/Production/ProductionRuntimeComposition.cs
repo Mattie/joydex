@@ -34,6 +34,7 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private SettingsBundle? _activeBundle;
     private bool _activationAttempted;
+    private bool _pluginsInitialized;
     private bool _disposed;
 
     internal ProductionRuntimeComposition(
@@ -102,6 +103,13 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
                 EnsureStartedAsync(activeSettings).GetAwaiter().GetResult();
             }
             _activeBundle = activeSettings;
+            if (!_pluginsInitialized)
+            {
+                _factory.RefreshPluginsAsync(activeSettings, _runtimeCancellationToken)
+                    .GetAwaiter()
+                    .GetResult();
+                _pluginsInitialized = true;
+            }
             return _owners.TryGetValue(SettingsAggregateId.Companion, out var owner)
                 && owner is IProductionInputOwner inputs
                     ? inputs.Refresh(activeSettings)
@@ -475,6 +483,11 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
                 Install(aggregate, replacement);
             }
             _activeBundle = activationCandidate;
+            if (aggregate == SettingsAggregateId.Companion)
+            {
+                await _factory.RefreshPluginsAsync(activationCandidate, _runtimeCancellationToken)
+                    .ConfigureAwait(false);
+            }
             return new SettingsActivationResult(SettingsActivationState.Applied);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -592,6 +605,8 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
             }
 
             _activeBundle = activationCandidate;
+            await _factory.RefreshPluginsAsync(activationCandidate, _runtimeCancellationToken)
+                .ConfigureAwait(false);
             return new SettingsActivationResult(SettingsActivationState.Applied);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -712,6 +727,11 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
             if (restored is not null)
             {
                 Install(aggregate, restored);
+            }
+            if (aggregate == SettingsAggregateId.Companion)
+            {
+                await _factory.RefreshPluginsAsync(previousBundle, _runtimeCancellationToken)
+                    .ConfigureAwait(false);
             }
             return null;
         }
@@ -1054,6 +1074,10 @@ internal interface IProductionRuntimeOwnerFactory : IAsyncDisposable
     RuntimeUiSnapshot GetUiSnapshot();
 
     void RefreshVoiceMessaging(VoicePePreferences preferences);
+
+    Task RefreshPluginsAsync(
+        SettingsBundle activeSettings,
+        CancellationToken cancellationToken) => Task.CompletedTask;
 
     Task<IProductionRuntimeOwner?> CreateAsync(
         SettingsAggregateId aggregate,

@@ -271,6 +271,9 @@ lifetimes. Settings connects as a client; opening a window does not acquire or s
 **Bundled Plugin**:
 A trusted integration shipped in the Joydex release with explicit capabilities and lifecycle.
 A worker process provides independent lifetime; it does not establish a hostile-code sandbox.
+The PAD pilot uses an explicit in-process registration and isolates ordinary lifecycle
+failures. A fatal native/CLR failure still affects RuntimeHost; see
+[ADR 0010](docs/adr/0010-use-a-bundled-in-process-pad-pilot.md).
 
 **Active / Desired Configuration**:
 Active configuration describes what an owner is using. Desired configuration is a validated,
