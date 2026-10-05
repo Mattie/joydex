@@ -103,6 +103,11 @@ internal sealed class PadPlugin : IAsyncDisposable
     public BundledPluginRegistration Registration =>
         BundledPluginCatalog.GetRequired(BundledPluginCatalog.PadId);
 
+    internal int TrackedObserverCount
+    {
+        get { lock (_backgroundGate) return _backgroundTasks.Count; }
+    }
+
     public BundledPluginHealth Health
     {
         get
@@ -674,6 +679,18 @@ internal sealed class PadPlugin : IAsyncDisposable
         {
             _backgroundTasks.Add(task);
         }
+        _ = task.ContinueWith(
+            completed =>
+            {
+                lock (_backgroundGate)
+                {
+                    _backgroundTasks.Remove(completed);
+                }
+            },
+            CancellationToken.None,
+            // Keep unexpected observer faults available for shutdown to report.
+            TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private void PublishHealth(BundledPluginHealth health)

@@ -11,6 +11,35 @@ namespace Joydex.RuntimeHost.Tests;
 public sealed class PadPluginTests
 {
     [Fact]
+    public async Task RepeatedRestartsRetireCompletedObserversAndShutdownJoinsTheLastOne()
+    {
+        var instances = new FakeInstanceFactory();
+        await using var plugin = CreatePlugin(new FakeHost(), () => Configuration("test"), instances);
+        await plugin.RefreshSharedConfigurationAsync(new CompanionConfig(), default);
+        for (var restart = 0; restart < 64; restart++)
+        {
+            await plugin.RestartAsync(default);
+        }
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (plugin.TrackedObserverCount > 1 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(1);
+        }
+        Assert.Equal(1, plugin.TrackedObserverCount);
+        Assert.False(instances.Instances[^1].Disposed);
+
+        await plugin.DisposeAsync();
+
+        Assert.All(instances.Instances, instance => Assert.True(instance.Disposed));
+        deadline = DateTime.UtcNow.AddSeconds(10);
+        while (plugin.TrackedObserverCount != 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(1);
+        }
+        Assert.Equal(0, plugin.TrackedObserverCount);
+    }
+
+    [Fact]
     public void CatalogRegistersOnlyTheCanonicalBundledPad()
     {
         var registration = Assert.Single(BundledPluginCatalog.Registrations);
