@@ -32,6 +32,11 @@ public interface IDesktopTaskBridgeClient
         DesktopTaskSummary target,
         string message,
         CancellationToken cancellationToken = default);
+
+    Task ReleaseTaskAsync(
+        string sourceThreadId,
+        DesktopTaskSummary target,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class DesktopTaskBridgeClient(
@@ -183,6 +188,30 @@ public sealed class DesktopTaskBridgeClient(
             target.Title,
             Queued: IsRunning(target.Status),
             detail);
+    }
+
+    public async Task ReleaseTaskAsync(
+        string sourceThreadId,
+        DesktopTaskSummary target,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        if (!target.HostId.Equals("local", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Only a local Codex task can be released for Room Voice.");
+        }
+
+        await RequestAsync(
+                DesktopTaskBridgeProtocol.ReleaseTaskMethod,
+                sourceThreadId,
+                new
+                {
+                    threadId = target.Id,
+                    hostId = target.HostId,
+                },
+                TimeSpan.FromSeconds(30),
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task<JsonElement> RequestAsync(

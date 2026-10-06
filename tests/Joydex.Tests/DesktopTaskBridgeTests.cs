@@ -12,6 +12,48 @@ public sealed class DesktopTaskBridgeTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "joydex-tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task HandoffRestoresAfterAnUncertainArchiveResponse()
+    {
+        var calls = new List<bool>();
+        var failure = new IOException("Archive response was lost.");
+        var actual = await Assert.ThrowsAsync<IOException>(() =>
+            DesktopTaskBridgePipeServer.ArchiveAndRestoreTaskAsync((archived, token) =>
+            {
+                calls.Add(archived);
+                Assert.False(token.IsCancellationRequested);
+                return archived ? Task.FromException<string>(failure) : Task.FromResult("restored");
+            }, CancellationToken.None));
+        Assert.Same(failure, actual);
+        Assert.Equal([true, false], calls);
+    }
+
+    [Fact]
+    public async Task HandoffFinishesRestoringBeforeObservingCallerCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var calls = new List<bool>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            DesktopTaskBridgePipeServer.ArchiveAndRestoreTaskAsync((archived, token) =>
+            {
+                calls.Add(archived);
+                cancellation.Cancel();
+                Assert.False(token.IsCancellationRequested);
+                return Task.FromResult(archived ? "archived" : "restored");
+            }, cancellation.Token));
+        Assert.Equal([true, false], calls);
+    }
+
+    [Fact]
+    public async Task HandoffDoesNothingWhenCanceledBeforeStarting()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            DesktopTaskBridgePipeServer.ArchiveAndRestoreTaskAsync((_, _) =>
+                throw new InvalidOperationException("No lifecycle call should occur."), cancellation.Token));
+    }
+
+    [Fact]
     public async Task FramingRoundTripsAndRejectsOversizedFrames()
     {
         await using var stream = new MemoryStream();
@@ -148,6 +190,25 @@ public sealed class DesktopTaskBridgeTests : IDisposable
         await server;
 
         Assert.True(result.Queued);
+    }
+
+    [Fact]
+    public async Task ReleaseRequestsTheExactLocalTask()
+    {
+        var pipe = "Joydex.Tests." + Guid.NewGuid().ToString("N");
+        var source = Guid.NewGuid().ToString("D");
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Voice", "idle", null, null, 0);
+        var server = ServeOnceAsync(pipe, request =>
+        {
+            Assert.Equal(DesktopTaskBridgeProtocol.ReleaseTaskMethod, request.Method);
+            Assert.Equal(target.Id, request.Arguments.GetProperty("threadId").GetString());
+            Assert.Equal("local", request.Arguments.GetProperty("hostId").GetString());
+            return JsonSerializer.SerializeToElement(new { content = "released" });
+        });
+
+        await new DesktopTaskBridgeClient(pipe).ReleaseTaskAsync(source, target);
+        await server;
     }
 
     [Fact]
@@ -545,6 +606,12 @@ public sealed class DesktopTaskBridgeTests : IDisposable
                 Queued: false,
                 "delivered"));
         }
+
+        public Task ReleaseTaskAsync(
+            string sourceThreadId,
+            DesktopTaskSummary target,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 
     private static async Task ServeOnceAsync(

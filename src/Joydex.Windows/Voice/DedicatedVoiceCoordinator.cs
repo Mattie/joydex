@@ -18,6 +18,7 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly object _activeGate = new();
     private ActiveSession? _active;
+    private CancellationTokenSource? _startupCancellation;
     private int _disposed;
 
     public DedicatedVoiceCoordinator(
@@ -72,6 +73,7 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
                 {
                     return Result(VoiceSessionStartStatus.SessionActive, "BLOCKED Voice PE wake; the room Voice Session is already active.");
                 }
+                _startupCancellation = startupCancellation;
             }
 
             media = await _mediaSessionFactory(startupToken).ConfigureAwait(false);
@@ -91,7 +93,9 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
             var active = new ActiveSession(media, device, _readyCue);
             lock (_activeGate)
             {
+                startupToken.ThrowIfCancellationRequested();
                 _active = active;
+                _startupCancellation = null;
             }
 
             _ = RunSessionAsync(active);
@@ -101,11 +105,7 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
                 VoiceSessionStartStatus.Confirmed,
                 "STARTED Joydex-owned Voice Session; dedicated task and Voice PE media are connected.");
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (startupToken.IsCancellationRequested)
         {
             if (device is not null)
             {
@@ -117,7 +117,25 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
                 await DisposeRejectedMediaAsync(media).ConfigureAwait(false);
             }
 
-            return Result(VoiceSessionStartStatus.Rejected, "BLOCKED Joydex-owned Voice Session; coordinator is stopping.");
+            return _lifetime.IsCancellationRequested
+                ? Result(VoiceSessionStartStatus.Rejected, "BLOCKED Joydex-owned Voice Session; coordinator is stopping.")
+                : Result(VoiceSessionStartStatus.Canceled, "CANCELED Joydex-owned Voice Session before connection.");
+        }
+        catch (CodexDedicatedVoiceOwnershipException exception)
+        {
+            if (device is not null)
+            {
+                await DisposeRejectedDeviceAsync(device).ConfigureAwait(false);
+            }
+
+            if (media is not null)
+            {
+                await DisposeRejectedMediaAsync(media).ConfigureAwait(false);
+            }
+
+            return Result(
+                VoiceSessionStartStatus.OwnershipConflict,
+                $"BLOCKED Joydex-owned Voice Session; error={exception.Message}");
         }
         catch (Exception exception)
         {
@@ -137,6 +155,13 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
         }
         finally
         {
+            lock (_activeGate)
+            {
+                if (ReferenceEquals(_startupCancellation, startupCancellation))
+                {
+                    _startupCancellation = null;
+                }
+            }
             if (gateAcquired)
             {
                 _startGate.Release();
@@ -146,6 +171,20 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
 
     public async Task StopActiveAsync(CancellationToken cancellationToken = default)
     {
+        CancellationTokenSource? startupCancellation;
+        lock (_activeGate)
+        {
+            startupCancellation = _startupCancellation;
+        }
+        try
+        {
+            startupCancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Startup finished between the snapshot and cancellation.
+        }
+
         ActiveSession? active;
         lock (_activeGate)
         {

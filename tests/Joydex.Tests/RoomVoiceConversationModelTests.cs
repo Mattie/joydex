@@ -5,6 +5,30 @@ namespace Joydex.Tests;
 
 public sealed class RoomVoiceConversationModelTests
 {
+    [Theory]
+    [InlineData(false, VoicePeSessionState.Error)]
+    [InlineData(true, VoicePeSessionState.Armed)]
+    public void FallbackReportsUnavailableUnlessItIsASimulation(bool dryRun, VoicePeSessionState state)
+    {
+        var model = new RoomVoiceConversationModel();
+        model.SetFallbackState(enabled: true, dryRun: dryRun);
+
+        var snapshot = model.GetSnapshot();
+        Assert.Equal(state, snapshot.SessionState);
+        Assert.False(snapshot.OwnerReady);
+        Assert.False(snapshot.SessionActive);
+        Assert.False(snapshot.HistoryAvailable);
+        if (dryRun)
+        {
+            Assert.Null(snapshot.Error);
+            Assert.Contains("dry-run", snapshot.Status, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Equal(PinnedVoiceCoordinator.UnavailableMessage, snapshot.Error);
+        }
+    }
+
     [Fact]
     public void DisplayTranscriptMergeDoesNotUseHangupClassifierLengthLimit()
     {
@@ -180,6 +204,88 @@ public sealed class RoomVoiceConversationModelTests
         Assert.True(current.SessionActive);
         Assert.Equal("Connecting the voice session…", current.Status);
         Assert.Null(current.Error);
+    }
+
+    [Fact]
+    public void CanceledStartupReturnsTheRoomToArmed()
+    {
+        var model = new RoomVoiceConversationModel();
+        var armed = model.GetSnapshot();
+        model.SetRuntimeState(
+            VoicePeSessionState.Starting,
+            ownerReady: true,
+            sessionActive: true,
+            "Connecting the voice session…");
+
+        VoicePeBridgeRuntime.ApplyStartResult(
+            model,
+            armed,
+            new VoiceSessionStartResult(VoiceSessionStartStatus.Canceled, "canceled"));
+
+        var current = model.GetSnapshot();
+        Assert.Equal(VoicePeSessionState.Armed, current.SessionState);
+        Assert.True(current.OwnerReady);
+        Assert.False(current.SessionActive);
+        Assert.Null(current.Error);
+    }
+
+    [Fact]
+    public void WriterConflictReturnsTheRoomToArmedWithRecoveryInstruction()
+    {
+        var model = new RoomVoiceConversationModel();
+        var armed = model.GetSnapshot();
+        model.SetRuntimeState(
+            VoicePeSessionState.Starting,
+            ownerReady: true,
+            sessionActive: true,
+            "Connecting the voice session…");
+
+        VoicePeBridgeRuntime.ApplyStartResult(
+            model,
+            armed,
+            new VoiceSessionStartResult(
+                VoiceSessionStartStatus.OwnershipConflict,
+                "already has an active writer"));
+
+        var current = model.GetSnapshot();
+        Assert.Equal(VoicePeSessionState.Armed, current.SessionState);
+        Assert.True(current.OwnerReady);
+        Assert.False(current.SessionActive);
+        Assert.Contains("automatic handoff failed", current.Status, StringComparison.Ordinal);
+        Assert.Null(current.Error);
+    }
+
+    [Fact]
+    public async Task IdleDesktopHandoffReleasesAndRetriesOwnershipOnce()
+    {
+        var attempts = 0;
+        var releases = 0;
+
+        var owner = await VoicePeBridgeRuntime.AcquireWithIdleDesktopHandoffAsync(
+            _ => ++attempts == 1
+                ? Task.FromException<string>(new CodexDedicatedVoiceOwnershipException("busy"))
+                : Task.FromResult("acquired"),
+            _ =>
+            {
+                releases++;
+                return Task.CompletedTask;
+            });
+
+        Assert.Equal("acquired", owner);
+        Assert.Equal(2, attempts);
+        Assert.Equal(1, releases);
+    }
+
+    [Fact]
+    public async Task FailedDesktopHandoffRemainsATypedOwnershipConflict()
+    {
+        var error = await Assert.ThrowsAsync<CodexDedicatedVoiceOwnershipException>(() =>
+            VoicePeBridgeRuntime.AcquireWithIdleDesktopHandoffAsync(
+                _ => Task.FromException<string>(new CodexDedicatedVoiceOwnershipException("busy")),
+                _ => Task.FromException(new IOException("bridge unavailable"))));
+
+        Assert.Contains("could not complete", error.Message, StringComparison.Ordinal);
+        Assert.IsType<AggregateException>(error.InnerException);
     }
 
     [Fact]

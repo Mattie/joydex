@@ -72,9 +72,7 @@ internal sealed class VoiceWorkerService : IAsyncDisposable
         var conversation = new RoomVoiceConversationModel();
         var coordinator = new PinnedVoiceCoordinator(
             safety,
-            WriteLog,
-            new HostNavigator(this),
-            ExecuteActionAsync);
+            WriteLog);
         VoicePeBridgeRuntime? runtime = null;
         try
         {

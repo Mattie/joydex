@@ -10,15 +10,16 @@ Before changing domain language or architecture, review the applicable `CONCEPTS
 
 ## Codex App compatibility
 
-The Codex command IDs, Windows defaults, and keybinding precedence behavior in this repository were statically revalidated on 2026-10-02 against:
+The Codex command IDs, Windows defaults, and keybinding precedence behavior in this repository were statically revalidated on 2026-10-06 against:
 
-- Windows package: `OpenAI.Codex 26.930.2377.0`
-- Bundled app release: `26.930.21537`
-- Codex build: `0.159.0-alpha.12.1`
+- Windows package: `OpenAI.Codex 26.930.7945.0`
+- Bundled app release: `26.930.61225`
+- Codex build: `0.160.1`
 
 This release removed `composer.startDictation`. Foreground throttle dictation invokes the accessible
 composer `Dictate` button and returns to the recorded window's stop or startup-cancel button on release.
 See `docs/CODEX_WINDOWS_26_930_DICTATION_VALIDATION.md` for the current dictation evidence.
+See `docs/CODEX_WINDOWS_26_930_COMPATIBILITY.md` for the current command and alias validation.
 
 Any change to command IDs, default bindings, aliases, or precedence behavior must be revalidated against the installed Codex App for Windows. Update all three version values and the validation date in this file with that change.
 

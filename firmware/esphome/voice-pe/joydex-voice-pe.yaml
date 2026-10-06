@@ -4,7 +4,7 @@ packages:
 esphome:
   project:
     name: Joydex.Voice PE Audio Bridge
-    version: "0.1.41"
+    version: "0.1.42"
 
 globals:
   - id: joydex_voice_ready_cue_pending

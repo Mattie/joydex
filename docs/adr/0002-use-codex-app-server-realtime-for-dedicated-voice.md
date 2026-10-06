@@ -58,15 +58,17 @@ Sendspin Opus speaker downlink.
 Raw App Server PCM is reserved for an explicitly selected API-key mode.
 
 A separately launched App Server may target a durable Dedicated Voice Task only after it acquires
-that task's writer lock. Joydex will keep its owner control connection alive and the task loaded,
-then release both on orderly shutdown. If Codex Desktop already owns the configured task, the
-explicit-task path fails closed and reports the ownership conflict. The existing Desktop shortcut
-and allowlisted lifecycle observer remain the compatibility fallback while a supported route into
-Desktop's running App Server is unavailable.
+that task's writer lock. Joydex acquires the writer after an accepted wake, keeps the owner control
+connection alive for that Voice Session, and closes the private App Server during session teardown.
+The endpoint remains Armed without owning the task. If Codex Desktop retained an idle writer when a
+wake arrives, Joydex asks Desktop to archive and immediately restore that chat, then retries
+acquisition once. That supported lifecycle tears down Desktop's loaded task while preserving the
+chat and leaving it visible. Joydex never attempts this release for an active task. A failed handoff
+rejects the call and returns the endpoint to Armed.
 
-`Joydex Voice Chat — Owned (joydex_voice)` is the configured App Server target. The Desktop-owned Voice Task remains only the
-native LASTVOICE compatibility fallback until the Joydex-owned Realtime path replaces that shortcut.
-Joydex must not navigate Desktop to the new task before acquiring it through its own App Server.
+The configured Dedicated Voice Task is the App Server target. Native LASTVOICE remains available
+only as a dry-run simulation because current compatibility checks cannot guarantee its destination.
+Joydex must not navigate Desktop to the task before acquiring it through its own App Server.
 
 The owner has a configured Voice Agent Workspace. Joydex starts the App Server process in that
 directory, supplies the same normalized path as `thread/start` or `thread/resume` `cwd` and the
@@ -93,19 +95,23 @@ before speaker gain when assistant-audio diagnostics are enabled. The adopted hy
 route keeps the microphone open with the persisted Barge In switch on; firmware `0.1.19` cannot mark
 Sendspin playback as started on its separate microphone/control lane.
 
-Joydex will select and validate the Codex App Server runtime as refined by
-[ADR 0005](0005-follow-managed-codex-runtime-with-capability-checks.md), resume the exact configured
-task, call `thread/realtime/listVoices`, and require a compatible voice catalog before starting
-device media. This preserves the Dedicated Voice Task's normal interactive tools instead of
-accepting an incomplete one-file runtime. Session activation separately requires the WebRTC data
-channel, remote audio track, and Voice PE LAN transport before readiness is reported.
+Joydex will select the Codex App Server runtime as refined by
+[ADR 0005](0005-follow-managed-codex-runtime-with-capability-checks.md). For every accepted wake, it
+starts a private App Server, resumes the exact configured task, calls `thread/realtime/listVoices`,
+and requires a compatible voice catalog before starting device media. This preserves the Dedicated
+Voice Task's normal interactive tools instead of accepting an incomplete one-file runtime. Session
+activation separately requires the WebRTC data channel, remote audio track, and Voice PE LAN
+transport before readiness is reported.
 Runtime code will use generated schemas and protocol responses; it will not inspect or parse
 `app.asar`, emulate first-party attestation, or rewrite private upstream call requests.
 
 Joydex exposes the owned task through a Room Voice Workspace. `thread/read` with `includeTurns=true`
 provides canonical dialogue history, while the active WebRTC data channel provides immediate user
-and assistant transcript updates. The UI keeps its presentation state in memory and reloads canonical
-history after each session. Separately, Joydex writes a readable per-session `transcript.md` and
+and assistant transcript updates. History refresh uses a separate short-lived App Server that calls
+`thread/read` without `thread/resume`, so a refresh does not claim the task writer. The UI keeps its
+presentation state in memory and reloads canonical history before and after each session. Realtime
+starts with startup context enabled so a later call can use the backing task's bounded conversation
+history. Separately, Joydex writes a readable per-session `transcript.md` and
 `session.json` below the Voice Agent Workspace as each final user or assistant transcript arrives.
 These records exclude protocol wrappers, reasoning, tool arguments, command output, and other private
 payloads, and transcript text does not enter `joydex.log`. Diagnostic assistant WAVs join the active
@@ -121,8 +127,10 @@ built-in `codex_app` override receives a private broker pipe that a separately c
 does not reliably inherit. The worker therefore extracts the exact `codex_app` pipe and packaged-
 adapter directory from the verified Desktop App Server's command line, reconnecting if that App
 Server restarts. It does not inspect `app.asar`. Joydex receives a current-user named
-pipe that allows only bridge status, local task list/read, and `send_message_to_thread`. The bridge
-never calls `thread/resume` and exposes no create, fork, handoff, archive, or ownership operation.
+pipe that allows bridge status, local task list/read, `send_message_to_thread`, and the narrow idle
+Voice-task release above. The release calls Codex's archive and unarchive task operations as one
+paired action. The bridge never calls `thread/resume` and exposes no create, fork, or general
+ownership operation.
 The former marker-managed MCP entry is kept disabled as migration metadata, preventing Desktop from
 launching one competing broker per task. It exposes no model-callable tools. The Dedicated Voice Task
 receives a separate MCP server exposing only `send_message_to_codex_task`, which prevents the transport
@@ -146,8 +154,9 @@ Missing broker state, adapter failure, approval requirements, or an unmanaged co
 leave normal Room Voice operation intact and hold attempted outbound delivery for review.
 
 The same singleton Desktop Task Bridge may serve Joydex's optional Pebble Index Receiver without a
-Room Voice session. Joydex starts the broker only while configuration is open or a messaging feature
-is enabled, and its current-user-only transport uses a randomized per-process pipe name. The receiver
+Room Voice session. Joydex starts the broker while configuration is open, a messaging feature is
+enabled, or the Joydex-owned Voice route needs ownership handoff. Handoff does not enable outbound
+voice messaging tools. Its current-user-only transport uses a randomized per-process pipe name. The receiver
 binds only to loopback, authenticates before parsing, rejects audio,
 and maps every accepted transcript to one locally configured Desktop task. It persists an ingress
 record before returning success, suppresses duplicate webhook identities across restarts, and never
@@ -160,29 +169,31 @@ selection, reading, or other generic bridge operation.
 ## Consequences
 
 - A Joydex-owned Dedicated Voice Task remains independent of Desktop selection and Last Voice Task
-  state while Joydex owns its writer lock.
+  state. Joydex holds its writer lock only from accepted wake through Voice Session teardown.
 - The App Server process, task `cwd`, runtime root, and session records share one verified Voice Agent
   Workspace; local Codex project identity remains optional grouping metadata.
 - Moving to another workspace creates a fresh owned task and leaves the previous task and legacy WAV
   captures intact.
-- The Room Voice Workspace becomes the readable and recoverable desktop surface for that owned task,
-  including direct End Session and Restart controls.
+- The Room Voice Workspace remains a readable and recoverable surface for the task, including direct
+  End Session and Restart controls. Codex Desktop can open the same chat between calls.
 - Desktop-owned tasks can receive explicit outbound Room Voice commands through Desktop's own task
   tool without transferring ownership; unavailable deliveries remain manual-review drafts.
 - Typed `thread/realtime/closed` becomes the primary end-of-conversation signal for Joydex-owned
   sessions.
-- App Server process exit is supervised; Joydex rebuilds the complete owner bridge with bounded
-  exponential backoff instead of leaving the wake path silently unavailable.
-- Transient owner-start failures retry with the same bounded backoff. Configuration, explicit
-  runtime-override, and Realtime-capability failures remain terminal and visible until corrected.
+- The long-lived Voice media host is supervised. Each Voice Session owns a private App Server, and
+  session teardown closes that process even when media disposal fails.
+- An acquisition or compatibility failure rejects that call visibly and returns the endpoint to
+  Armed. The next wake makes a fresh acquisition attempt.
 - Recoverable Voice PE control-stream protocol failures reconnect instead of permanently ending
   wake monitoring.
 - ChatGPT-authenticated full-duplex WebRTC is proven on the host with deterministic audio.
-- Codex Desktop and a separate Joydex App Server cannot write the same task concurrently. Product
-  setup needs a clear ownership check and recovery path.
-- JOYDEXOWNER is now proven for a Joydex-managed durable task, including rival rejection, release,
-  and handoff. The separate `Joydex Voice Chat - Owned` task removes the Desktop writer conflict from the
-  primary App Server path.
+- Codex Desktop and a separate Joydex App Server cannot write the same task concurrently. Desktop
+  can keep an idle task loaded after the user navigates away, so navigation alone is not a handoff.
+  On wake, Joydex releases that idle Desktop writer through the paired archive/restore operation and
+  retries acquisition once. The chat becomes available to Desktop again after hangup.
+- JOYDEXOWNER is proven for a Joydex-managed durable task, including rival rejection, release, and
+  fresh-process reacquisition. Per-session handoff still requires attended validation with Codex
+  Desktop and the physical Voice PE.
 - DESKTOPATTACH remains capability discovery on Windows. Parent-owned Desktop stdio cannot be joined
   by another process through a documented transport.
 - The PC must remain awake, online, and authenticated to ChatGPT.
@@ -201,6 +212,14 @@ selection, reading, or other generic bridge operation.
 ## Evidence
 
 - `tools/Joydex.WebRtcCanary` host-only canary
+- HANDOFF unit coverage verifies startup-context inclusion, read-only history without
+  `thread/resume`, and owner release after media cleanup success or failure
+- Exact Codex `0.159.2` read-only probe returned the configured task's history while the old
+  production Voice worker retained that task's writer; full per-session Desktop/Voice PE handoff
+  remains an attended gate
+- Exact-runtime ownership probe acquired the configured task, rejected a rival owner, released it,
+  and reacquired it from a fresh process; the deployed Armed worker has no Codex child process and
+  Desktop reports the task as `notLoaded`
 - Revalidated on 2026-09-10 against Windows package `OpenAI.Codex 26.903.9818.0`, bundled app
   release `26.903`, and Codex `0.153.4`
 - Historical validation evidence: Codex `0.153.4` binary SHA-256

@@ -15,6 +15,46 @@ namespace Joydex.RuntimeHost.Tests;
 
 public sealed class VoiceProductionOwnerTests
 {
+    [Theory]
+    [InlineData(VoicePeSessionMode.JoydexOwner, false, false, true)]
+    [InlineData(VoicePeSessionMode.JoydexOwner, false, true, true)]
+    [InlineData(VoicePeSessionMode.LastVoiceFallback, false, false, false)]
+    [InlineData(VoicePeSessionMode.LastVoiceFallback, true, false, true)]
+    public async Task WorkerReceivesHandoffBrokerIndependentlyOfMessaging(
+        VoicePeSessionMode mode, bool messaging, bool dryRun, bool needsBroker)
+    {
+        var starter = new FakeBrokerStarter();
+        const string pipeName = "Joydex.Test.Handoff";
+        await using var broker = new ProductionDesktopBrokerManager(
+            Paths().DesktopBridgeHost, pipeName, _ => { }, CancellationToken.None,
+            starter, TimeSpan.FromSeconds(1));
+        var generations = new FakeGenerationFactory(new FakeGeneration());
+        var bundle = Bundle();
+        bundle = bundle with
+        {
+            Companion = new CompanionConfig { Safety = new SafetyOptions { DryRun = dryRun } },
+            Voice = bundle.Voice with { SessionMode = mode, DesktopTaskMessagingEnabled = messaging },
+        };
+        var owner = await VoiceProductionOwner.StartAsync(
+            new FakeHost(), Paths(), broker, generations, bundle,
+            static (_, _) => Task.CompletedTask, TimeProvider.System,
+            CancellationToken.None, CancellationToken.None);
+        try
+        {
+            var configuration = Assert.Single(generations.Configurations);
+            Assert.Equal(needsBroker ? pipeName : "Joydex.DesktopBridge.unavailable",
+                configuration.DesktopBridgePipeName);
+            Assert.Equal(messaging, configuration.Preferences.DesktopTaskMessagingEnabled);
+            Assert.Equal(dryRun, configuration.Safety.DryRun);
+            Assert.Equal(needsBroker ? 1 : 0, starter.StartCount);
+        }
+        finally
+        {
+            await owner.DisposeAsync();
+        }
+        Assert.Equal(needsBroker, starter.Process.Completion.IsCompleted);
+    }
+
     [Fact]
     public async Task CandidateRemainsQuiescentUntilCommittedAndPublishesLatestSnapshot()
     {
@@ -279,6 +319,7 @@ public sealed class VoiceProductionOwnerTests
     private sealed class FakeGenerationFactory(params object[] outcomes) : IVoiceWorkerGenerationFactory
     {
         private readonly Queue<object> _outcomes = new(outcomes);
+        public List<VoiceWorkerGenerationConfiguration> Configurations { get; } = [];
         private int _startCount;
         public int StartCount => Volatile.Read(ref _startCount);
 
@@ -288,6 +329,7 @@ public sealed class VoiceProductionOwnerTests
             CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _startCount);
+            Configurations.Add(configuration);
             cancellationToken.ThrowIfCancellationRequested();
             var outcome = _outcomes.Dequeue();
             if (outcome is Exception exception)
@@ -297,6 +339,30 @@ public sealed class VoiceProductionOwnerTests
             var generation = (FakeGeneration)outcome;
             generation.Bind(configuration.Generation, callbacks);
             return Task.FromResult<IVoiceWorkerGeneration>(generation);
+        }
+    }
+
+    private sealed class FakeBrokerStarter : IProductionDesktopBrokerStarter
+    {
+        public FakeBrokerProcess Process { get; } = new();
+        public int StartCount { get; private set; }
+
+        public Task<IProductionDesktopBrokerProcess> StartAsync(
+            string executablePath, string pipeName, Action<string> log, CancellationToken cancellationToken)
+        {
+            StartCount++;
+            return Task.FromResult<IProductionDesktopBrokerProcess>(Process);
+        }
+    }
+
+    private sealed class FakeBrokerProcess : IProductionDesktopBrokerProcess
+    {
+        private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task Completion => _completion.Task;
+        public ValueTask DisposeAsync()
+        {
+            _completion.TrySetResult();
+            return ValueTask.CompletedTask;
         }
     }
 

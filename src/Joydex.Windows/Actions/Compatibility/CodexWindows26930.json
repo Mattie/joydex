@@ -1,0 +1,362 @@
+{
+  "windowsPackage": "26.930.7945.0",
+  "appRelease": "26.930.61225",
+  "runtime": "0.160.1",
+  "asarSha256": "611D6DA979D8BBABFEC97DD90DCCE27A9522E7016E6CCF135D59CAB693AB08DA",
+  "notes": "Research-derived Windows defaults. Numeric defaults conservatively include both layouts. Seed checks only; no runtime scope/priority emulation.",
+  "commands": {
+    "newTask": [
+      "Ctrl+N",
+      "Ctrl+Shift+O"
+    ],
+    "newProjectlessTask": [
+      "Ctrl+Alt+O"
+    ],
+    "quickChat": [
+      "Ctrl+Alt+N"
+    ],
+    "temporaryChat": [
+      "Ctrl+Shift+N"
+    ],
+    "archiveThread": [
+      "Ctrl+Shift+A"
+    ],
+    "markThreadUnread": [
+      "Ctrl+Shift+U"
+    ],
+    "toggleThreadPin": [
+      "Ctrl+Alt+P"
+    ],
+    "copyLastCodeBlock": [
+      "Ctrl+Shift+;"
+    ],
+    "openSideChat": [
+      "Ctrl+Alt+S"
+    ],
+    "toggleDebugModal": [
+      "Ctrl+D"
+    ],
+    "undoAppAction": [
+      "Ctrl+Z"
+    ],
+    "redoAppAction": [
+      "Ctrl+Y",
+      "Ctrl+Shift+Z"
+    ],
+    "reopenClosedTab": [
+      "Ctrl+Shift+T"
+    ],
+    "composer.openModelPicker": [
+      "Ctrl+Shift+M"
+    ],
+    "composer.openRecentModels": [
+      "Alt+M"
+    ],
+    "composer.openProjectPicker": [
+      "Ctrl+Alt+Shift+O"
+    ],
+    "artifact.sendAnnotations": [
+      "Ctrl+Enter"
+    ],
+    "composer.submitInBackground": [
+      "Ctrl+Enter"
+    ],
+    "approval.approve": [
+      "Enter"
+    ],
+    "approval.decline": [
+      "Escape"
+    ],
+    "openAvatarOverlay": [
+      "Super+Alt+P"
+    ],
+    "togglePriorityFilter": [
+      "Ctrl+Alt+U"
+    ],
+    "focusMainChat": [
+      "Alt+L"
+    ],
+    "artifacts.selectTool": [
+      "V"
+    ],
+    "artifacts.handTool": [
+      "H"
+    ],
+    "canvas.prompt": [
+      "/",
+      "Shift+?"
+    ],
+    "artifacts.rectangleTool": [
+      "R"
+    ],
+    "artifacts.circleTool": [
+      "O"
+    ],
+    "artifacts.arrowTool": [
+      "A"
+    ],
+    "artifacts.lineTool": [
+      "L"
+    ],
+    "artifacts.textTool": [
+      "T"
+    ],
+    "artifacts.noteTool": [
+      "N"
+    ],
+    "copyPageLink": [
+      "Ctrl+L"
+    ],
+    "focusPageBlockControls": [
+      "Shift+F10"
+    ],
+    "page.formatNumberedList": [
+      "Ctrl+Alt+4",
+      "Ctrl+Shift+9"
+    ],
+    "page.formatBulletedList": [
+      "Ctrl+Alt+5",
+      "Ctrl+Shift+8"
+    ],
+    "page.formatChecklist": [
+      "Ctrl+Alt+6"
+    ],
+    "openOrbit": [
+      "Ctrl+."
+    ],
+    "nextThreadNeedingAttention": [
+      "Ctrl+Alt+A"
+    ],
+    "previousTab": [
+      "Ctrl+Shift+Tab",
+      "Ctrl+Shift+[",
+      "Ctrl+PageUp"
+    ],
+    "previousThread": [
+      "Ctrl+Shift+[",
+      "Ctrl+PageUp"
+    ],
+    "previousRecentThread": [
+      "Ctrl+Shift+Tab"
+    ],
+    "nextTab": [
+      "Ctrl+Tab",
+      "Ctrl+Shift+]",
+      "Ctrl+PageDown"
+    ],
+    "nextThread": [
+      "Ctrl+Shift+]",
+      "Ctrl+PageDown"
+    ],
+    "nextRecentThread": [
+      "Ctrl+Tab"
+    ],
+    "recentThread1": [
+      "Ctrl+Alt+1"
+    ],
+    "recentThread2": [
+      "Ctrl+Alt+2"
+    ],
+    "recentThread3": [
+      "Ctrl+Alt+3"
+    ],
+    "recentThread4": [
+      "Ctrl+Alt+4",
+      "Ctrl+Shift+9"
+    ],
+    "recentThread5": [
+      "Ctrl+Alt+5",
+      "Ctrl+Shift+8"
+    ],
+    "recentThread6": [
+      "Ctrl+Alt+6"
+    ],
+    "focusTab1": [
+      "Ctrl+1",
+      "Alt+1"
+    ],
+    "focusTab2": [
+      "Ctrl+2",
+      "Alt+2"
+    ],
+    "focusTab3": [
+      "Ctrl+3",
+      "Alt+3"
+    ],
+    "focusTab4": [
+      "Ctrl+4",
+      "Alt+4"
+    ],
+    "focusTab5": [
+      "Ctrl+5",
+      "Alt+5"
+    ],
+    "focusTab6": [
+      "Ctrl+6",
+      "Alt+6"
+    ],
+    "focusTab7": [
+      "Ctrl+7",
+      "Alt+7"
+    ],
+    "focusTab8": [
+      "Ctrl+8",
+      "Alt+8"
+    ],
+    "focusTab9": [
+      "Ctrl+9",
+      "Alt+9"
+    ],
+    "switchToMode1": [
+      "Alt+1"
+    ],
+    "switchToMode2": [
+      "Alt+2"
+    ],
+    "switchToMode3": [
+      "Alt+3"
+    ],
+    "settings": [
+      "Ctrl+,"
+    ],
+    "showKeyboardShortcuts": [
+      "Ctrl+/"
+    ],
+    "clearAllUnreads": [
+      "Shift+Escape"
+    ],
+    "openFolder": [
+      "Ctrl+O"
+    ],
+    "toggleSidebar": [
+      "Ctrl+Shift+S",
+      "Ctrl+B"
+    ],
+    "toggleFileTreePanel": [
+      "Ctrl+Shift+E"
+    ],
+    "toggleBottomPanel": [
+      "Ctrl+J"
+    ],
+    "toggleTerminal": [
+      "Control+`"
+    ],
+    "openBrowserTab": [
+      "Ctrl+T"
+    ],
+    "closeOtherTabs": [
+      "Ctrl+Alt+W"
+    ],
+    "showWorkspaceTabView": [
+      "Ctrl+Shift+F"
+    ],
+    "stepWorkspaceLayout": [
+      "Ctrl+Shift+B"
+    ],
+    "openReviewTab": [
+      "Ctrl+Shift+G"
+    ],
+    "toggleSidePanel": [
+      "Ctrl+Alt+B"
+    ],
+    "file.goToDefinition": [
+      "Ctrl+]"
+    ],
+    "findInThread": [
+      "Ctrl+F"
+    ],
+    "goToLine": [
+      "Ctrl+L"
+    ],
+    "focusBrowserAddressBar": [
+      "Ctrl+L"
+    ],
+    "navigateBrowserBack": [
+      "Alt+Left"
+    ],
+    "navigateBrowserForward": [
+      "Alt+Right"
+    ],
+    "navigateBack": [
+      "Ctrl+[",
+      "MouseBack"
+    ],
+    "navigateForward": [
+      "Ctrl+]",
+      "MouseForward"
+    ],
+    "environmentAction1": [
+      "Command+Shift+D"
+    ],
+    "thread1": [
+      "Ctrl+1",
+      "Alt+1"
+    ],
+    "thread2": [
+      "Ctrl+2",
+      "Alt+2"
+    ],
+    "thread3": [
+      "Ctrl+3",
+      "Alt+3"
+    ],
+    "thread4": [
+      "Ctrl+4",
+      "Alt+4"
+    ],
+    "thread5": [
+      "Ctrl+5",
+      "Alt+5"
+    ],
+    "thread6": [
+      "Ctrl+6",
+      "Alt+6"
+    ],
+    "thread7": [
+      "Ctrl+7",
+      "Alt+7"
+    ],
+    "thread8": [
+      "Ctrl+8",
+      "Alt+8"
+    ],
+    "thread9": [
+      "Ctrl+9",
+      "Alt+9"
+    ],
+    "copyConversationPath": [
+      "Ctrl+Alt+Shift+C"
+    ],
+    "copyDeeplink": [
+      "Ctrl+Alt+L"
+    ],
+    "copyWorkingDirectory": [
+      "Ctrl+Shift+C"
+    ],
+    "closeTab": [
+      "Ctrl+W",
+      "Ctrl+F4"
+    ],
+    "closeWindow": [
+      "Ctrl+W",
+      "Ctrl+F4"
+    ],
+    "reloadBrowserPage": [
+      "Ctrl+R"
+    ],
+    "hardReloadBrowserPage": [
+      "Ctrl+Shift+R"
+    ],
+    "openCommandMenu": [
+      "Ctrl+K",
+      "Ctrl+Shift+P"
+    ],
+    "searchFiles": [
+      "Ctrl+P"
+    ],
+    "renameThread": [
+      "Ctrl+Alt+R"
+    ]
+  },
+  "validatedAt": "2026-10-06"
+}

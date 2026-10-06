@@ -13,6 +13,7 @@ public static class DesktopTaskBridgeProtocol
     public const string ListTasksMethod = "threads.list";
     public const string ReadTaskMethod = "threads.read";
     public const string SendMessageMethod = "threads.send";
+    public const string ReleaseTaskMethod = "threads.release";
 }
 
 public sealed record DesktopTaskBridgeRequest(

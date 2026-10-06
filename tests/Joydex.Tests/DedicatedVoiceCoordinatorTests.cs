@@ -108,6 +108,22 @@ public sealed class DedicatedVoiceCoordinatorTests
     }
 
     [Fact]
+    public async Task ReportsAnActiveCodexWriterAsARecoverableOwnershipConflict()
+    {
+        await using var coordinator = new DedicatedVoiceCoordinator(
+            _ => throw new CodexDedicatedVoiceOwnershipException(
+                "The Dedicated Voice Task already has an active writer."),
+            () => new FakeDeviceTransport(),
+            _ => { });
+
+        var result = await coordinator.StartAsync();
+
+        Assert.Equal(VoiceSessionStartStatus.OwnershipConflict, result.Status);
+        Assert.Contains("active writer", result.Message, StringComparison.Ordinal);
+        Assert.False(coordinator.IsSessionActive);
+    }
+
+    [Fact]
     public async Task ForwardsTypedSpeakerLifecycleSignalsToTheDevice()
     {
         var media = new FakeMediaSession();
@@ -388,6 +404,27 @@ public sealed class DedicatedVoiceCoordinatorTests
         Assert.True(media.Disposed);
         Assert.True(device.Disposed);
         await Assert.ThrowsAsync<ObjectDisposedException>(() => coordinator.StartAsync());
+    }
+
+    [Fact]
+    public async Task HangupCancelsAnInProgressDeviceOpenAndReleasesItsMedia()
+    {
+        var media = new FakeMediaSession();
+        var device = new FakeDeviceTransport { BlockOpen = true };
+        await using var coordinator = new DedicatedVoiceCoordinator(
+            _ => Task.FromResult<IVoiceDuplexAudioSession>(media),
+            () => device,
+            _ => { });
+
+        var start = coordinator.StartAsync();
+        await device.OpenStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await coordinator.StopActiveAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        var result = await start.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(VoiceSessionStartStatus.Canceled, result.Status);
+        Assert.True(media.Disposed);
+        Assert.True(device.Disposed);
+        Assert.False(coordinator.IsSessionActive);
     }
 
     [Fact]

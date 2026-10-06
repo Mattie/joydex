@@ -1529,6 +1529,11 @@ public sealed class PebbleIndexTests : IDisposable
             Delivered.TrySetResult();
             return Task.FromResult(new DesktopTaskDeliveryResult(selected.Id, selected.HostId, selected.Title, false, "Delivered."));
         }
+        public Task ReleaseTaskAsync(
+            string sourceThreadId,
+            DesktopTaskSummary selected,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 
     private sealed class RecordingRuntime : IAsyncDisposable

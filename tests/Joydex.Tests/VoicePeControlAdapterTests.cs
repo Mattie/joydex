@@ -289,6 +289,23 @@ public sealed class VoicePeControlAdapterTests
     }
 
     [Fact]
+    public async Task WriterConflictReturnsTheDeviceToArmed()
+    {
+        var transport = new FakeTransport();
+        await using var adapter = new VoicePeControlAdapter(
+            transport,
+            _ => Task.FromResult(new VoiceSessionStartResult(
+                VoiceSessionStartStatus.OwnershipConflict,
+                "already has an active writer")),
+            _ => { });
+        adapter.Start();
+
+        await transport.TriggerAsync();
+
+        Assert.Equal([VoicePeSessionState.Armed], transport.SessionStates);
+    }
+
+    [Fact]
     public async Task DuplicateWakePreservesStartingOrListeningUntilALifecycleMarkerArrives()
     {
         var transport = new FakeTransport();
@@ -326,6 +343,38 @@ public sealed class VoicePeControlAdapterTests
         await transport.TriggerAsync(VoicePeControlSignal.Hangup);
 
         Assert.Equal(1, stops);
+    }
+
+    [Fact]
+    public async Task HangupInterruptsAStartWithoutWaitingForItToFinish()
+    {
+        var transport = new FakeTransport();
+        var starting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stops = 0;
+        var adapter = new VoicePeControlAdapter(
+            transport,
+            async token =>
+            {
+                starting.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                return new VoiceSessionStartResult(VoiceSessionStartStatus.Confirmed, "ready");
+            },
+            _ => { },
+            stopVoice: _ =>
+            {
+                stops++;
+                return Task.CompletedTask;
+            });
+        adapter.Start();
+
+        await transport.TriggerAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        await starting.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await transport.TriggerAsync(VoicePeControlSignal.Hangup).WaitAsync(TimeSpan.FromSeconds(2));
+        await adapter.DisposeAsync();
+
+        Assert.Equal(1, stops);
+        Assert.DoesNotContain(VoicePeSessionState.Listening, transport.SessionStates);
+        Assert.Equal(VoicePeSessionState.Armed, transport.SessionStates[^1]);
     }
 
     [Fact]

@@ -1,7 +1,5 @@
 using Joydex.Core.Config;
-using Joydex.Core.Mapping;
 using Joydex.Core.Voice;
-using Joydex.Windows.Actions;
 using Joydex.Windows.Voice;
 
 namespace Joydex.Tests;
@@ -14,194 +12,64 @@ public sealed class PinnedVoiceCoordinatorTests
         PinnedTaskId: "01900000-0000-7000-8000-000000000001",
         PinnedTaskLabel: "Codex Voice Chat");
 
-    [Fact]
-    public async Task OpensPinnedTaskBeforeExecutingResolvedVoiceAction()
+    [Theory]
+    [InlineData(VoicePeSessionMode.LastVoiceFallback)]
+    [InlineData(VoicePeSessionMode.JoydexOwner)]
+    public async Task RealNativeWakeRejectsWithoutAnyRoutingOrInputDependencies(VoicePeSessionMode mode)
     {
-        var events = new List<string>();
-        ActionRequest? action = null;
-        var coordinator = new PinnedVoiceCoordinator(
-            new SafetyOptions { DryRun = false },
-            _ => { },
-            new StubNavigator((_, _) =>
-            {
-                events.Add("navigate");
-                return Task.FromResult(true);
-            }),
-            (request, _) =>
-            {
-                events.Add("voice");
-                action = request;
-                return Task.FromResult(ActionExecutionResult.Success("started"));
-            },
-            new FixedGuard(true));
+        var coordinator = new PinnedVoiceCoordinator(new SafetyOptions { DryRun = false }, _ => { });
 
-        var result = await coordinator.StartAsync(EnabledPreferences);
+        var result = await coordinator.StartAsync(EnabledPreferences with { SessionMode = mode });
 
-        Assert.Equal(PinnedVoiceStartStatus.Requested, result.Status);
-        Assert.Equal(["navigate", "voice"], events);
-        Assert.Equal(CodexAction.StartVoiceChat, action?.Action);
-        Assert.Equal("voice-pe", action?.DeviceId);
+        Assert.Equal(PinnedVoiceStartStatus.ActionBlocked, result.Status);
+        Assert.False(result.Accepted);
+        Assert.Contains(PinnedVoiceCoordinator.UnavailableMessage, result.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task DryRunDescribesCompositeWithoutNavigationOrInput()
+    public async Task DryRunDescribesCompositeWithoutAcquiringWriterOrMedia()
     {
-        var navigated = false;
-        var executed = false;
-        var coordinator = new PinnedVoiceCoordinator(
-            new SafetyOptions { DryRun = true },
-            _ => { },
-            new StubNavigator((_, _) =>
-            {
-                navigated = true;
-                return Task.FromResult(true);
-            }),
-            (_, _) =>
-            {
-                executed = true;
-                return Task.FromResult(ActionExecutionResult.Success("started"));
-            });
-
-        var result = await coordinator.StartAsync(EnabledPreferences);
-
-        Assert.Equal(PinnedVoiceStartStatus.Simulated, result.Status);
-        Assert.False(navigated);
-        Assert.False(executed);
-        Assert.Contains("Codex Voice Chat", result.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task ManualRoutingCanaryDoesNotRequireAConfiguredDeviceEndpoint()
-    {
-        var coordinator = new PinnedVoiceCoordinator(
-            new SafetyOptions { DryRun = true },
-            _ => { },
-            new StubNavigator((_, _) => Task.FromResult(true)),
-            (_, _) => Task.FromResult(ActionExecutionResult.Success("started")));
+        var coordinator = new PinnedVoiceCoordinator(new SafetyOptions { DryRun = true }, _ => { });
 
         var result = await coordinator.StartAsync(EnabledPreferences with { DeviceEndpoint = "" });
 
         Assert.Equal(PinnedVoiceStartStatus.Simulated, result.Status);
+        Assert.True(result.Accepted);
+        Assert.Contains("Codex Voice Chat", result.Message, StringComparison.Ordinal);
+        Assert.Contains("real native route unavailable", result.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task NavigationFailureNeverSendsVoiceShortcut()
+    public async Task RejectedStartsDoNotLeaveALatchThatBlocksLaterWakes()
     {
-        var executed = false;
-        var coordinator = new PinnedVoiceCoordinator(
-            new SafetyOptions { DryRun = false },
-            _ => { },
-            new StubNavigator((_, _) => Task.FromResult(false)),
-            (_, _) =>
-            {
-                executed = true;
-                return Task.FromResult(ActionExecutionResult.Success("started"));
-            });
+        var coordinator = new PinnedVoiceCoordinator(new SafetyOptions { DryRun = false }, _ => { });
 
-        var result = await coordinator.StartAsync(EnabledPreferences);
-
-        Assert.Equal(PinnedVoiceStartStatus.NavigationFailed, result.Status);
-        Assert.False(executed);
+        Assert.Equal(PinnedVoiceStartStatus.ActionBlocked, (await coordinator.StartAsync(EnabledPreferences)).Status);
+        Assert.Equal(PinnedVoiceStartStatus.ActionBlocked, (await coordinator.StartAsync(EnabledPreferences)).Status);
     }
 
     [Fact]
-    public async Task AcceptedSessionBlocksEveryStartPathUntilLogObserverConfirmsStop()
+    public async Task DiagnosticFailureStillReleasesTheStartGate()
     {
-        var executions = 0;
-        var coordinator = new PinnedVoiceCoordinator(
-            new SafetyOptions { DryRun = false },
-            _ => { },
-            new StubNavigator((_, _) => Task.FromResult(true)),
-            (_, _) =>
-            {
-                executions++;
-                return Task.FromResult(ActionExecutionResult.Success("started"));
-            },
-            new FixedGuard(true));
+        var calls = 0;
+        var coordinator = new PinnedVoiceCoordinator(new SafetyOptions { DryRun = false }, _ =>
+        {
+            if (++calls == 1) throw new InvalidOperationException("diagnostic sink");
+        });
 
-        var first = await coordinator.StartAsync(EnabledPreferences);
-        var blocked = await coordinator.StartAsync(EnabledPreferences);
-        var ended = coordinator.ConfirmSessionEnded();
-        var afterStop = await coordinator.StartAsync(EnabledPreferences);
-
-        Assert.Equal(PinnedVoiceStartStatus.Requested, first.Status);
-        Assert.Equal(PinnedVoiceStartStatus.SessionActive, blocked.Status);
-        Assert.True(ended);
-        Assert.Equal(PinnedVoiceStartStatus.Requested, afterStop.Status);
-        Assert.Equal(2, executions);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.StartAsync(EnabledPreferences));
+        Assert.Equal(PinnedVoiceStartStatus.ActionBlocked, (await coordinator.StartAsync(EnabledPreferences)).Status);
     }
 
     [Fact]
-    public async Task UnconfirmedAcceptedStartReleasesLatchAfterBoundedTimeout()
+    public async Task DisabledAndInvalidRoutesStillReportConfigurationErrors()
     {
-        var expiration = new TaskCompletionSource();
-        var laterExpiration = new TaskCompletionSource();
-        var timeoutObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var scheduledTimeouts = 0;
-        var executions = 0;
-        var coordinator = new PinnedVoiceCoordinator(
-            new SafetyOptions { DryRun = false },
-            message =>
-            {
-                if (message.StartsWith("TIMED OUT", StringComparison.Ordinal))
-                {
-                    timeoutObserved.TrySetResult();
-                }
-            },
-            new StubNavigator((_, _) => Task.FromResult(true)),
-            (_, _) =>
-            {
-                executions++;
-                return Task.FromResult(ActionExecutionResult.Success("started"));
-            },
-            new FixedGuard(true),
-            (_, _) => Interlocked.Increment(ref scheduledTimeouts) == 1
-                ? expiration.Task
-                : laterExpiration.Task,
-            startConfirmationTimeout: TimeSpan.FromSeconds(20));
+        var coordinator = new PinnedVoiceCoordinator(new SafetyOptions { DryRun = true }, _ => { });
 
-        Assert.Equal(PinnedVoiceStartStatus.Requested, (await coordinator.StartAsync(EnabledPreferences)).Status);
-        Assert.Equal(PinnedVoiceStartStatus.SessionActive, (await coordinator.StartAsync(EnabledPreferences)).Status);
-
-        expiration.SetResult();
-
-        await timeoutObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.Equal(PinnedVoiceStartStatus.Requested, (await coordinator.StartAsync(EnabledPreferences)).Status);
-        Assert.Equal(2, executions);
-    }
-
-    [Fact]
-    public async Task StartConfirmationPreventsTimeoutFromReleasingActiveSession()
-    {
-        var expiration = new TaskCompletionSource();
-        var coordinator = new PinnedVoiceCoordinator(
-            new SafetyOptions { DryRun = false },
-            _ => { },
-            new StubNavigator((_, _) => Task.FromResult(true)),
-            (_, _) => Task.FromResult(ActionExecutionResult.Success("started")),
-            new FixedGuard(true),
-            (_, _) => expiration.Task,
-            startConfirmationTimeout: TimeSpan.FromSeconds(20));
-
-        Assert.Equal(PinnedVoiceStartStatus.Requested, (await coordinator.StartAsync(EnabledPreferences)).Status);
-        Assert.True(coordinator.ConfirmSessionStarted());
-
-        expiration.SetResult();
-
-        Assert.Equal(PinnedVoiceStartStatus.SessionActive, (await coordinator.StartAsync(EnabledPreferences)).Status);
-        Assert.True(coordinator.ConfirmSessionEnded());
-    }
-
-    private sealed class StubNavigator(
-        Func<string, CancellationToken, Task<bool>> navigate) : IPinnedVoiceTargetNavigator
-    {
-        public Task<bool> NavigateAsync(string taskId, CancellationToken cancellationToken) =>
-            navigate(taskId, cancellationToken);
-    }
-
-    private sealed class FixedGuard(bool allowed) : IForegroundProcessGuard
-    {
-        public ForegroundCheck Check(SafetyOptions safety, bool actionMayBringCodexForward) =>
-            new(allowed, allowed ? "Codex" : "test", allowed ? "allowed" : "blocked");
+        Assert.Equal(PinnedVoiceStartStatus.Disabled,
+            (await coordinator.StartAsync(EnabledPreferences with { Enabled = false })).Status);
+        Assert.Equal(PinnedVoiceStartStatus.InvalidConfiguration,
+            (await coordinator.StartAsync(EnabledPreferences with { PinnedTaskId = "" })).Status);
+        Assert.Equal(PinnedVoiceStartStatus.Simulated, (await coordinator.StartAsync(EnabledPreferences)).Status);
     }
 }

@@ -102,7 +102,7 @@ internal sealed class RoomVoiceForm : ThemedForm
     private readonly Label _state = new() { AutoSize = true };
     private readonly Label _status = new() { AutoSize = true, Tag = ThemeTone.Subtle };
     private readonly FlowLayoutPanel _indicators = new() { AutoSize = true, WrapContents = true };
-    private readonly Label _ownerIndicator = Indicator("Owner", ready: false);
+    private readonly Label _ownerIndicator = Indicator("Voice route", ready: false);
     private readonly Label _microphoneIndicator = Indicator("Microphone", ready: false);
     private readonly Label _transcriptIndicator = Indicator("Transcript", ready: false);
     private readonly Label _speakerIndicator = Indicator("Speaker", ready: false);
@@ -667,7 +667,7 @@ internal sealed class RoomVoiceForm : ThemedForm
             _status.Text = statusText;
         }
 
-        UpdateIndicator(_ownerIndicator, "Owner", snapshot.OwnerReady);
+        UpdateIndicator(_ownerIndicator, "Voice route", snapshot.OwnerReady);
         UpdateIndicator(
             _microphoneIndicator,
             "Microphone",

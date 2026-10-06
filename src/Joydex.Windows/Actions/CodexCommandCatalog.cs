@@ -23,6 +23,8 @@ internal static class CodexCommandCatalog
     {
         "newThread" => "newTask",
         "toggleSidePanelFullWidth" => "toggleMaximizeSidePanel",
+        "focusQuickChat" => "openAvatarOverlay",
+        "toggleBrowserPanel" => "stepWorkspaceLayout",
         _ => commandId,
     };
 
@@ -47,12 +49,12 @@ internal static class CodexCommandCatalog
 
     private static IEnumerable<CodexCommandDescriptor> CreateCommands()
     {
-        yield return new(CodexAction.Agent1, "thread1", ["Ctrl+1"]);
-        yield return new(CodexAction.Agent2, "thread2", ["Ctrl+2"]);
-        yield return new(CodexAction.Agent3, "thread3", ["Ctrl+3"]);
-        yield return new(CodexAction.Agent4, "thread4", ["Ctrl+4"]);
-        yield return new(CodexAction.Agent5, "thread5", ["Ctrl+5"]);
-        yield return new(CodexAction.Agent6, "thread6", ["Ctrl+6"]);
+        yield return new(CodexAction.Agent1, "thread1", [], "Ctrl+Alt+Shift+F1");
+        yield return new(CodexAction.Agent2, "thread2", [], "Ctrl+Alt+Shift+F2");
+        yield return new(CodexAction.Agent3, "thread3", [], "Ctrl+Alt+Shift+F3");
+        yield return new(CodexAction.Agent4, "thread4", [], "Ctrl+Alt+Shift+F4");
+        yield return new(CodexAction.Agent5, "thread5", [], "Ctrl+Alt+Shift+F5");
+        yield return new(CodexAction.Agent6, "thread6", [], "Ctrl+Alt+Shift+F6");
         yield return new(CodexAction.ToggleFastMode, "composer.toggleFastMode", [], "Ctrl+Alt+Shift+F7");
         yield return new(CodexAction.Approve, "approval.approve", ["Enter"]);
         yield return new(CodexAction.Reject, "approval.decline", ["Escape"]);
@@ -77,15 +79,15 @@ internal static class CodexCommandCatalog
             "Ctrl+Alt+PageDown");
         yield return new(CodexAction.ArchiveChat, "archiveThread", ["Ctrl+Shift+A"]);
         yield return new(CodexAction.NewTask, "newTask", ["Ctrl+N", "Ctrl+Shift+O"]);
-        yield return new(CodexAction.SideConversation, "openSideChat", []);
-        yield return new(CodexAction.PreviousTask, "previousThread", ["Ctrl+Shift+[", "Ctrl+PageUp"]);
-        yield return new(CodexAction.NextTask, "nextThread", ["Ctrl+Shift+]", "Ctrl+PageDown"]);
+        yield return new(CodexAction.SideConversation, "openSideChat", ["Ctrl+Alt+S"]);
+        yield return new(CodexAction.PreviousTask, "previousThread", [], "Ctrl+Alt+Shift+PageUp");
+        yield return new(CodexAction.NextTask, "nextThread", [], "Ctrl+Alt+Shift+PageDown");
         yield return new(CodexAction.NavigateBack, "navigateBack", ["Ctrl+[", "MouseBack"]);
         yield return new(CodexAction.NavigateForward, "navigateForward", ["Ctrl+]", "MouseForward"]);
-        yield return new(CodexAction.ToggleSidebar, "toggleSidebar", ["Ctrl+B"]);
+        yield return new(CodexAction.ToggleSidebar, "toggleSidebar", ["Ctrl+Shift+S", "Ctrl+B"]);
         yield return new(CodexAction.ToggleReviewPanel, "toggleSidePanel", ["Ctrl+Alt+B"]);
         yield return new(CodexAction.OpenSkills, "openSkills", [], "Ctrl+Alt+Shift+S");
-        yield return new(CodexAction.StartVoiceChat, "composer.startVoiceMode", ["Ctrl+Shift+V"]);
+        yield return new(CodexAction.StartVoiceChat, "composer.startVoiceMode", []);
         yield return new(CodexAction.EndVoiceChat, "realtimeVoice.endCall", []);
         yield return new(CodexAction.ToggleVoiceChatMicrophone, "realtimeVoice.toggleMicrophoneMute", []);
         yield return new(CodexAction.OpenWorkingDirectory, "copyWorkingDirectory", ["Ctrl+Shift+C"]);

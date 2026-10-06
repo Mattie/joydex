@@ -53,7 +53,9 @@ attended operations outside this repository's supported build command.
 - `WakeBlip.flac` acknowledges a recognized wake word.
 - `ReadyBlip.flac` plays after Codex Realtime and both media paths are ready.
 - `EndBlip.flac` plays after a session that reached Listening or Muted ends.
-- A short center-button press ends an active session.
+- In Joydex-owned mode, a short center-button press cancels a session while it
+  is connecting or ends an active session. The waiting ring clears immediately
+  when canceling.
 - Holding the center button for one second toggles mute. Muted sessions use a
   yellow ring; active unmuted sessions use white.
 - **Configure → Room Voice** can update the wake threshold without rebuilding

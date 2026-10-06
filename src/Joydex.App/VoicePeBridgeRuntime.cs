@@ -6,18 +6,19 @@ using Joydex.Windows.Voice;
 namespace Joydex.App;
 
 /// <summary>
-/// Owns either the dedicated App Server voice route or the explicit native LASTVOICE fallback.
+/// Owns the dedicated App Server voice route or device control for unavailable/simulated native fallback.
 /// </summary>
 internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
 {
     private readonly VoicePeControlAdapter _adapter;
-    private readonly CodexVoiceSessionObserver? _fallbackObserver;
     private readonly DedicatedVoiceCoordinator? _dedicatedCoordinator;
-    private readonly CodexDedicatedVoiceOwner? _owner;
     private readonly VoiceMediaStaHost? _mediaSta;
     private readonly VoiceRuntimeAsyncGate? _publicationGate;
     private readonly VoiceSessionArchiveState? _sessionArchiveState;
+    private readonly CodexVoiceConversationReader? _conversationReader;
     private readonly RoomVoiceConversationModel _conversation;
+    private readonly VoicePeSessionMode _mode;
+    private readonly bool _fallbackSimulation;
     private readonly Action<string> _log;
     private readonly Task _ownerCompletion;
     private readonly object _disposeGate = new();
@@ -25,36 +26,33 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
 
     private VoicePeBridgeRuntime(
         VoicePeControlAdapter adapter,
-        CodexVoiceSessionObserver? fallbackObserver,
         DedicatedVoiceCoordinator? dedicatedCoordinator,
-        CodexDedicatedVoiceOwner? owner,
         VoiceMediaStaHost? mediaSta,
         VoiceRuntimeAsyncGate? publicationGate,
         VoiceSessionArchiveState? sessionArchiveState,
+        CodexVoiceConversationReader? conversationReader,
         RoomVoiceConversationModel conversation,
-        Action<string> log)
+        Action<string> log,
+        VoicePeSessionMode mode,
+        Task ownerCompletion,
+        bool fallbackSimulation = false)
     {
         _adapter = adapter;
-        _fallbackObserver = fallbackObserver;
         _dedicatedCoordinator = dedicatedCoordinator;
-        _owner = owner;
         _mediaSta = mediaSta;
         _publicationGate = publicationGate;
         _sessionArchiveState = sessionArchiveState;
+        _conversationReader = conversationReader;
         _conversation = conversation;
+        _mode = mode;
+        _fallbackSimulation = fallbackSimulation;
         _log = log;
-        _ownerCompletion = owner is null
-            ? Task.CompletedTask
-            : mediaSta is null
-                ? owner.Completion
-                : ObserveFirstCompletionAsync(owner.Completion, mediaSta.Completion);
+        _ownerCompletion = ownerCompletion ?? throw new ArgumentNullException(nameof(ownerCompletion));
     }
 
-    public VoicePeSessionMode Mode => _owner is null
-        ? VoicePeSessionMode.LastVoiceFallback
-        : VoicePeSessionMode.JoydexOwner;
+    public VoicePeSessionMode Mode => _mode;
 
-    public bool OwnerReady => _owner?.IsReady == true
+    public bool OwnerReady => _mode == VoicePeSessionMode.JoydexOwner
         && _mediaSta?.Completion.IsCompleted == false;
 
     public bool IsSessionActive => _dedicatedCoordinator?.IsSessionActive == true;
@@ -139,7 +137,8 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 fallbackCoordinator,
                 endpoint,
                 conversation,
-                runtimeLog),
+                runtimeLog,
+                simulate: safety.DryRun),
             VoicePeSessionMode.JoydexOwner => await StartOwnerAsync(
                     normalized,
                     safety,
@@ -233,18 +232,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
             TryLog($"Could not complete the active Voice Session archive: {exception.Message}");
         }
 
-        if (_fallbackObserver is not null)
-        {
-            try
-            {
-                await _fallbackObserver.DisposeAsync().ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                TryLog($"Could not stop the Codex Voice session observer: {exception.Message}");
-            }
-        }
-
         if (_dedicatedCoordinator is null)
         {
             try
@@ -254,19 +241,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
             catch (Exception exception)
             {
                 TryLog($"Could not stop the Voice PE control adapter: {exception.Message}");
-            }
-        }
-
-        if (_owner is not null)
-        {
-            try
-            {
-                await _owner.DisposeAsync().ConfigureAwait(false);
-            }
-            catch (Exception exception)
-            {
-                TryLog($"Could not release the Dedicated Voice Task owner: {exception.Message}");
-                (ownershipFailures ??= []).Add(exception);
             }
         }
 
@@ -311,13 +285,13 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
 
     public async Task RefreshConversationAsync(CancellationToken cancellationToken = default)
     {
-        if (_owner is null)
+        if (_conversationReader is null)
         {
-            _conversation.SetFallbackState(enabled: true);
+            _conversation.SetFallbackState(enabled: true, dryRun: _fallbackSimulation);
             return;
         }
 
-        var entries = await _owner.ReadThreadAsync(cancellationToken).ConfigureAwait(false);
+        var entries = await _conversationReader.ReadAsync(cancellationToken).ConfigureAwait(false);
         _conversation.ReplaceHistory(entries);
     }
 
@@ -326,7 +300,8 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         PinnedVoiceCoordinator coordinator,
         Uri endpoint,
         RoomVoiceConversationModel conversation,
-        Action<string> log)
+        Action<string> log,
+        bool simulate)
     {
         var transport = new EspHomeVoicePeTransport(endpoint, log);
         var adapter = new VoicePeControlAdapter(
@@ -335,45 +310,22 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 await coordinator.StartAsync(preferences, cancellationToken).ConfigureAwait(false)),
             log);
         adapter.Start();
-        conversation.SetFallbackState(enabled: true);
-
-        CodexVoiceSessionObserver? observer = null;
-        var logRoot = CodexVoiceSessionObserver.FindDefaultLogRoot();
-        if (logRoot is null)
-        {
-            log("Codex Voice log directory was not found; native LASTVOICE will use the bounded start-confirmation timeout.");
-        }
-        else
-        {
-            observer = new CodexVoiceSessionObserver(
-                logRoot,
-                async (marker, cancellationToken) =>
-                {
-                    if (marker == CodexVoiceLogMarker.Stopped && coordinator.ConfirmSessionEnded())
-                    {
-                        await adapter.ConfirmSessionEndedAsync(cancellationToken).ConfigureAwait(false);
-                    }
-                    else if (marker == CodexVoiceLogMarker.Started && coordinator.ConfirmSessionStarted())
-                    {
-                        await adapter.ConfirmSessionStartedAsync(cancellationToken).ConfigureAwait(false);
-                    }
-                },
-                log);
-            observer.Start();
-            log("Codex Voice session observer started at end-of-log for native LASTVOICE.");
-        }
-
-        log($"Voice PE native LASTVOICE fallback started for {endpoint.Host}:{endpoint.Port}.");
+        conversation.SetFallbackState(enabled: true, dryRun: simulate);
+        log(simulate
+            ? $"Voice PE dry-run simulation started for {endpoint.Host}:{endpoint.Port}."
+            : PinnedVoiceCoordinator.UnavailableMessage);
         return new VoicePeBridgeRuntime(
             adapter,
-            observer,
             null,
             null,
             null,
             null,
             null,
             conversation,
-            log);
+            log,
+            VoicePeSessionMode.LastVoiceFallback,
+            Task.CompletedTask,
+            fallbackSimulation: simulate);
     }
 
     private static async Task<VoicePeBridgeRuntime> StartOwnerAsync(
@@ -397,7 +349,8 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 fallbackCoordinator,
                 endpoint,
                 conversation,
-                log);
+                log,
+                simulate: true);
         }
 
         using (var device = new EspHomeVoicePeTuningClient(endpoint))
@@ -416,13 +369,12 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 preferences.DedicatedTaskId,
                 desktopTaskBridgePipeName)
             : null;
-        var owner = new CodexDedicatedVoiceOwner(
+        var conversationReader = new CodexVoiceConversationReader(
             preferences.DedicatedTaskId,
             preferences.CodexAppServerPath,
             preferences.AgentWorkspacePath,
-            preferences.RealtimeVoice,
-            log,
-            voiceTools);
+            log);
+        var desktopTaskBridge = new DesktopTaskBridgeClient(desktopTaskBridgePipeName);
         var sessionArchiveState = string.IsNullOrWhiteSpace(preferences.AgentWorkspacePath)
             ? null
             : new VoiceSessionArchiveState(preferences, log);
@@ -431,19 +383,20 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         VoicePeControlAdapter? adapter = null;
         DedicatedVoiceCoordinator? coordinator = null;
         IVoicePeControlTransport? unownedControlTransport = null;
+        var ownershipCompletion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
-            await owner.StartAsync(cancellationToken).ConfigureAwait(false);
             mediaSta = await VoiceMediaStaHost.StartAsync(cancellationToken).ConfigureAwait(false);
             publicationGate = new VoiceRuntimeAsyncGate();
             conversation.SetRuntimeState(
                 VoicePeSessionState.Armed,
                 ownerReady: true,
                 sessionActive: false,
-                "Room Voice is armed.");
+                "Room Voice is armed; the Codex chat is available in Desktop.");
             try
             {
-                conversation.ReplaceHistory(await owner.ReadThreadAsync(cancellationToken).ConfigureAwait(false));
+                conversation.ReplaceHistory(await conversationReader.ReadAsync(cancellationToken).ConfigureAwait(false));
             }
             catch (Exception exception)
             {
@@ -451,41 +404,118 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                     VoicePeSessionState.Armed,
                     ownerReady: true,
                     sessionActive: false,
-                    "Room Voice is armed; conversation history could not be loaded.",
+                    "Room Voice is armed; the Codex chat is available in Desktop, but its history could not be loaded.",
                     exception.Message);
             }
             coordinator = new DedicatedVoiceCoordinator(
                 mediaSessionFactory: async token =>
                 {
                     var archive = sessionArchiveState?.Current;
-                    var realtime = owner.CreateRealtimeSession();
-                    var media = new WebView2VoiceDuplexAudioSession(
-                        mediaSta,
-                        webViewDataDirectory,
-                        realtime.StartAsync,
-                        realtime.MarkMediaConnected,
-                        realtime.Ready,
-                        realtime.Completion,
-                        realtime.StopAsync,
-                        realtime.DisposeAsync,
-                        preferences.ConversationSpeakerGain,
-                        preferences.PreserveAssistantAudioDiagnostics,
-                        (kind, text, final) =>
-                        {
-                            conversation.UpdateLiveTranscript(kind, text, final);
-                            archive?.UpdateTranscript(kind, text, final);
-                        },
-                        conversation.AddActivity,
+                    CodexDedicatedVoiceOwner CreateOwner() => new(
+                        preferences.DedicatedTaskId,
+                        preferences.CodexAppServerPath,
+                        preferences.AgentWorkspacePath,
+                        preferences.RealtimeVoice,
                         log,
-                        archive?.AudioDirectory);
+                        voiceTools);
+
+                    CodexDedicatedVoiceOwner? owner = null;
+                    OwnedVoiceDuplexAudioSession? ownedMedia = null;
                     try
                     {
+                        owner = await AcquireWithIdleDesktopHandoffAsync(
+                                async acquireToken =>
+                                {
+                                    var candidate = CreateOwner();
+                                    try
+                                    {
+                                        await candidate.StartAsync(acquireToken).ConfigureAwait(false);
+                                        return candidate;
+                                    }
+                                    catch
+                                    {
+                                        await candidate.DisposeAsync().ConfigureAwait(false);
+                                        throw;
+                                    }
+                                },
+                                async releaseToken =>
+                                {
+                                    var desktopTask = await desktopTaskBridge.ResolveTaskAsync(
+                                            preferences.DedicatedTaskId,
+                                            preferences.DedicatedTaskId,
+                                            "local",
+                                            releaseToken)
+                                        .ConfigureAwait(false);
+                                    if (!desktopTask.Status.Equals("idle", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        throw new InvalidOperationException(
+                                            $"Codex reports the Room Voice chat as {desktopTask.Status}, so Joydex will not release it.");
+                                    }
+
+                                    await desktopTaskBridge.ReleaseTaskAsync(
+                                            preferences.DedicatedTaskId,
+                                            desktopTask,
+                                            releaseToken)
+                                        .ConfigureAwait(false);
+                                    log(
+                                        $"Joydex released Codex Desktop's idle writer for Dedicated Voice Task "
+                                        + $"{preferences.DedicatedTaskId} and restored the chat to the task list.");
+                                },
+                                token)
+                            .ConfigureAwait(false);
+                        conversation.ReplaceHistory(await owner.ReadThreadAsync(token).ConfigureAwait(false));
+                        var realtime = owner.CreateRealtimeSession();
+                        var media = new WebView2VoiceDuplexAudioSession(
+                            mediaSta,
+                            webViewDataDirectory,
+                            realtime.StartAsync,
+                            realtime.MarkMediaConnected,
+                            realtime.Ready,
+                            realtime.Completion,
+                            realtime.StopAsync,
+                            realtime.DisposeAsync,
+                            preferences.ConversationSpeakerGain,
+                            preferences.PreserveAssistantAudioDiagnostics,
+                            (kind, text, final) =>
+                            {
+                                conversation.UpdateLiveTranscript(kind, text, final);
+                                archive?.UpdateTranscript(kind, text, final);
+                            },
+                            conversation.AddActivity,
+                            log,
+                            archive?.AudioDirectory);
+                        ownedMedia = new OwnedVoiceDuplexAudioSession(
+                            media,
+                            owner,
+                            failure => ownershipCompletion.TrySetException(failure));
                         await media.StartAsync(token).ConfigureAwait(false);
-                        return media;
+                        log($"Joydex acquired Dedicated Voice Task {preferences.DedicatedTaskId} for this Voice Session.");
+                        return ownedMedia;
                     }
                     catch
                     {
-                        await media.DisposeAsync().ConfigureAwait(false);
+                        if (ownedMedia is not null)
+                        {
+                            await ownedMedia.DisposeAsync().ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            try
+                            {
+                                if (owner is not null)
+                                {
+                                    await owner.DisposeAsync().ConfigureAwait(false);
+                                }
+                            }
+                            catch (Exception cleanupFailure)
+                            {
+                                var ownershipFailure = new VoiceOwnershipCleanupException(
+                                    "Room Voice startup failed, and Joydex could not confirm release of its Codex task writer.",
+                                    [cleanupFailure]);
+                                ownershipCompletion.TrySetException(ownershipFailure);
+                                throw ownershipFailure;
+                            }
+                        }
                         throw;
                     }
                 },
@@ -525,7 +555,15 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                     {
                         if (archiveCreated)
                         {
-                            sessionArchiveState?.CompleteIfCurrent(archive, "rejected", result.Message);
+                            sessionArchiveState?.CompleteIfCurrent(
+                                archive,
+                                result.Status switch
+                                {
+                                    VoiceSessionStartStatus.Canceled => "canceled",
+                                    VoiceSessionStartStatus.OwnershipConflict => "ownership-conflict",
+                                    _ => "rejected",
+                                },
+                                result.Message);
                         }
                     }
                     ApplyStartResult(conversation, previousState, result);
@@ -556,33 +594,34 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 publicationGate.TryRun(token =>
                     RearmAfterOwnerSessionAsync(
                         adapter,
-                        owner,
+                        conversationReader,
                         conversation,
                         publicationGate,
                         log,
                         token));
             };
             // A process crash can close media without publishing the final Armed state.
-            // Owner startup has no live Voice Session, so restore the wakeable baseline.
+            // Runtime startup has no live Voice Session, so restore the wakeable baseline.
             await adapter.ConfirmSessionEndedAsync(cancellationToken).ConfigureAwait(false);
             adapter.Start();
 
             log(
-                $"Joydex owns Dedicated Voice Task {preferences.DedicatedTaskId}; "
+                $"Joydex will acquire Dedicated Voice Task {preferences.DedicatedTaskId} only during a Voice Session; "
                 + $"Voice PE control={endpoint.Host}:{endpoint.Port}, "
                 + $"microphone={endpoint.Host}:8765, speaker={endpoint.Host}:8927/Sendspin; "
                 + $"voice={(preferences.RealtimeVoice.Length == 0 ? "default" : preferences.RealtimeVoice)}, "
                 + $"speakerGain={preferences.ConversationSpeakerGain}x.");
             return new VoicePeBridgeRuntime(
                 adapter,
-                null,
                 coordinator,
-                owner,
                 mediaSta,
                 publicationGate,
                 sessionArchiveState,
+                conversationReader,
                 conversation,
-                log);
+                log,
+                VoicePeSessionMode.JoydexOwner,
+                ObserveFirstCompletionAsync(ownershipCompletion.Task, mediaSta.Completion));
         }
         catch (Exception startupException)
         {
@@ -590,7 +629,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                     publicationGate,
                     (IAsyncDisposable?)adapter ?? unownedControlTransport,
                     coordinator,
-                    owner,
                     mediaSta)
                 .ConfigureAwait(false);
 
@@ -607,7 +645,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
 
     private static async Task RearmAfterOwnerSessionAsync(
         VoicePeControlAdapter adapter,
-        CodexDedicatedVoiceOwner owner,
+        CodexVoiceConversationReader conversationReader,
         RoomVoiceConversationModel conversation,
         VoiceRuntimeAsyncGate publicationGate,
         Action<string> log,
@@ -622,14 +660,14 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                         VoicePeSessionState.Armed,
                         ownerReady: true,
                         sessionActive: false,
-                        "Room Voice is armed.",
+                        "Room Voice is armed; the Codex chat is available in Desktop.",
                         stale: true)))
             {
                 return;
             }
             try
             {
-                var entries = await owner.ReadThreadAsync(cancellationToken).ConfigureAwait(false);
+                var entries = await conversationReader.ReadAsync(cancellationToken).ConfigureAwait(false);
                 publicationGate.TryPublish(
                     cancellationToken,
                     () => conversation.ReplaceHistory(entries));
@@ -651,12 +689,6 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         }
     }
 
-    private static async Task ObserveFirstCompletionAsync(Task ownerCompletion, Task mediaCompletion)
-    {
-        var completed = await Task.WhenAny(ownerCompletion, mediaCompletion).ConfigureAwait(false);
-        await completed.ConfigureAwait(false);
-    }
-
     private static VoiceSessionStartResult MapFallbackResult(PinnedVoiceStartResult result) =>
         new(
             result.Status switch
@@ -668,6 +700,12 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 _ => VoiceSessionStartStatus.Rejected,
             },
             result.Message);
+
+    private static async Task ObserveFirstCompletionAsync(Task ownershipCompletion, Task mediaCompletion)
+    {
+        var completed = await Task.WhenAny(ownershipCompletion, mediaCompletion).ConfigureAwait(false);
+        await completed.ConfigureAwait(false);
+    }
 
     internal static void ApplyStartResult(
         RoomVoiceConversationModel conversation,
@@ -693,6 +731,26 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
             return;
         }
 
+        if (result.Status == VoiceSessionStartStatus.Canceled)
+        {
+            conversation.SetRuntimeState(
+                VoicePeSessionState.Armed,
+                ownerReady: true,
+                sessionActive: false,
+                "Room Voice is armed; the Codex chat is available in Desktop.");
+            return;
+        }
+
+        if (result.Status == VoiceSessionStartStatus.OwnershipConflict)
+        {
+            conversation.SetRuntimeState(
+                VoicePeSessionState.Armed,
+                ownerReady: true,
+                sessionActive: false,
+                "Codex kept the voice chat loaded and the automatic handoff failed. Restart Codex, then wake Room Voice again.");
+            return;
+        }
+
         if (!result.Accepted)
         {
             conversation.SetRuntimeState(
@@ -701,6 +759,38 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 sessionActive: false,
                 "The voice session could not start.",
                 result.Message);
+        }
+    }
+
+    internal static async Task<T> AcquireWithIdleDesktopHandoffAsync<T>(
+        Func<CancellationToken, Task<T>> acquire,
+        Func<CancellationToken, Task> releaseIdleDesktopTask,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(acquire);
+        ArgumentNullException.ThrowIfNull(releaseIdleDesktopTask);
+        try
+        {
+            return await acquire(cancellationToken).ConfigureAwait(false);
+        }
+        catch (CodexDedicatedVoiceOwnershipException ownershipConflict)
+        {
+            try
+            {
+                await releaseIdleDesktopTask(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception releaseFailure)
+            {
+                throw new CodexDedicatedVoiceOwnershipException(
+                    "Codex Desktop still owns the Dedicated Voice Task, and Joydex could not complete the idle-chat handoff.",
+                    new AggregateException(ownershipConflict, releaseFailure));
+            }
+
+            return await acquire(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -816,6 +906,88 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 log($"Could not update the active Voice Session pointer: {exception.Message}");
             }
         }
+    }
+}
+
+/// <summary>
+/// Couples one Realtime media session to the private App Server that owns its Codex task.
+/// Disposing the media boundary always releases the task writer.
+/// </summary>
+internal sealed class OwnedVoiceDuplexAudioSession : IVoiceDuplexAudioSession
+{
+    private readonly IVoiceDuplexAudioSession _media;
+    private readonly IAsyncDisposable _owner;
+    private readonly Action<VoiceOwnershipCleanupException>? _ownershipCleanupFailed;
+    private readonly object _disposeGate = new();
+    private Task? _disposeTask;
+
+    public OwnedVoiceDuplexAudioSession(
+        IVoiceDuplexAudioSession media,
+        IAsyncDisposable owner,
+        Action<VoiceOwnershipCleanupException>? ownershipCleanupFailed = null)
+    {
+        _media = media ?? throw new ArgumentNullException(nameof(media));
+        _owner = owner ?? throw new ArgumentNullException(nameof(owner));
+        _ownershipCleanupFailed = ownershipCleanupFailed;
+    }
+
+    public VoicePcmFormat MicrophoneInputFormat => _media.MicrophoneInputFormat;
+
+    public VoicePcmFormat SpeakerOutputFormat => _media.SpeakerOutputFormat;
+
+    public Task Completion => _media.Completion;
+
+    public ValueTask SendMicrophoneFrameAsync(
+        VoicePcmFrame frame,
+        CancellationToken cancellationToken = default) =>
+        _media.SendMicrophoneFrameAsync(frame, cancellationToken);
+
+    public IAsyncEnumerable<VoiceSpeakerOutput> ReadSpeakerOutputAsync(
+        CancellationToken cancellationToken = default) =>
+        _media.ReadSpeakerOutputAsync(cancellationToken);
+
+    public ValueTask StopAsync(CancellationToken cancellationToken = default) =>
+        _media.StopAsync(cancellationToken);
+
+    public ValueTask DisposeAsync()
+    {
+        lock (_disposeGate)
+        {
+            return new ValueTask(_disposeTask ??= DisposeCoreAsync());
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
+        Exception? mediaFailure = null;
+        try
+        {
+            await _media.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            mediaFailure = exception;
+        }
+
+        try
+        {
+            await _owner.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ownerFailure)
+        {
+            var ownershipFailure = new VoiceOwnershipCleanupException(
+                "The Voice Session ended, but Joydex could not confirm release of its Codex task writer.",
+                mediaFailure is null ? [ownerFailure] : [mediaFailure, ownerFailure]);
+            _ownershipCleanupFailed?.Invoke(ownershipFailure);
+            throw ownershipFailure;
+        }
+
+        if (mediaFailure is not null)
+        {
+            throw mediaFailure;
+        }
+
+        GC.SuppressFinalize(this);
     }
 }
 

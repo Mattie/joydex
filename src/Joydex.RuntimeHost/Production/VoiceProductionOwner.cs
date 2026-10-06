@@ -143,7 +143,7 @@ internal sealed class VoiceProductionOwner : IProductionVoiceOwner, IVoiceWorker
             cancellationToken);
 
     internal static async Task<VoiceProductionOwner> StartAsync(
-        WindowsProductionRuntimeOwnerFactory factory,
+        IVoicePluginHostServices factory,
         ProductionRuntimePaths paths,
         ProductionDesktopBrokerManager desktopBroker,
         IVoiceWorkerGenerationFactory generations,
@@ -165,7 +165,10 @@ internal sealed class VoiceProductionOwner : IProductionVoiceOwner, IVoiceWorker
         VoiceProductionOwner? owner = null;
         try
         {
-            if (preferences.DesktopTaskMessagingEnabled)
+            // Ownership handoff needs the bridge even when outbound messaging is disabled.
+            // Keep the lease in dry run too: safety policy can change without replacing this owner.
+            if (preferences.SessionMode == VoicePeSessionMode.JoydexOwner
+                || preferences.DesktopTaskMessagingEnabled)
             {
                 brokerLease = await desktopBroker.AcquireAsync(cancellationToken).ConfigureAwait(false);
             }

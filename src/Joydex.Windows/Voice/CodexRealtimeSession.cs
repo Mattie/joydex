@@ -100,7 +100,7 @@ public sealed class CodexRealtimeSession : IAsyncDisposable
                     realtimeSessionId = $"joydex-{Guid.NewGuid():N}",
                     version = "v3",
                     outputModality = "audio",
-                    includeStartupContext = false,
+                    includeStartupContext = true,
                     realtimeStartInstructions = _realtimeStartInstructions,
                     voice = _voice,
                     transport = new

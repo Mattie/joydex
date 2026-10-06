@@ -1,11 +1,103 @@
 using Joydex.App;
 using Joydex.Core.Voice;
 using Joydex.Windows.Voice;
+using System.Drawing;
+using System.Runtime.ExceptionServices;
+using System.Windows.Forms;
 
 namespace Joydex.Tests;
 
 public sealed class RoomVoiceSettingsControlTests
 {
+    [Theory]
+    [InlineData(530, 400)]
+    [InlineData(870, 1100)]
+    public void AdvancedSettingsCanBeScrolledIntoView(int width, int height)
+    {
+        RunOnSta(() =>
+        {
+            using var control = CreateLayoutControl();
+            control.Size = new Size(width, height);
+            control.CreateControl();
+            control.PerformLayout();
+
+            Assert.True(control.VerticalScroll.Visible);
+            Assert.False(control.HorizontalScroll.Visible);
+            var advanced = FindAdvancedGroup(control);
+            Assert.True(advanced.Height >= advanced.GetPreferredSize(advanced.Size).Height);
+            var lastField = advanced.Controls.OfType<TableLayoutPanel>().Single()
+                .Controls.OfType<TableLayoutPanel>().Single()
+                .Controls.OfType<TextBox>().Last();
+            control.ScrollControlIntoView(lastField);
+
+            Assert.True(control.AutoScrollPosition.Y < 0);
+            var location = control.PointToClient(lastField.PointToScreen(Point.Empty));
+            Assert.InRange(location.Y, 0, control.ClientSize.Height - lastField.Height);
+        });
+    }
+
+    [Fact]
+    public void ResizingKeepsAdvancedSettingsReachableAndRemovesUnneededScrollbars()
+    {
+        RunOnSta(() =>
+        {
+            using var control = CreateLayoutControl();
+            control.Size = new Size(530, 400);
+            control.CreateControl();
+            var advanced = FindAdvancedGroup(control);
+            control.ScrollControlIntoView(advanced);
+            Assert.True(control.VerticalScroll.Visible);
+
+            control.Size = new Size(1200, 2400);
+            control.PerformLayout();
+            Assert.False(control.VerticalScroll.Visible);
+            Assert.False(control.HorizontalScroll.Visible);
+            Assert.Equal(Point.Empty, control.AutoScrollPosition);
+            Assert.True(advanced.Bottom <= control.ClientSize.Height);
+
+            control.Size = new Size(700, 600);
+            control.PerformLayout();
+            Assert.True(control.VerticalScroll.Visible);
+            Assert.False(control.HorizontalScroll.Visible);
+            control.ScrollControlIntoView(advanced);
+            Assert.True(control.AutoScrollPosition.Y < 0);
+        });
+    }
+
+    private static RoomVoiceSettingsControl CreateLayoutControl() => new(
+        VoicePePreferences.Default with { SessionMode = VoicePeSessionMode.JoydexOwner },
+        _ => Task.FromResult(true),
+        (_, _) => Task.FromResult(VoicePeWakeTuning.Default),
+        (_, tuning, _) => Task.FromResult(tuning),
+        allowExternalActions: false);
+
+    private static GroupBox FindAdvancedGroup(Control control) =>
+        control.Controls.OfType<TableLayoutPanel>().Single()
+            .Controls.OfType<GroupBox>().Single(group => group.Text == "Advanced");
+
+    private static void RunOnSta(Action action)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.True(thread.Join(TimeSpan.FromSeconds(10)), "The hidden settings layout did not complete.");
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+    }
+
     [Fact]
     public async Task DemoInspectorDisablesExternalCommandsAndSkipsTheirCallbacks()
     {

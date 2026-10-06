@@ -7,6 +7,56 @@ namespace Joydex.Tests;
 public sealed class CodexKeybindingServiceTests
 {
     [Fact]
+    public void SnapshotMigrationMatchesExactBuildNativeFixtures()
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory, "Fixtures", "CodexWindows26930Aliases.json")));
+        foreach (var testCase in document.RootElement.GetProperty("cases").EnumerateArray())
+        {
+            var actual = CodexKeybindingService.ParseEntries(testCase.GetProperty("input").GetRawText());
+            var expected = testCase.GetProperty("expected").EnumerateArray().Select(entry =>
+                new CodexKeybindingService.BindingEntry(
+                    entry.GetProperty("command").GetString()!,
+                    entry.GetProperty("key").GetString(),
+                    entry.TryGetProperty("when", out var when) && when.ValueKind != JsonValueKind.Null
+                        && (when.ValueKind != JsonValueKind.String || !string.IsNullOrWhiteSpace(when.GetString()))));
+            Assert.Equal(expected, actual);
+        }
+    }
+
+    [Fact]
+    public void SeedInventoryIncludesBothGeneratedNumericLayouts()
+    {
+        for (var number = 1; number <= 9; number++)
+        {
+            Assert.Equal([$"Ctrl+{number}", $"Alt+{number}"], CodexWindowsDefaultBindings.All[$"focusTab{number}"]);
+            Assert.Equal([$"Ctrl+{number}", $"Alt+{number}"], CodexWindowsDefaultBindings.All[$"thread{number}"]);
+        }
+        Assert.Equal(["Ctrl+Tab", "Ctrl+Shift+]", "Ctrl+PageDown"], CodexWindowsDefaultBindings.All["nextTab"]);
+    }
+
+    [Theory]
+    [InlineData("Ctrl+Alt+Shift+C")]
+    [InlineData("Ctrl+Alt+Shift+C Ctrl+K")]
+    public void SeedCheckIncludesUnmappedUpstreamDefaultsAndHonorsEffectiveNulls(string chord)
+    {
+        Assert.True(KeySequenceParser.TryParse(chord, false, out var sequence, out _));
+        Assert.Equal("copyConversationPath", CodexKeybindingService.FindDefaultCollision(
+            [], "thread1", sequence!, CodexWindowsDefaultBindings.All));
+        Assert.Null(CodexKeybindingService.FindDefaultCollision(
+            [new("copyConversationPath", null, false)], "thread1", sequence!, CodexWindowsDefaultBindings.All));
+        Assert.Equal("copyConversationPath", CodexKeybindingService.FindDefaultCollision(
+            [new("copyConversationPath", null, true)], "thread1", sequence!, CodexWindowsDefaultBindings.All));
+    }
+
+    [Fact]
+    public async Task BroadSeedInventoryDoesNotChangeOrdinaryActionCollisionResolution()
+    {
+        await using var service = await CreateFixture(Entry("approval.approve", "Ctrl+Alt+Shift+C")).StartAsync();
+        Assert.True((await service.ResolveAsync(CodexAction.Approve, CancellationToken.None)).Resolved);
+    }
+
+    [Fact]
     public async Task DefaultServiceConstructionUsesOneSystemWideUserPath()
     {
         var expected = Path.Combine(
@@ -95,8 +145,163 @@ public sealed class CodexKeybindingServiceTests
         var resolution = await service.ResolveAsync(CodexAction.StartVoiceChat, CancellationToken.None);
 
         Assert.Equal("composer.startVoiceMode", resolution.CommandId);
-        Assert.Equal("Ctrl+Shift+V", resolution.Sequence!.NormalizedText);
-        Assert.Equal(CodexBindingSource.Default, resolution.Source);
+        Assert.False(resolution.Resolved);
+        Assert.Null(resolution.Sequence);
+        Assert.Contains("No reliable binding", resolution.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExplicitNativeVoiceBindingRemainsAnOrdinaryCommand()
+    {
+        var fixture = CreateFixture(Entry("composer.startVoiceMode", "Ctrl+Alt+Shift+V"));
+        await using var service = await fixture.StartAsync();
+        var resolution = await service.ResolveAsync(CodexAction.StartVoiceChat, CancellationToken.None);
+        Assert.True(resolution.Resolved, resolution.Error);
+        Assert.Equal("Ctrl+Alt+Shift+V", resolution.Sequence!.NormalizedText);
+    }
+
+    [Theory]
+    [InlineData(CodexAction.SideConversation, "Ctrl+Alt+S")]
+    [InlineData(CodexAction.ToggleSidebar, "Ctrl+Shift+S")]
+    public async Task CorrectedWindowsDefaultsResolve(CodexAction action, string key)
+    {
+        await using var service = await CreateFixture().StartAsync();
+        var resolution = await service.ResolveAsync(action, CancellationToken.None);
+        Assert.True(resolution.Resolved, resolution.Error);
+        Assert.Equal(key, resolution.Sequence!.NormalizedText);
+    }
+
+    [Theory]
+    [InlineData(CodexAction.PreviousTask, "previousThread", "previousTab", "Ctrl+PageUp")]
+    [InlineData(CodexAction.NextTask, "nextThread", "nextTab", "Ctrl+PageDown")]
+    public async Task SharedTaskTabChordBlocksUntilTheTabBindingIsRemoved(
+        CodexAction action, string command, string tab, string chord)
+    {
+        await using (var ambiguous = await CreateFixture(Entry(command, chord)).StartAsync())
+        {
+            var blocked = await ambiguous.ResolveAsync(action, CancellationToken.None);
+            Assert.False(blocked.Resolved);
+            Assert.Contains(tab, blocked.Error, StringComparison.Ordinal);
+        }
+        await using var removed = await CreateFixture(Entry(command, chord), Entry(tab, null)).StartAsync();
+        Assert.True((await removed.ResolveAsync(action, CancellationToken.None)).Resolved);
+    }
+
+    [Fact]
+    public async Task TabOverrideReplacesDefaultButConditionalRemovalCannotProveSafety()
+    {
+        await using (var overridden = await CreateFixture(
+                         Entry("nextThread", "Ctrl+PageDown"), Entry("nextTab", "Ctrl+L")).StartAsync())
+        {
+            Assert.True((await overridden.ResolveAsync(CodexAction.NextTask, CancellationToken.None)).Resolved);
+        }
+        var conditional = Entry("nextTab", null);
+        conditional["when"] = "editorFocus";
+        await using var uncertain = await CreateFixture(Entry("nextThread", "Ctrl+PageDown"), conditional).StartAsync();
+        Assert.False((await uncertain.ResolveAsync(CodexAction.NextTask, CancellationToken.None)).Resolved);
+    }
+
+    [Fact]
+    public async Task CanonicalOverlaySuppressionIsReadOnlyAndAvoidsFalseCollision()
+    {
+        var fixture = CreateFixture(Entry("focusQuickChat", "Ctrl+K"), Entry("openAvatarOverlay", null),
+            Entry("approval.approve", "Ctrl+K"));
+        var before = fixture.FileSystem.ReadAllText(fixture.KeybindingsPath);
+        await using var service = await fixture.StartAsync();
+        Assert.True((await service.ResolveAsync(CodexAction.Approve, CancellationToken.None)).Resolved);
+        Assert.Equal(before, fixture.FileSystem.ReadAllText(fixture.KeybindingsPath));
+    }
+
+    [Fact]
+    public async Task FreshProfileGetsTaskSeedsAndDeletedNavigationSeedStaysRemoved()
+    {
+        var fixture = CreateFixtureForProvisioning();
+        await using (var first = await fixture.StartAsync(existingCompanionInstall: false))
+        {
+            foreach (var action in new[] { CodexAction.Agent1, CodexAction.Agent2, CodexAction.Agent3,
+                         CodexAction.Agent4, CodexAction.Agent5, CodexAction.Agent6,
+                         CodexAction.PreviousTask, CodexAction.NextTask })
+            {
+                var resolution = await first.ResolveAsync(action, CancellationToken.None);
+                Assert.True(resolution.Resolved, resolution.Error);
+                Assert.Equal(CodexBindingSource.Provisioned, resolution.Source);
+            }
+        }
+        fixture.FileSystem.SetFile(fixture.KeybindingsPath, SerializeBindings(
+            ParseBindings(fixture.FileSystem.ReadAllText(fixture.KeybindingsPath))
+                .Where(entry => Convert.ToString(entry["command"]) != "nextThread")), notify: false);
+        await using var second = await fixture.StartAsync(existingCompanionInstall: false);
+        Assert.False((await second.ResolveAsync(CodexAction.NextTask, CancellationToken.None)).Resolved);
+    }
+
+    [Fact]
+    public async Task ExistingMissingTaskBindingsStayProtectedWithExactManualGuidance()
+    {
+        await using var service = await CreateFixture().StartAsync();
+        foreach (var action in new[] { CodexAction.Agent1, CodexAction.PreviousTask, CodexAction.NextTask })
+        {
+            var blocked = await service.ResolveAsync(action, CancellationToken.None);
+            Assert.False(blocked.Resolved);
+            Assert.Contains("Ctrl+Alt+Shift+", blocked.Error, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("Ctrl+Alt+Shift+F1")]
+    [InlineData("Ctrl+Alt+Shift+F1 Ctrl+K")]
+    public async Task TaskSeedConflictsAreTerminalAndPreserveTheOtherBinding(string key)
+    {
+        var fixture = CreateFixtureForProvisioning(Entry("other.command", key));
+        await using (var first = await fixture.StartAsync(existingCompanionInstall: false))
+        {
+            Assert.False((await first.ResolveAsync(CodexAction.Agent1, CancellationToken.None)).Resolved);
+        }
+        var after = fixture.FileSystem.ReadAllText(fixture.KeybindingsPath);
+        await using var second = await fixture.StartAsync(existingCompanionInstall: false);
+        Assert.False((await second.ResolveAsync(CodexAction.Agent1, CancellationToken.None)).Resolved);
+        Assert.Equal(after, fixture.FileSystem.ReadAllText(fixture.KeybindingsPath));
+        Assert.Equal(key, Convert.ToString(Assert.Single(ParseBindings(after),
+            entry => Convert.ToString(entry["command"]) == "other.command")["key"]));
+    }
+
+    [Fact]
+    public async Task ExplicitNullTaskBindingIsNeverReseeded()
+    {
+        var fixture = CreateFixtureForProvisioning(Entry("thread1", null), Entry("nextThread", null));
+        await using var service = await fixture.StartAsync(existingCompanionInstall: false);
+        Assert.False((await service.ResolveAsync(CodexAction.Agent1, CancellationToken.None)).Resolved);
+        Assert.False((await service.ResolveAsync(CodexAction.NextTask, CancellationToken.None)).Resolved);
+        var saved = ParseBindings(fixture.FileSystem.ReadAllText(fixture.KeybindingsPath));
+        Assert.Null(Assert.Single(saved, entry => Convert.ToString(entry["command"]) == "thread1")["key"]);
+        Assert.Null(Assert.Single(saved, entry => Convert.ToString(entry["command"]) == "nextThread")["key"]);
+    }
+
+    [Fact]
+    public async Task UnreadableReceiptDoesNotChangeBindingsOrReceipt()
+    {
+        var fixture = CreateFixtureForProvisioning();
+        fixture.FileSystem.SetFile(fixture.StatePath, "[", notify: false);
+        await using var service = await fixture.StartAsync(existingCompanionInstall: false);
+        var blocked = await service.ResolveAsync(CodexAction.Agent1, CancellationToken.None);
+        Assert.False(blocked.Resolved);
+        Assert.Contains("Ctrl+Alt+Shift+F1", blocked.Error, StringComparison.Ordinal);
+        Assert.Equal("[]", fixture.FileSystem.ReadAllText(fixture.KeybindingsPath));
+        Assert.Equal("[", fixture.FileSystem.ReadAllText(fixture.StatePath));
+    }
+
+    [Fact]
+    public async Task FailedTaskSeedWriteIsNotRetriedAfterRestart()
+    {
+        var fixture = CreateFixtureForProvisioning();
+        fixture.FileSystem.RejectWrite = path => path.StartsWith(fixture.KeybindingsPath, StringComparison.Ordinal);
+        await using (var first = await fixture.StartAsync(existingCompanionInstall: false))
+        {
+            Assert.False((await first.ResolveAsync(CodexAction.Agent1, CancellationToken.None)).Resolved);
+        }
+        fixture.FileSystem.RejectWrite = null;
+        await using var second = await fixture.StartAsync(existingCompanionInstall: false);
+        Assert.False((await second.ResolveAsync(CodexAction.Agent1, CancellationToken.None)).Resolved);
+        Assert.Equal("[]", fixture.FileSystem.ReadAllText(fixture.KeybindingsPath));
     }
 
     [Fact]
@@ -546,6 +751,8 @@ public sealed class CodexKeybindingServiceTests
         Assert.DoesNotContain(saved, entry => Convert.ToString(entry["command"]) == "forkThread");
         Assert.DoesNotContain(saved, entry => Convert.ToString(entry["command"]) == "composer.submit");
         Assert.DoesNotContain(saved, entry => Convert.ToString(entry["command"]) == "composer.togglePlanMode");
+        Assert.DoesNotContain(saved, entry => Convert.ToString(entry["command"]) == "previousThread");
+        Assert.DoesNotContain(saved, entry => Convert.ToString(entry["command"]) == "nextThread");
         Assert.Contains(saved, entry =>
             Convert.ToString(entry["command"]) == "composer.toggleFastMode"
             && Convert.ToString(entry["key"]) == "Ctrl+Alt+Shift+F7");
@@ -599,7 +806,8 @@ public sealed class CodexKeybindingServiceTests
     }
 
     private static ServiceFixture CreateFixture(params Dictionary<string, object?>[] entries) =>
-        CreateFixtureWithRawKeybindings(SerializeBindings(Scaffolding().Concat(entries)));
+        CreateFixtureWithRawKeybindings(SerializeBindings(Scaffolding()
+            .Where(scaffold => !entries.Any(entry => Equals(entry["command"], scaffold["command"]))).Concat(entries)));
 
     private static ServiceFixture CreateFixtureForProvisioning(params Dictionary<string, object?>[] entries) =>
         CreateFixtureWithRawKeybindings(SerializeBindings(entries));
@@ -708,6 +916,7 @@ public sealed class CodexKeybindingServiceTests
         public Action<string>? BeforeRead { get; set; }
 
         public Exception? StampException { get; set; }
+        public Func<string, bool>? RejectWrite { get; set; }
 
         public IEnumerable<string> Paths
         {
@@ -781,6 +990,10 @@ public sealed class CodexKeybindingServiceTests
         public Task WriteAllTextAsync(string path, string contents, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (RejectWrite?.Invoke(path) == true)
+            {
+                throw new UnauthorizedAccessException("The test file system rejected the write.");
+            }
             SetFile(path, contents, notify: false);
             return Task.CompletedTask;
         }
