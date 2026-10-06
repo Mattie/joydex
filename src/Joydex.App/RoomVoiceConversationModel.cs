@@ -243,18 +243,20 @@ internal sealed class RoomVoiceConversationModel
         RuntimeStateChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    public void SetFallbackState(bool enabled)
+    public void SetFallbackState(bool enabled, bool dryRun = false)
     {
         lock (_sync)
         {
             _ownerReady = false;
             _sessionActive = false;
             _historyAvailable = false;
-            _sessionState = enabled ? VoicePeSessionState.Armed : VoicePeSessionState.Error;
+            _sessionState = enabled && dryRun ? VoicePeSessionState.Armed : VoicePeSessionState.Error;
             _status = enabled
-                ? "LASTVOICE fallback is armed. Conversation history and direct session controls are unavailable."
+                ? dryRun
+                    ? "Room Voice dry-run simulation is ready. No task writer or voice media is acquired."
+                    : PinnedVoiceCoordinator.UnavailableMessage
                 : "Room Voice is disabled.";
-            _error = null;
+            _error = enabled && !dryRun ? PinnedVoiceCoordinator.UnavailableMessage : null;
             _stale = false;
             _timelineTruncated = false;
         }

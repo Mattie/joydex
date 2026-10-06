@@ -144,8 +144,8 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
         _enabled.Checked = initial.Enabled;
         _sessionMode.Items.AddRange([
-            new SessionModeChoice(VoicePeSessionMode.JoydexOwner, "Joydex owns a dedicated task"),
-            new SessionModeChoice(VoicePeSessionMode.LastVoiceFallback, "Native LASTVOICE fallback"),
+            new SessionModeChoice(VoicePeSessionMode.JoydexOwner, "Joydex voice chat handoff"),
+            new SessionModeChoice(VoicePeSessionMode.LastVoiceFallback, "Native LASTVOICE (unavailable; dry run only)"),
         ]);
         _sessionMode.SelectedItem = _sessionMode.Items
             .Cast<SessionModeChoice>()
@@ -497,17 +497,20 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             ForeColor = SystemColors.GrayText,
             MaximumSize = new Size(680, 0),
             Padding = new Padding(8, 0, 8, 8),
-            Text = "Joydex automatically follows Codex Desktop updates when the executable override is blank. It keeps the dedicated task's writer lock while Room Voice is running.",
+            Text = "Joydex automatically follows Codex Desktop updates when the executable override is blank. Room Voice acquires the dedicated chat on wake and releases it after hangup, so Codex Desktop can use it between calls. Native LASTVOICE is unavailable because Codex cannot guarantee the saved task destination; its saved settings support dry-run simulation only.",
         }, 0, 2);
         var advancedGroup = CreateGroup("Advanced", advancedLayout);
 
         var root = new TableLayoutPanel
         {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
             Padding = new Padding(8),
-            RowCount = 9,
+            RowCount = 8,
         };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -516,7 +519,6 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.Controls.Add(new Label
         {
             AutoSize = true,

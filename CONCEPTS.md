@@ -13,14 +13,20 @@ The Codex task intentionally reserved for room conversations through the Joydex-
 _Avoid_: Pinned task, workspace
 
 **Dedicated Voice Task Owner**:
-The one Codex App Server with the Dedicated Voice Task loaded under its local writer lock. Joydex must keep its owning control connection alive and the task loaded before it can start explicit-task Realtime; Codex Desktop may already own it.
+The short-lived Codex App Server that holds the Dedicated Voice Task's local writer lock for one
+Voice Session. Joydex acquires it after an accepted wake and closes it during session teardown, so
+Codex Desktop can use the same chat while Room Voice is only Armed. If Desktop retained an idle
+writer after the user switched away, Joydex uses the paired archive-and-restore handoff and retries
+ownership once. An active or otherwise unsafe ownership conflict fails closed and returns the
+device to Armed.
 _Avoid_: Selected task, foreground task
 
-Owner readiness means Joydex found a structurally complete Codex App Server runtime, the exact configured task
-resumed, the required interactive tool inventory loaded, and the App Server returned a compatible
-Realtime voice list. WebRTC and room-endpoint media readiness are checked separately. Codex
-Desktop's managed runtime is followed across updates; an executable outside that managed folder is
-an explicit override.
+Voice route readiness means Joydex's device control and media host are ready to attempt a call.
+During Starting, Joydex finds a structurally complete Codex App Server runtime, resumes the exact
+configured task, loads the required interactive tool inventory, and requires a compatible Realtime
+voice list. WebRTC and room-endpoint media readiness are checked separately. Codex Desktop's managed
+runtime is followed across updates; an executable outside that managed folder is an explicit
+override.
 
 **Voice Agent Workspace**:
 The local filesystem root that supplies the Joydex-owned App Server process directory, Dedicated
@@ -48,8 +54,9 @@ App Tools pipe descriptor from the App Server's launch configuration or bounded 
 With the environment descriptor used by Codex 26.908, it locates the adapter beside the verified
 Desktop executable. Explicit App Server discovery never falls back to a descriptor inherited from
 an earlier server. It reconnects after Desktop restarts. It launches Desktop's packaged Codex App Tools adapter, then exposes only bounded
-task status, list, read, and send operations to Joydex over a same-user named pipe. It does not expose
-task creation, resume, fork, handoff, or lifecycle mutation and therefore never becomes another task
+task status, list, read, and send operations to Joydex over a same-user named pipe. It also supports
+the narrow paired archive-and-restore operation used to release an idle Dedicated Voice Task.
+It does not expose task creation, resume, fork, or general handoff and never becomes another task
 writer. A Desktop Attach Endpoint would expose the existing App Server itself; the Desktop Task
 Bridge exposes only this narrow outbound-command surface. The former marker-managed MCP entry remains
 disabled as migration metadata so Desktop cannot create one competing broker per task. It exposes no
@@ -75,7 +82,11 @@ draft; the user must retry, retarget, copy, or discard it.
 _Avoid_: retry queue, dead-letter log
 
 **Last Voice Task**:
-The task Codex remembers from its most recent native Voice use and resumes when Joydex starts native Voice. Using Voice in another task changes this task, which is accepted behavior for the Dedicated Voice Endpoint.
+The task remembered by Codex's historical native Voice behavior. Joydex has no verified guarantee
+that a native voice command resumes this task or the saved fallback task. Real native LASTVOICE
+wakes remain unavailable under the current compatibility checks.
+Saved fallback preferences and dry-run simulation remain available. Joydex-owned Room Voice uses
+its separate Dedicated Voice Task and does not depend on native task routing.
 _Avoid_: Current task, selected task, pinned task
 
 **Voice Session**:
@@ -83,7 +94,9 @@ One continuous spoken interaction from accepted wake through confirmed close.
 _Avoid_: Turn, request
 
 **Room Voice Workspace**:
-The Joydex window for watching and recovering the Dedicated Voice Task while Joydex owns it. It is the normal desktop surface for room conversations that Codex Desktop cannot open under the same writer lock.
+The Joydex window for watching and recovering the Dedicated Voice Task. Between calls, Codex Desktop
+can open the same chat. During a Voice Session, Joydex temporarily holds the writer lock and this
+window remains the local conversation surface.
 _Avoid_: Voice PE settings window, transcript debugger
 
 **Conversation Timeline**:
@@ -238,11 +251,16 @@ and permits the observed first-stream synchronization delay without abandoning q
 _Avoid_: New voice stack, current Sendspin firmware, protocol rewrite
 
 **Armed**:
-The endpoint state in which a fresh wake phrase may start a Voice Session.
+The endpoint state in which a fresh wake phrase may start a Voice Session. Joydex does not hold the
+Dedicated Voice Task's writer lock in this state.
 _Avoid_: Idle, listening
 
 **Starting**:
-The endpoint state after an accepted wake and before Codex confirms that the realtime Voice Session started. The Voice PE shows its waiting animation and automatically rearms after a bounded failure timeout.
+The endpoint state after an accepted wake and before Codex confirms that the realtime Voice Session
+started. Joydex acquires the Dedicated Voice Task, restores its startup context, and connects media
+inside this state. The Voice PE shows its waiting animation and automatically rearms after a bounded
+failure timeout.
+In JOYDEXOWNER mode, a short center-button press during Starting clears the waiting animation and cancels the pending start. Joydex disposes any partly opened media before returning to Armed.
 _Avoid_: Active, listening
 
 **Listening**:

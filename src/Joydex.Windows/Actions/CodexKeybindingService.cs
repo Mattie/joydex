@@ -188,7 +188,8 @@ public sealed class CodexKeybindingService : ICodexKeybindingResolver, IAsyncDis
                 continue;
             }
 
-            var collision = FindCollision(snapshot, descriptor.CommandId, sequence!);
+            var collision = FindCollision(snapshot, descriptor.CommandId, sequence!)
+                ?? FindTaskTabCollision(snapshot, descriptor.CommandId, sequence!);
             if (collision is not null)
             {
                 firstCollisionError ??=
@@ -209,7 +210,7 @@ public sealed class CodexKeybindingService : ICodexKeybindingResolver, IAsyncDis
         }
 
         var error = candidates.Count == 0
-            ? $"No reliable binding is available. Assign '{descriptor.CommandId}' in Settings > Keyboard Shortcuts."
+            ? $"No reliable binding is available. {ManualBindingGuidance(descriptor)}"
             : firstCollisionError
                 ?? firstParseError
                 ?? $"No supported binding is available. Assign '{descriptor.CommandId}' in Settings > Keyboard Shortcuts.";
@@ -302,6 +303,11 @@ public sealed class CodexKeybindingService : ICodexKeybindingResolver, IAsyncDis
                 }
 
                 var collision = FindCollision(snapshot, descriptor.CommandId, sequence!);
+                if (IsTaskNavigationCommand(descriptor.CommandId))
+                {
+                    collision ??= FindDefaultCollision(snapshot.Entries, descriptor.CommandId, sequence!,
+                        CodexWindowsDefaultBindings.All);
+                }
                 if (collision is not null || pending.Any(item => SequencesConflict(item.Sequence, sequence!)))
                 {
                     _provisioning[descriptor.CommandId] = new ProvisioningRecord
@@ -394,8 +400,28 @@ public sealed class CodexKeybindingService : ICodexKeybindingResolver, IAsyncDis
             changed = true;
         }
 
+        // New navigation seeds must not interpret an existing profile's absence as consent.
+        if (treatAsExistingInstall)
+        {
+            foreach (var descriptor in CodexCommandCatalog.All.Where(candidate =>
+                         IsTaskNavigationCommand(candidate.CommandId)))
+            {
+                if (!_provisioning.ContainsKey(descriptor.CommandId)
+                    && !snapshot.Entries.Any(entry => entry.CommandId == descriptor.CommandId))
+                {
+                    _provisioning[descriptor.CommandId] = new ProvisioningRecord { Status = "historical" };
+                    changed = true;
+                }
+            }
+        }
+
         return changed;
     }
+
+    private static string ManualBindingGuidance(CodexCommandDescriptor descriptor) =>
+        descriptor.ProvisionedBinding is null
+            ? $"Assign '{descriptor.CommandId}' in Settings > Keyboard Shortcuts."
+            : $"To configure it deliberately, assign '{descriptor.CommandId}' to '{descriptor.ProvisionedBinding}' in Settings > Keyboard Shortcuts, using a free chord.";
 
     private async Task<bool> TryWriteProvisionedBindingsAsync(
         IReadOnlyList<(CodexCommandDescriptor Descriptor, KeySequence Sequence)> pending,
@@ -712,7 +738,7 @@ public sealed class CodexKeybindingService : ICodexKeybindingResolver, IAsyncDis
         }
     }
 
-    private static BindingEntry[] ParseEntries(string json)
+    internal static BindingEntry[] ParseEntries(string json)
     {
         using var document = JsonDocument.Parse(json);
         if (document.RootElement.ValueKind != JsonValueKind.Array)
@@ -732,7 +758,7 @@ public sealed class CodexKeybindingService : ICodexKeybindingResolver, IAsyncDis
                 throw new InvalidDataException("Every Codex keybinding must contain a string command and a string-or-null key.");
             }
 
-            var commandId = CodexCommandCatalog.NormalizeCommandId(commandProperty.GetString()!);
+            var commandId = commandProperty.GetString()!;
             var key = keyProperty.ValueKind == JsonValueKind.Null ? null : keyProperty.GetString();
             var conditional = element.TryGetProperty("when", out var whenProperty)
                 && whenProperty.ValueKind != JsonValueKind.Null
@@ -741,7 +767,112 @@ public sealed class CodexKeybindingService : ICodexKeybindingResolver, IAsyncDis
             entries.Add(new BindingEntry(commandId, key, conditional));
         }
 
-        return entries.ToArray();
+        return NormalizeEntries(entries);
+    }
+
+    private static BindingEntry[] NormalizeEntries(IReadOnlyList<BindingEntry> entries)
+    {
+        var normalized = new List<BindingEntry>();
+        foreach (var entry in entries)
+        {
+            if (entry.CommandId == "globalDictationToggle")
+            {
+                if (entries.Any(candidate => candidate.CommandId == "globalDictationSingleTap"))
+                {
+                    continue;
+                }
+                var hold = entries.FirstOrDefault(candidate => candidate.CommandId == "globalDictationHold");
+                if (hold is null && entry.Key is not null)
+                {
+                    normalized.Add(entry with { CommandId = "globalDictationHold" });
+                }
+                else
+                {
+                    var duplicate = hold?.Key is not null && entry.Key is not null
+                        && NormalizeLegacyChord(hold.Key) == NormalizeLegacyChord(entry.Key);
+                    normalized.Add(new BindingEntry("globalDictationSingleTap", duplicate ? null : entry.Key, false));
+                }
+                continue;
+            }
+            if (entry.CommandId == "focusQuickChat"
+                && entries.Any(candidate => candidate.CommandId == "openAvatarOverlay"))
+            {
+                continue;
+            }
+            if (entry.CommandId == "closeTabOrWindow")
+            {
+                normalized.Add(entry with { CommandId = "closeTab" });
+                normalized.Add(entry with { CommandId = "closeWindow" });
+                continue;
+            }
+            normalized.Add(entry with { CommandId = CodexCommandCatalog.NormalizeCommandId(entry.CommandId) });
+        }
+        return normalized.ToArray();
+    }
+
+    // Match the native legacy dictation helper's first-chord alias comparison on Windows.
+    private static string NormalizeLegacyChord(string key) => string.Join('+',
+        (key.Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "")
+        .ToLowerInvariant().Split('+').Select(token => token switch
+        {
+            "cmdorctrl" or "commandorcontrol" or "control" => "ctrl",
+            "cmd" or "command" or "super" => "meta",
+            "option" => "alt",
+            "esc" => "escape",
+            _ => token,
+        }).Order(StringComparer.Ordinal));
+
+    private static bool IsTaskNavigationCommand(string commandId) =>
+        commandId is "previousThread" or "nextThread"
+        || commandId.Length == 7 && commandId.StartsWith("thread", StringComparison.Ordinal)
+            && commandId[6] is >= '1' and <= '6';
+
+    private static string? FindTaskTabCollision(KeybindingSnapshot snapshot, string commandId, KeySequence sequence)
+    {
+        var tabCommand = commandId switch
+        {
+            "previousThread" => "previousTab",
+            "nextThread" => "nextTab",
+            _ => null,
+        };
+        return tabCommand is null ? null : FindDefaultCollision(snapshot.Entries, commandId, sequence,
+            new Dictionary<string, string[]> { [tabCommand] = CodexWindowsDefaultBindings.All[tabCommand] });
+    }
+
+    internal static string? FindDefaultCollision(IReadOnlyList<BindingEntry> snapshotEntries, string commandId,
+        KeySequence sequence, IReadOnlyDictionary<string, string[]> defaults)
+    {
+        foreach (var (otherCommandId, defaultKeys) in defaults)
+        {
+            if (string.Equals(otherCommandId, commandId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            var entries = snapshotEntries.Where(entry =>
+                string.Equals(entry.CommandId, otherCommandId, StringComparison.OrdinalIgnoreCase)).ToArray();
+            IEnumerable<string> candidates = defaultKeys;
+            if (entries.Length > 0)
+            {
+                candidates = entries.Where(entry => entry.Key is not null).Select(entry => entry.Key!);
+                if (entries.Any(entry => entry.Conditional))
+                {
+                    candidates = candidates.Concat(defaultKeys);
+                }
+                else if (entries.Any(entry => entry.Key is null))
+                {
+                    candidates = [];
+                }
+            }
+            foreach (var key in candidates)
+            {
+                if (KeySequenceParser.TryParse(key, allowBareModifiers: true, out var other, out _)
+                    && SequencesConflict(sequence, other!))
+                {
+                    return otherCommandId;
+                }
+            }
+        }
+        return null;
     }
 
     private CodexBindingSource GetExplicitSource(string commandId, string? key)
@@ -874,7 +1005,9 @@ public sealed class CodexKeybindingService : ICodexKeybindingResolver, IAsyncDis
         if (!string.IsNullOrWhiteSpace(commandId)
             && !error.Contains("Settings > Keyboard Shortcuts", StringComparison.OrdinalIgnoreCase))
         {
-            error += $" Assign '{commandId}' in Settings > Keyboard Shortcuts.";
+            error += CodexCommandCatalog.TryGet(action, out var descriptor)
+                ? $" {ManualBindingGuidance(descriptor)}"
+                : $" Assign '{commandId}' in Settings > Keyboard Shortcuts.";
         }
 
         return new(action, commandId, null, CodexBindingSource.None, snapshotState, error);
@@ -884,7 +1017,7 @@ public sealed class CodexKeybindingService : ICodexKeybindingResolver, IAsyncDis
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 
-    private sealed record BindingEntry(string CommandId, string? Key, bool Conditional);
+    internal sealed record BindingEntry(string CommandId, string? Key, bool Conditional);
 
     private sealed record KeybindingSnapshot(
         bool Valid,

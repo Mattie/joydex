@@ -29,6 +29,7 @@ public sealed class CodexRealtimeSessionTests
         Assert.Equal(threadId, request.Parameters.GetProperty("threadId").GetString());
         Assert.Equal("webrtc", request.Parameters.GetProperty("transport").GetProperty("type").GetString());
         Assert.Equal("cove", request.Parameters.GetProperty("voice").GetString());
+        Assert.True(request.Parameters.GetProperty("includeStartupContext").GetBoolean());
         Assert.Equal(JsonValueKind.Null, request.Parameters.GetProperty("realtimeStartInstructions").ValueKind);
     }
 

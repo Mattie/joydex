@@ -151,6 +151,25 @@ public sealed class DesktopTaskBridgeTests : IDisposable
     }
 
     [Fact]
+    public async Task ReleaseRequestsTheExactLocalTask()
+    {
+        var pipe = "Joydex.Tests." + Guid.NewGuid().ToString("N");
+        var source = Guid.NewGuid().ToString("D");
+        var target = new DesktopTaskSummary(
+            Guid.NewGuid().ToString("D"), "local", "Voice", "idle", null, null, 0);
+        var server = ServeOnceAsync(pipe, request =>
+        {
+            Assert.Equal(DesktopTaskBridgeProtocol.ReleaseTaskMethod, request.Method);
+            Assert.Equal(target.Id, request.Arguments.GetProperty("threadId").GetString());
+            Assert.Equal("local", request.Arguments.GetProperty("hostId").GetString());
+            return JsonSerializer.SerializeToElement(new { content = "released" });
+        });
+
+        await new DesktopTaskBridgeClient(pipe).ReleaseTaskAsync(source, target);
+        await server;
+    }
+
+    [Fact]
     public void TargetResolverUsesExactPrefixThenSubstringAndRejectsAmbiguity()
     {
         var tasks = new[]
@@ -545,6 +564,12 @@ public sealed class DesktopTaskBridgeTests : IDisposable
                 Queued: false,
                 "delivered"));
         }
+
+        public Task ReleaseTaskAsync(
+            string sourceThreadId,
+            DesktopTaskSummary target,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 
     private static async Task ServeOnceAsync(

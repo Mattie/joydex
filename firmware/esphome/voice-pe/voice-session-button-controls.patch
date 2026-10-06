@@ -1,18 +1,25 @@
 diff --git a/home-assistant-voice.yaml b/home-assistant-voice.yaml
-index 2bb3cc6..d0f379a 100644
+index 2bb3cc6..e504585 100644
 --- a/home-assistant-voice.yaml
 +++ b/home-assistant-voice.yaml
-@@ -303,45 +303,53 @@ binary_sensor:
+@@ -303,45 +303,60 @@ binary_sensor:
                then:
                  - if:
                      condition:
 -                      switch.is_on: timer_ringing
 +                      lambda: |-
 +                        const auto state = id(joydex_voice_session_state).current_option();
-+                        return state == "Listening" || state == "Muted";
++                        return state == "Starting" || state == "Listening" || state == "Muted";
                      then:
 -                      - switch.turn_off: timer_ringing
 +                      - script.execute: joydex_voice_hangup_pulse
++                      - if:
++                          condition:
++                            lambda: return id(joydex_voice_session_state).current_option() == "Starting";
++                          then:
++                            - select.set:
++                                id: joydex_voice_session_state
++                                option: Armed
                      else:
                        - if:
                            condition:

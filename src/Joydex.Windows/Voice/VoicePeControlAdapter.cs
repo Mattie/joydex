@@ -5,6 +5,8 @@ public enum VoiceSessionStartStatus
     Requested,
     Confirmed,
     Simulated,
+    Canceled,
+    OwnershipConflict,
     Rejected,
     SessionActive,
 }
@@ -29,6 +31,10 @@ public sealed class VoicePeControlAdapter(
 {
     private readonly CancellationTokenSource _cancellation = new();
     private readonly SemaphoreSlim _stateGate = new(1, 1);
+    private readonly object _startGate = new();
+    private CancellationTokenSource? _pendingStartCancellation;
+    private Task? _pendingStart;
+    private bool _startInProgress;
     private Task? _runTask;
 
     public void Start()
@@ -47,6 +53,15 @@ public sealed class VoicePeControlAdapter(
             .ConfigureAwait(false);
         _cancellation.Cancel();
         await transport.DisposeAsync().ConfigureAwait(false);
+        Task? pendingStart;
+        lock (_startGate)
+        {
+            pendingStart = _pendingStart;
+        }
+        if (pendingStart is not null)
+        {
+            await pendingStart.ConfigureAwait(false);
+        }
         if (_runTask is not null)
         {
             try
@@ -87,6 +102,19 @@ public sealed class VoicePeControlAdapter(
         {
             if (signal == VoicePeControlSignal.Hangup)
             {
+                CancellationTokenSource? pendingStart;
+                lock (_startGate)
+                {
+                    pendingStart = _pendingStartCancellation;
+                }
+                try
+                {
+                    pendingStart?.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // The start finished between the snapshot and cancellation.
+                }
                 if (stopVoice is null)
                 {
                     log("IGNORED Voice PE hangup; the active route does not expose session control.");
@@ -113,6 +141,56 @@ public sealed class VoicePeControlAdapter(
                 return;
             }
 
+            CancellationTokenSource startupCancellation;
+            TaskCompletionSource startCompletion;
+            lock (_startGate)
+            {
+                if (_startInProgress)
+                {
+                    return;
+                }
+
+                startupCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken, _cancellation.Token);
+                startCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                _pendingStartCancellation = startupCancellation;
+                _pendingStart = startCompletion.Task;
+                _startInProgress = true;
+            }
+
+            _ = CompleteStartAsync(startupCancellation, startCompletion);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            log($"FAILED Voice PE {signal} callback; error={exception.Message}");
+            await ReportSessionStateAsync(VoicePeSessionState.Error, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+    }
+
+    private async Task CompleteStartAsync(
+        CancellationTokenSource startupCancellation,
+        TaskCompletionSource completion)
+    {
+        try
+        {
+            await StartVoiceAsync(startupCancellation).ConfigureAwait(false);
+        }
+        finally
+        {
+            completion.TrySetResult();
+        }
+    }
+
+    private async Task StartVoiceAsync(CancellationTokenSource startupCancellation)
+    {
+        try
+        {
+            var cancellationToken = startupCancellation.Token;
             var result = await startVoice(cancellationToken).ConfigureAwait(false);
             if (result.Status == VoiceSessionStartStatus.Simulated)
             {
@@ -125,6 +203,12 @@ public sealed class VoicePeControlAdapter(
                 await ReportSessionStateAsync(VoicePeSessionState.Listening, cancellationToken)
                     .ConfigureAwait(false);
             }
+            else if (result.Status is VoiceSessionStartStatus.Canceled
+                     or VoiceSessionStartStatus.OwnershipConflict)
+            {
+                await ReportSessionStateAsync(VoicePeSessionState.Armed, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
             else if (result.Status is not (
                          VoiceSessionStartStatus.Requested or
                          VoiceSessionStartStatus.Confirmed or
@@ -134,15 +218,26 @@ public sealed class VoicePeControlAdapter(
                     .ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (startupCancellation.IsCancellationRequested)
         {
-            throw;
+            await ReportSessionStateAsync(VoicePeSessionState.Armed, CancellationToken.None)
+                .ConfigureAwait(false);
         }
         catch (Exception exception)
         {
-            log($"FAILED Voice PE {signal} callback; error={exception.Message}");
+            log($"FAILED Voice PE Wake callback; error={exception.Message}");
             await ReportSessionStateAsync(VoicePeSessionState.Error, CancellationToken.None)
                 .ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_startGate)
+            {
+                _startInProgress = false;
+                _pendingStart = null;
+                _pendingStartCancellation = null;
+            }
+            startupCancellation.Dispose();
         }
     }
 
