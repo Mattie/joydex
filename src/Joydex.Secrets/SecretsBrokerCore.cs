@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace Joydex.Secrets;
 
@@ -248,7 +249,7 @@ public sealed class SecretsBrokerCore
                     aliasIdentities,
                     operation.Identity.Digest,
                     status,
-                    rule: null));
+                    rule: null, scope: scope));
                 return new(status, submission.RequestId, attemptId, null, now);
             }
             if (_requests.TryGetValue(key, out var existing))
@@ -265,7 +266,7 @@ public sealed class SecretsBrokerCore
                     aliasIdentities,
                     operation.Identity.Digest,
                     status,
-                    rule: null));
+                    rule: null, scope: scope));
                 return status == SecretsRequestStatus.Conflict
                     ? new(status, submission.RequestId, attemptId, null, now)
                     : existing.Response;
@@ -292,7 +293,7 @@ public sealed class SecretsBrokerCore
                     aliasIdentities,
                     operation.Identity.Digest,
                     response.Status,
-                    rule: null));
+                    rule: null, scope: scope));
                 return response;
             }
 
@@ -324,7 +325,7 @@ public sealed class SecretsBrokerCore
                     aliasIdentities,
                     operation.Identity.Digest,
                     response.Status,
-                    rule: null));
+                    rule: null, scope: scope));
                 return response;
             }
 
@@ -348,7 +349,7 @@ public sealed class SecretsBrokerCore
                     aliasIdentities,
                     operation.Identity.Digest,
                     response.Status,
-                    evaluation.MatchedRule));
+                    evaluation.MatchedRule, scope));
                 return response;
             }
 
@@ -380,7 +381,7 @@ public sealed class SecretsBrokerCore
                     aliasIdentities,
                     operation.Identity.Digest,
                     response.Status,
-                    evaluation.MatchedRule));
+                    evaluation.MatchedRule, scope));
                 return response;
             }
 
@@ -404,19 +405,14 @@ public sealed class SecretsBrokerCore
             }
 
             var expiresAt = now + RequestLifetime;
+            var projectIdentityDigest = ProjectIdentityDigest(authentication.Project);
             var previouslyRequestedAliases = _audit.ReadAll()
                 .Where(record => record.AttemptId != attemptId
-                    && record.Kind is SecretsAuditEventKind.RequestOutcome
-                        or SecretsAuditEventKind.ConsentDecision
+                    && record.Kind == SecretsAuditEventKind.RequestOutcome
                     && record.OperationDigest is not null
-                    && string.Equals(
-                        record.ClientReference,
-                        authentication.Principal.ClientId,
-                        StringComparison.Ordinal)
-                    && string.Equals(
-                        record.ProjectReference,
-                        authentication.Project.ProjectReference,
-                        StringComparison.Ordinal))
+                    && record.ClientRegistrationId == authentication.Principal.RegistrationId
+                    && record.ClientGeneration == authentication.Principal.Generation
+                    && record.ProjectIdentityDigest == projectIdentityDigest)
                 .SelectMany(record => record.Aliases)
                 .ToHashSet(StringComparer.Ordinal);
             var newAliases = aliasIdentities
@@ -449,7 +445,7 @@ public sealed class SecretsBrokerCore
                 aliasIdentities,
                 operation.Identity.Digest,
                 responsePending.Status,
-                rule: null));
+                rule: null, scope: scope));
             return responsePending;
         }
     }
@@ -1419,7 +1415,8 @@ public sealed class SecretsBrokerCore
         IEnumerable<SecretsAliasIdentity> aliases,
         string operationDigest,
         SecretsRequestStatus status,
-        SecretsPolicyRule? rule) => new(
+        SecretsPolicyRule? rule,
+        SecretsAuthorizationScope? scope = null) => new(
             attemptId,
             SecretsAuditEventKind.RequestOutcome,
             now,
@@ -1430,7 +1427,21 @@ public sealed class SecretsBrokerCore
             operationDigest,
             StatusName(status),
             rule?.RuleId,
-            rule?.ScopeKind);
+            rule?.ScopeKind,
+            ClientRegistrationId: scope?.Principal.RegistrationId,
+            ClientGeneration: scope?.Principal.Generation,
+            ProjectIdentityDigest: scope is null ? null : ProjectIdentityDigest(scope.Project));
+
+    // Audit only a digest: canonical paths belong to the authenticated scope,
+    // but must not be persisted in the value-free activity journal.
+    private static string ProjectIdentityDigest(SecretsProjectIdentity project) =>
+        Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            project.ProjectId,
+            Root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(project.CanonicalProjectRoot)).ToUpperInvariant(),
+            project.CanonicalProjectRootIdentity,
+            project.Generation,
+        }))).ToLowerInvariant();
 
     private static bool ValidSubmission(SecretsRequestSubmission submission) =>
         !string.IsNullOrWhiteSpace(submission.RequestId)
