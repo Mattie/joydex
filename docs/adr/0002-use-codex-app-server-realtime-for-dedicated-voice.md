@@ -154,8 +154,9 @@ Missing broker state, adapter failure, approval requirements, or an unmanaged co
 leave normal Room Voice operation intact and hold attempted outbound delivery for review.
 
 The same singleton Desktop Task Bridge may serve Joydex's optional Pebble Index Receiver without a
-Room Voice session. Joydex starts the broker only while configuration is open or a messaging feature
-is enabled, and its current-user-only transport uses a randomized per-process pipe name. The receiver
+Room Voice session. Joydex starts the broker while configuration is open, a messaging feature is
+enabled, or the Joydex-owned Voice route needs ownership handoff. Handoff does not enable outbound
+voice messaging tools. Its current-user-only transport uses a randomized per-process pipe name. The receiver
 binds only to loopback, authenticates before parsing, rejects audio,
 and maps every accepted transcript to one locally configured Desktop task. It persists an ingress
 record before returning success, suppresses duplicate webhook identities across restarts, and never
