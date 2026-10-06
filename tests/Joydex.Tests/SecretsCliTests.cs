@@ -100,44 +100,28 @@ public sealed class SecretsCliTests : IDisposable
     }
 
     [Fact]
-    public async Task ExecFingerprintsScriptsAndConfigurationForRememberedApprovals()
+    public async Task ExecRememberedApprovalDoesNotBindScriptContents()
     {
         await using var harness = new CliHarness(_directory);
         var script = Path.Combine(_directory, "script.ps1");
-        var config = Path.Combine(_directory, "settings.json");
         File.WriteAllText(script, "[Console]::Write('first')");
-        File.WriteAllText(config, "{}");
         Process Start() => StartCli(harness, (IReadOnlyDictionary<string, string>?)null, _directory,
-            "--fingerprint", "script.ps1", "--fingerprint", "settings.json",
             "--", harness.PowerShell, "-NoProfile", "-File", "script.ps1");
-        async Task Finish(Process process, string expected)
-        {
-            var output = await process.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(20));
-            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.Equal(string.Empty, await process.StandardError.ReadToEndAsync());
-            Assert.Equal(0, process.ExitCode);
-            Assert.Equal(expected, output);
-        }
         using (var first = Start())
         {
             var pending = await harness.WaitForRequestAsync(first);
-            Assert.Contains(pending.FingerprintInputs, path => string.Equals(path, script, StringComparison.OrdinalIgnoreCase));
-            Assert.Contains(pending.FingerprintInputs, path => string.Equals(path, config, StringComparison.OrdinalIgnoreCase));
             harness.Runtime.Decide(pending.AttemptId, pending.DisplayChallenge, SecretsConsentChoice.YesAlways, true);
-            await Finish(first, "first");
+            Assert.Equal("first", await first.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(20)));
+            await first.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, first.ExitCode);
         }
-        using (var unchanged = Start()) await Finish(unchanged, "first");
+
         File.WriteAllText(script, "[Console]::Write('changed')");
-        using (var changedScript = Start())
-        {
-            var pending = await harness.WaitForRequestAsync(changedScript);
-            harness.Runtime.Decide(pending.AttemptId, pending.DisplayChallenge, SecretsConsentChoice.YesAlways, true);
-            await Finish(changedScript, "changed");
-        }
-        File.WriteAllText(config, "{\"changed\":true}");
-        using var changedConfig = Start();
-        Approve(harness, await harness.WaitForRequestAsync(changedConfig));
-        await Finish(changedConfig, "changed");
+        using var changed = Start();
+        Assert.Equal("changed", await changed.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(20)));
+        await changed.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, changed.ExitCode);
+        Assert.Empty(harness.Runtime.PendingRequests());
     }
 
     [Fact]

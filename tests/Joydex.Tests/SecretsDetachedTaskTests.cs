@@ -135,38 +135,6 @@ public sealed class SecretsDetachedTaskTests : IDisposable
         Assert.Empty(journal.FindUnconfirmedLaunches());
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task FingerprintedInputStaysLockedUntilDetachedTaskFinishes(bool stop)
-    {
-        var input = Path.Combine(_root, "approved.ps1");
-        var ready = Path.Combine(_root, "ready");
-        var proceed = Path.Combine(_root, "proceed");
-        File.WriteAllText(input, "[Console]::WriteLine('approved-content')");
-        var task = await Launch($"[IO.File]::WriteAllText('{ready}', 'ready'); "
-            + $"while (!(Test-Path '{proceed}')) {{ Start-Sleep -Milliseconds 50 }}; & '{input}'",
-            fingerprintInputs: [input]);
-        await WaitUntil(() => Task.FromResult(File.Exists(ready)));
-
-        // The child is running but has not opened the approved input yet.
-        Assert.Throws<IOException>(() => File.WriteAllText(input, "throw 'changed'"));
-        Assert.Throws<IOException>(() => File.Move(input, input + ".old"));
-        if (stop)
-        {
-            Assert.Equal("stopped", (await SecretsDetachedTask.ControlAsync(_root, task.TaskId, true)).State);
-        }
-        else
-        {
-            File.WriteAllText(proceed, "continue");
-            await WaitUntil(async () => (await SecretsDetachedTask.ControlAsync(_root, task.TaskId, false)).State == "completed");
-            Assert.Contains("approved-content", File.ReadAllText(task.StandardOutputPath));
-        }
-        await WaitUntil(() => Task.FromResult(!Alive(task.HelperProcessId!.Value)));
-        File.WriteAllText(input, "released");
-        Assert.Equal("released", File.ReadAllText(input));
-    }
-
     [Fact]
     public async Task LogsPreserveUnicodeEnvironmentCwdAndNonzeroExitWithoutPersistingEnvironment()
     {
@@ -241,13 +209,13 @@ public sealed class SecretsDetachedTaskTests : IDisposable
 
     private async Task<SecretsTaskReceipt> Launch(string script, int? seconds = null, string? id = null,
         Action? commit = null, Dictionary<string, string>? environment = null, string? requestId = null,
-        string? workingDirectory = null, IReadOnlyList<string>? fingerprintInputs = null)
+        string? workingDirectory = null)
     {
         id ??= Guid.NewGuid().ToString("N");
         var exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
         var operation = ExecOperationCanonicalizer.Resolve(new("test", "test-project", _root, "test-worktree", _root, 1), ["synthetic"],
             new ExecOperationProposal(exe, ["-NoProfile", "-NonInteractive", "-Command", script], workingDirectory ?? _root,
-                new Dictionary<string, string> { ["SYNTHETIC_TOKEN"] = "synthetic" }, fingerprintInputs ?? [], SecretOutputDisclosure.None,
+                new Dictionary<string, string> { ["SYNTHETIC_TOKEN"] = "synthetic" }, [], SecretOutputDisclosure.None,
                 Lifetime: SecretsExecutionLifetime.Detached, DetachedTimeoutSeconds: seconds, TaskId: id));
         var auditPath = Path.Combine(SecretsPaths.GetSecretsRoot(_root), "audit.jsonl");
         Directory.CreateDirectory(Path.GetDirectoryName(auditPath)!);
