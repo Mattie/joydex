@@ -45,6 +45,9 @@ public sealed class JoydexLocalProfileStoreTests
             Assert.Equal(
                 Path.Combine(Path.GetFullPath(deploymentRoot), "joydex-secrets.exe"),
                 profile["secrets_cli_path"]);
+            var launchPaths = JoydexLocalProfileStore.ReadLaunchPaths(profilePath);
+            Assert.Equal(profile["application_path"], launchPaths.ApplicationPath);
+            Assert.Equal(profile["configuration_path"], launchPaths.ConfigurationPath);
             Assert.Empty(Directory.GetFiles(
                 Path.GetDirectoryName(profilePath)!,
                 ".profile.yaml.*.tmp"));
@@ -53,6 +56,33 @@ public sealed class JoydexLocalProfileStoreTests
         {
             try { Directory.Delete(root, recursive: true); }
             catch { }
+        }
+    }
+
+    [Fact]
+    public void ReadLaunchPathsRejectsRepeatedApplicationPath()
+    {
+        var profilePath = Path.Combine(
+            Path.GetTempPath(),
+            "joydex-profile-tests",
+            Guid.NewGuid().ToString("N"),
+            "profile.yaml");
+        Directory.CreateDirectory(Path.GetDirectoryName(profilePath)!);
+        try
+        {
+            File.WriteAllLines(profilePath, [
+                "schema_version: 1",
+                "configuration_path: 'C:\\Joydex\\config.json'",
+                "application_path: 'C:\\Joydex\\Joydex.App.exe'",
+                "application_path: 'C:\\Other\\Joydex.App.exe'",
+            ]);
+
+            Assert.Throws<InvalidDataException>(() =>
+                JoydexLocalProfileStore.ReadLaunchPaths(profilePath));
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(profilePath)!, recursive: true);
         }
     }
 
