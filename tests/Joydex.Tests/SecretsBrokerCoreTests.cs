@@ -55,6 +55,35 @@ public sealed class SecretsBrokerCoreTests : IDisposable
     }
 
     [Fact]
+    public async Task CommittedExecutionStaysActivePastApprovalExpiryUntilCancelled()
+    {
+        using var harness = new Harness(_directory);
+        var pending = harness.Submit("long-running", "ping -n 60 127.0.0.1 > nul");
+        var shown = Assert.Single(harness.Broker.PendingRequests());
+        var allowed = harness.Broker.Decide(pending.AttemptId, shown.DisplayChallenge,
+            SecretsConsentChoice.Yes, requireOperation: true);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var execution = harness.RunAsync(allowed, cancellation.Token);
+        try
+        {
+            while (!harness.Audit.ReadAll().Any(record => record.AttemptId == pending.AttemptId
+                && record.Kind == SecretsAuditEventKind.LaunchStarted))
+                await Task.Delay(10, cancellation.Token);
+            harness.Clock.Advance(TimeSpan.FromMinutes(3));
+            Assert.Equal(SecretsRequestStatus.Allowed, harness.Status(pending.RequestId).Status);
+            Assert.True(harness.Broker.ContainsActiveRequest("release-helper", "joydex", pending.RequestId));
+            Assert.DoesNotContain(harness.Audit.ReadAll(), record => record.AttemptId == pending.AttemptId
+                && record.Outcome == "expired");
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => execution);
+        }
+        Assert.False(harness.Broker.ContainsActiveRequest("release-helper", "joydex", pending.RequestId));
+    }
+
+    [Fact]
     public async Task DetachedRequestCanRecordFuturePolicyButCanNeverRun()
     {
         using var harness = new Harness(_directory);

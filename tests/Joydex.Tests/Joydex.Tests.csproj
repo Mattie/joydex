@@ -44,6 +44,9 @@
     <None Include="..\..\config\joydex.example.json"
           Link="config\joydex.example.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\skills\joydex-secrets\SKILL.md"
+          Link="skills\joydex-secrets\SKILL.md"
+          CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\config\joydex.advanced.example.json"
           Link="config\joydex.advanced.example.json"
           CopyToOutputDirectory="PreserveNewest" />

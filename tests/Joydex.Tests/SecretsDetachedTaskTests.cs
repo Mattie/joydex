@@ -109,6 +109,33 @@ public sealed class SecretsDetachedTaskTests : IDisposable
     }
 
     [Fact]
+    public async Task PostCommitStartFailureRecordsTerminalAudit()
+    {
+        var cwd = Path.Combine(_root, "removed-cwd");
+        Directory.CreateDirectory(cwd);
+        var task = await Launch("exit 0", workingDirectory: cwd, commit: () => Directory.Delete(cwd));
+        await WaitUntil(async () => (await SecretsDetachedTask.ControlAsync(_root, task.TaskId, false)).State == "failedBeforeLaunch");
+        var journal = new SecretsAuditJournal(Path.Combine(SecretsPaths.GetSecretsRoot(_root), "audit.jsonl"));
+        await WaitUntil(() => Task.FromResult(journal.ReadAll().Any(record => record.RequestId == task.TaskId
+            && record.Kind == SecretsAuditEventKind.FailedBeforeLaunch)));
+        Assert.Empty(journal.FindUnconfirmedLaunches());
+    }
+
+    [Fact]
+    public async Task PostStartLogFailureStopsChildAndRecordsTerminalAudit()
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var task = await Launch("Start-Sleep -Seconds 120", id: id, commit: () =>
+            Directory.CreateDirectory(Path.Combine(SecretsPaths.GetSecretsRoot(_root), "tasks", id, "stdout.log")));
+        await WaitUntil(async () => (await SecretsDetachedTask.ControlAsync(_root, id, false)).State == "stopped");
+        var journal = new SecretsAuditJournal(Path.Combine(SecretsPaths.GetSecretsRoot(_root), "audit.jsonl"));
+        await WaitUntil(() => Task.FromResult(journal.ReadAll().Any(record => record.RequestId == id
+            && record.Kind == SecretsAuditEventKind.LaunchTerminated)));
+        Assert.False(Alive(task.ChildProcessId!.Value));
+        Assert.Empty(journal.FindUnconfirmedLaunches());
+    }
+
+    [Fact]
     public async Task LogsPreserveUnicodeEnvironmentCwdAndNonzeroExitWithoutPersistingEnvironment()
     {
         var task = await Launch("[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::WriteLine($env:TASK_CANARY); [Console]::Error.WriteLine((Get-Location).Path); exit 7",
@@ -181,12 +208,13 @@ public sealed class SecretsDetachedTaskTests : IDisposable
     }
 
     private async Task<SecretsTaskReceipt> Launch(string script, int? seconds = null, string? id = null,
-        Action? commit = null, Dictionary<string, string>? environment = null, string? requestId = null)
+        Action? commit = null, Dictionary<string, string>? environment = null, string? requestId = null,
+        string? workingDirectory = null)
     {
         id ??= Guid.NewGuid().ToString("N");
         var exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
         var operation = ExecOperationCanonicalizer.Resolve(new("test", "test-project", _root, "test-worktree", _root, 1), ["synthetic"],
-            new ExecOperationProposal(exe, ["-NoProfile", "-NonInteractive", "-Command", script], _root,
+            new ExecOperationProposal(exe, ["-NoProfile", "-NonInteractive", "-Command", script], workingDirectory ?? _root,
                 new Dictionary<string, string> { ["SYNTHETIC_TOKEN"] = "synthetic" }, [], SecretOutputDisclosure.None,
                 Lifetime: SecretsExecutionLifetime.Detached, DetachedTimeoutSeconds: seconds, TaskId: id));
         var auditPath = Path.Combine(SecretsPaths.GetSecretsRoot(_root), "audit.jsonl");
@@ -195,7 +223,9 @@ public sealed class SecretsDetachedTaskTests : IDisposable
         var env = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
             .ToDictionary(p => (string)p.Key, p => (string)p.Value!, StringComparer.OrdinalIgnoreCase);
         if (environment is not null) foreach (var pair in environment) env[pair.Key] = pair.Value;
-        var receipt = await SecretsDetachedTask.LaunchAsync(auditPath, operation, env, audit, commit ?? (() => { }), CancellationToken.None);
+        var journal = new SecretsAuditJournal(auditPath);
+        var receipt = await SecretsDetachedTask.LaunchAsync(auditPath, operation, env, audit,
+            () => { commit?.Invoke(); journal.Append(audit); }, CancellationToken.None);
         _tasks.Add(receipt);
         return receipt;
     }

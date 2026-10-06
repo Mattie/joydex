@@ -1021,28 +1021,38 @@ public sealed class SecretsBrokerCore
     {
         void Commit()
         {
-            _clients.WithLock(() => _policy.WithLock(() =>
-                WithOperatingModeSnapshotLock(_time.GetUtcNow(), operatingMode =>
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    FinalAuthorization(
-                        originalAuthentication,
-                        credential,
-                        request,
-                        authorizedPolicyEpoch,
-                        authorizedOperatingModeEpoch,
-                        operatingMode);
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (request.Operation.Lifetime == SecretsExecutionLifetime.Detached)
+            lock (_gate)
+            {
+                var key = new RequestKey(originalAuthentication.Principal.RegistrationId,
+                    originalAuthentication.Principal.Generation, request.Response.RequestId);
+                MaintainRequests(_time.GetUtcNow());
+                if (!_requests.TryGetValue(key, out var current)
+                    || current.Response.Status != SecretsRequestStatus.Allowed || current.LaunchCommitted)
+                    throw new InvalidOperationException("The request is no longer allowed for execution.");
+                _clients.WithLock(() => _policy.WithLock(() =>
+                    WithOperatingModeSnapshotLock(_time.GetUtcNow(), operatingMode =>
                     {
-                        var consumed = _reservations.Consume(reservation, originalAuthentication.Principal,
-                            request.Response.RequestId, request.Scope, authorizedPolicyEpoch, _time.GetUtcNow(), authorizedOperatingModeEpoch);
-                        if (consumed != SecretsReservationConsumeResult.Consumed)
-                            throw new InvalidOperationException("The detached reservation is no longer usable.");
-                    }
-                    _audit.Append(launchCommit);
-                    return true;
-                })));
+                        cancellationToken.ThrowIfCancellationRequested();
+                        FinalAuthorization(
+                            originalAuthentication,
+                            credential,
+                            request,
+                            authorizedPolicyEpoch,
+                            authorizedOperatingModeEpoch,
+                            operatingMode);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (request.Operation.Lifetime == SecretsExecutionLifetime.Detached)
+                        {
+                            var consumed = _reservations.Consume(reservation, originalAuthentication.Principal,
+                                request.Response.RequestId, request.Scope, authorizedPolicyEpoch, _time.GetUtcNow(), authorizedOperatingModeEpoch);
+                            if (consumed != SecretsReservationConsumeResult.Consumed)
+                                throw new InvalidOperationException("The detached reservation is no longer usable.");
+                        }
+                        _audit.Append(launchCommit);
+                        _requests[key] = current with { LaunchCommitted = true };
+                        return true;
+                    })));
+            }
         }
 
         if (coordinateFinalAuthorization is null) Commit();
@@ -1353,6 +1363,8 @@ public sealed class SecretsBrokerCore
         _reservations.Prune(now);
         foreach (var pair in _requests.ToArray())
         {
+            // Approval expiry stops unredeemed requests, not executions already committed.
+            if (pair.Value.LaunchCommitted) continue;
             if (pair.Value.Response.ExpiresAt > now) continue;
             if (pair.Value.Response.Status is SecretsRequestStatus.Pending
                 or SecretsRequestStatus.AgentDetached
@@ -1510,7 +1522,8 @@ public sealed class SecretsBrokerCore
         Guid? AuthorizingRuleId,
         bool AutoAllowed,
         IReadOnlyList<string> NewAliases,
-        SecretsDetachReason? DetachedReason);
+        SecretsDetachReason? DetachedReason,
+        bool LaunchCommitted = false);
 }
 
 internal sealed class SecretsProviderUnavailableException(Exception innerException)

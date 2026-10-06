@@ -114,7 +114,6 @@ public static class SecretsDetachedTask
         // No dependency on broker/caller cancellation after this point.
         var journal = new SecretsAuditJournal(launch.AuditPath);
         var receipt = Load(taskDirectory);
-        var started = false;
         SecretsOwnedProcess? child = null;
         try
         {
@@ -125,7 +124,6 @@ public static class SecretsDetachedTask
             foreach (var pair in launch.Environment) info.Environment[pair.Key] = pair.Value;
             child = SecretsOwnedProcess.Start(info, job);
             files.Dispose();
-            started = true;
             launch.Environment.Clear(); info.Environment.Clear();
             receipt = receipt with { State = "running", HelperProcessId = self.Id, HelperStartedAt = self.StartTime.ToUniversalTime(),
                 ChildProcessId = child.Id, ChildStartedAt = child.StartTime.ToUniversalTime(),
@@ -174,8 +172,19 @@ public static class SecretsDetachedTask
         }
         catch
         {
-            var state = !started ? "failedBeforeLaunch" : child!.TerminateAndConfirm() ? "stopped" : "unknown";
-            Save(taskDirectory, receipt with { State = state, FinishedAt = DateTimeOffset.UtcNow });
+            var state = child is null ? "failedBeforeLaunch" : child.TerminateAndConfirm() ? "stopped" : "unknown";
+            try { Save(taskDirectory, receipt with { State = state, FinishedAt = DateTimeOffset.UtcNow }); }
+            finally
+            {
+                journal.Append(launch.Audit with
+                {
+                    Kind = state == "failedBeforeLaunch" ? SecretsAuditEventKind.FailedBeforeLaunch
+                        : state == "stopped" ? SecretsAuditEventKind.LaunchTerminated : SecretsAuditEventKind.LaunchUnconfirmed,
+                    Timestamp = DateTimeOffset.UtcNow,
+                    ProcessId = child?.Id,
+                    ProcessStartedAt = child?.StartTime.ToUniversalTime(),
+                });
+            }
             throw;
         }
         finally { child?.Dispose(); launch.Environment.Clear(); }
