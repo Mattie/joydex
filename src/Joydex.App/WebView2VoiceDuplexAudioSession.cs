@@ -357,10 +357,13 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
     }
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs eventArgs)
+        => HandleWebMessage(eventArgs.WebMessageAsJson);
+
+    internal void HandleWebMessage(string messageJson)
     {
         try
         {
-            using var document = JsonDocument.Parse(eventArgs.WebMessageAsJson);
+            using var document = JsonDocument.Parse(messageJson);
             var root = document.RootElement;
             var type = root.TryGetProperty("type", out var typeElement)
                 ? typeElement.GetString()
@@ -427,6 +430,9 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
                     {
                         _pendingUserTranscript = MergeUserTranscript(_pendingUserTranscript, addedTranscript);
                         _transcriptChanged?.Invoke(CodexVoiceConversationKind.User, addedTranscript, false);
+                        // A delegated response can delay turn.done long after "hang up" is heard.
+                        // Keep the accumulated text so split negations still suppress the command.
+                        RequestSpokenHangup(_pendingUserTranscript);
                     }
                     break;
 
@@ -458,11 +464,7 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
                     _log?.Invoke(
                         $"Joydex received a completed user transcript for local controls; "
                         + $"length={completedTranscript.Length}; spokenHangup={isSpokenHangup}.");
-                    if (isSpokenHangup && Interlocked.Exchange(ref _spokenHangupRequested, 1) == 0)
-                    {
-                        _log?.Invoke("Joydex recognized a spoken hangup command; ending the room Voice Session.");
-                        _ = StopFromSpokenHangupAsync();
-                    }
+                    RequestSpokenHangup(completedTranscript);
                     break;
 
                 case "assistant-turn-done":
@@ -846,6 +848,16 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
             + $"inboundBytes={ReadInt64(message, "bytesReceived")}; "
             + $"inboundEnergy={ReadDouble(message, "inboundAudioEnergy"):F4}; "
             + $"inboundSampleSeconds={ReadDouble(message, "inboundSamplesDuration"):F2}.");
+    }
+
+    private void RequestSpokenHangup(string transcript)
+    {
+        if (IsSpokenHangupCommand(transcript)
+            && Interlocked.Exchange(ref _spokenHangupRequested, 1) == 0)
+        {
+            _log?.Invoke("Joydex recognized a spoken hangup command; ending the room Voice Session.");
+            _ = StopFromSpokenHangupAsync();
+        }
     }
 
     private async Task StopFromSpokenHangupAsync()

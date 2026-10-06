@@ -6,6 +6,36 @@ namespace Joydex.Tests;
 public sealed class WebView2VoiceDuplexAudioSessionLifetimeTests
 {
     [Fact]
+    public async Task SpokenHangupStopsBeforeTurnDoneAndOnlyOnce()
+    {
+        var stopCalls = 0;
+        await using var session = new WebView2VoiceDuplexAudioSession(
+            new ImmediateMediaDispatcher(),
+            Path.Combine(Path.GetTempPath(), "joydex-voice-tests", Guid.NewGuid().ToString("N")),
+            (_, _) => Task.FromResult(string.Empty),
+            () => { },
+            Task.CompletedTask,
+            Task.Delay(Timeout.InfiniteTimeSpan),
+            _ => { stopCalls++; return Task.CompletedTask; },
+            () => ValueTask.CompletedTask,
+            conversationSpeakerGain: 1);
+
+        session.HandleWebMessage("""{"type":"user-transcript-added","transcript":"Don't"}""");
+        session.HandleWebMessage("""{"type":"user-transcript-added","transcript":"hang up"}""");
+        Assert.Equal(0, stopCalls);
+        session.HandleWebMessage("""{"type":"user-turn-done","transcript":"Don't hang up"}""");
+        Assert.Equal(0, stopCalls);
+
+        session.HandleWebMessage("""{"type":"user-transcript-added","transcript":"Hang up"}""");
+        Assert.Equal(1, stopCalls);
+
+        session.HandleWebMessage("""{"type":"user-transcript-added","transcript":"Hang up Hello"}""");
+        session.HandleWebMessage("""{"type":"user-turn-done","transcript":"Hang up"}""");
+        Assert.Equal(1, stopCalls);
+        await session.Completion.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
     public async Task CanceledStopWaitDoesNotCancelTheSharedStopOrLaterDisposal()
     {
         var stopEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
