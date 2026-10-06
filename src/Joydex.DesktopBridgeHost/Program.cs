@@ -857,46 +857,53 @@ internal sealed class DesktopTaskBridgePipeServer(
             throw new InvalidDataException("Room Voice can release only a valid local Codex task.");
         }
 
-        await nativeClient.CallToolAsync(
+        return await ArchiveAndRestoreTaskAsync(
+            (archived, token) => nativeClient.CallToolAsync(
                 "set_thread_archived",
                 request.SourceThreadId,
-                request.Id + "-archive",
+                request.Id + (archived ? "-archive" : "-unarchive"),
                 JsonSerializer.SerializeToElement(new
                 {
                     threadId,
                     hostId = "local",
                     source = "codex",
-                    archived = true,
+                    archived,
                 }),
-                cancellationToken)
-            .ConfigureAwait(false);
+                token),
+            cancellationToken).ConfigureAwait(false);
+    }
 
-        // Once archive succeeds, always attempt the matching restore even when the caller
-        // cancels. Archive tears down Desktop's loaded writer; unarchive makes the same chat
-        // visible again without resuming it.
-        using var restoreDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    /// <summary>Completes the paired restore even if archive has an uncertain result or the caller cancels.</summary>
+    internal static async Task<string> ArchiveAndRestoreTaskAsync(
+        Func<bool, CancellationToken, Task<string>> setArchived,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        string restored;
         try
         {
-            return await nativeClient.CallToolAsync(
-                    "set_thread_archived",
-                    request.SourceThreadId,
-                    request.Id + "-unarchive",
-                    JsonSerializer.SerializeToElement(new
-                    {
-                        threadId,
-                        hostId = "local",
-                        source = "codex",
-                        archived = false,
-                    }),
-                    restoreDeadline.Token)
+            using var archiveDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await setArchived(true, archiveDeadline.Token)
                 .ConfigureAwait(false);
         }
-        catch (Exception exception)
+        finally
         {
-            throw new InvalidOperationException(
-                "Codex released the Room Voice chat but could not restore it to the task list.",
-                exception);
+            // A failed response does not prove that archive failed. Once attempted, restore
+            // the originally idle chat even after cancellation or an uncertain archive result.
+            using var restoreDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                restored = await setArchived(false, restoreDeadline.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                throw new InvalidOperationException(
+                    "Codex may have released the Room Voice chat but could not restore it to the task list.",
+                    exception);
+            }
         }
+        cancellationToken.ThrowIfCancellationRequested();
+        return restored;
     }
 
     public async ValueTask DisposeAsync()
