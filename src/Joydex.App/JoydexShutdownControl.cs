@@ -29,10 +29,12 @@ internal sealed class JoydexShutdownControl : IAsyncDisposable
         string executablePath,
         string configurationPath,
         SynchronizationContext ui,
-        Action beginExit)
+        Action beginExit,
+        Func<bool> isReady)
     {
         ArgumentNullException.ThrowIfNull(ui);
         ArgumentNullException.ThrowIfNull(beginExit);
+        ArgumentNullException.ThrowIfNull(isReady);
         _pipeName = PipeName(executablePath);
         _configurationBytes = StrictUtf8.GetBytes(Path.GetFullPath(configurationPath));
         if (_configurationBytes.Length == 0 || _configurationBytes.Length > MaximumConfigurationBytes)
@@ -40,7 +42,7 @@ internal sealed class JoydexShutdownControl : IAsyncDisposable
             throw new ArgumentException("The configuration path is too long.", nameof(configurationPath));
         }
         _listener = CreateListener(_pipeName);
-        _serveTask = ServeAsync(ui, beginExit);
+        _serveTask = ServeAsync(ui, beginExit, isReady);
     }
 
     /// <summary>Requests graceful tray exit and returns only after the App and runtime exit.</summary>
@@ -224,7 +226,7 @@ internal sealed class JoydexShutdownControl : IAsyncDisposable
         _stopping.Dispose();
     }
 
-    private async Task ServeAsync(SynchronizationContext ui, Action beginExit)
+    private async Task ServeAsync(SynchronizationContext ui, Action beginExit, Func<bool> isReady)
     {
         while (!_stopping.IsCancellationRequested)
         {
@@ -234,7 +236,8 @@ internal sealed class JoydexShutdownControl : IAsyncDisposable
                 await listener.WaitForConnectionAsync(_stopping.Token).ConfigureAwait(false);
                 var request = new byte[1];
                 await listener.ReadExactlyAsync(request, _stopping.Token).ConfigureAwait(false);
-                if (request[0] is ShutdownRequest or ProbeRequest)
+                // Keep shutdown available during reconnection, but never advertise stale readiness.
+                if (request[0] == ShutdownRequest || request[0] == ProbeRequest && isReady())
                 {
                     using var app = Process.GetCurrentProcess();
                     var reply = new byte[sizeof(int) + sizeof(long) + sizeof(int)];
