@@ -14,7 +14,7 @@ public sealed class SecretsSkillTests
         Assert.Contains("Get-JoydexProfileScalar 'application_path'", skill, StringComparison.Ordinal);
         Assert.Contains("--data-root $dataRoot", skill, StringComparison.Ordinal);
         Assert.Contains("--secret AGENTMAIL_API_KEY", skill, StringComparison.Ordinal);
-        Assert.Contains("--fingerprint '.\\message.json'", skill, StringComparison.Ordinal);
+        Assert.DoesNotContain("--fingerprint", skill, StringComparison.Ordinal);
         Assert.Contains("--on-approval-timeout run-without-secrets", skill, StringComparison.Ordinal);
         Assert.Contains("without you needing to read their values", skill, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Never open or read `.env`", skill, StringComparison.Ordinal);

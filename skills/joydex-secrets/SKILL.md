@@ -93,11 +93,8 @@ if ([IO.Path]::GetFileName($helper) -ine 'joydex-secrets.exe' `
   --project my-project `
   --reason 'Send the requested message' `
   --secret AGENTMAIL_API_KEY `
-  --fingerprint '.\message.json' `
   -- agentmail.exe send --draft '.\message.json'
 ```
-
-For mutable files that control the approved action, include each script, configuration, or draft with `--fingerprint PATH` before `--`. Repeat the option for multiple inputs. Relative paths resolve from the caller's working directory. Their contents become part of exact-operation approval, so changing a fingerprinted file requires a new decision. Joydex holds these files read-only for the child's lifetime, including detached execution. Explicit agent-wide grants still authorize future operations in their approved scope.
 
 Repeat `--secret` when a command needs more than one variable. The child runs in the caller's current directory with its inherited environment; Joydex-approved values replace matching variable names. By default, the helper streams child stdout and stderr directly, forwards stdin, and returns the exact child exit code. It adds no success message or JSON envelope. Output is not truncated or redacted, so use commands that do not print credentials. Normal shell output redirection works. These are byte streams, not a terminal emulator.
 

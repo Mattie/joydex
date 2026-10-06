@@ -58,8 +58,6 @@ The helper submits the request, waits for the local decision, and runs the comma
 
 To retain the previous structured result, add `--output-mode json` before `--`. This captures bounded stdout/stderr, replaces Joydex-injected values with `[REDACTED]`, and prints one JSON result. It does not redact other values inherited from the caller. Its `secretsInjected` field says whether the broker supplied the requested variables. Output mode is part of the approval scope.
 
-For interpreter-backed scripts or commands that read configuration files, repeat `--fingerprint PATH` before `--` for each input whose contents should be bound to the approval. For example, `--fingerprint .\publish.ps1 --fingerprint .\publish.json -- powershell.exe -File .\publish.ps1` includes both files in the exact-operation digest. Paths are relative to the caller's current directory and must stay within the project worktree. Changed content asks again under an exact-operation rule; a change after approval is rejected before launch. Joydex fingerprints the executable automatically, but does not infer script dependencies or configuration inputs from arguments. Explicit agent-wide approvals still cover future commands within their scope.
-
 The normal approval timeout is 90 seconds. It cancels the request and does not start the command. You can set a shorter or longer wait from 1 to 110 seconds:
 
 ```powershell
