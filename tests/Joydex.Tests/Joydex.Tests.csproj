@@ -32,6 +32,10 @@
     <ProjectReference Include="..\..\src\Joydex.Virpil\Joydex.Virpil.csproj" />
     <ProjectReference Include="..\..\src\Joydex.App\Joydex.App.csproj" />
     <ProjectReference Include="..\..\src\Joydex.Contracts\Joydex.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Joydex.Secrets\Joydex.Secrets.csproj" />
+    <ProjectReference Include="..\..\src\Joydex.SecretsHost\Joydex.SecretsHost.csproj" />
+    <ProjectReference Include="..\Joydex.Secrets.ProcessFixture\Joydex.Secrets.ProcessFixture.csproj" />
+    <ProjectReference Include="..\..\tools\Joydex.Secrets.Cli\Joydex.Secrets.Cli.csproj" />
     <ProjectReference Include="..\..\src\Joydex.RuntimeHost\Joydex.RuntimeHost.csproj"
                       Aliases="RuntimeHost" />
   </ItemGroup>
@@ -39,6 +43,9 @@
   <ItemGroup>
     <None Include="..\..\config\joydex.example.json"
           Link="config\joydex.example.json"
+          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\skills\joydex-secrets\SKILL.md"
+          Link="skills\joydex-secrets\SKILL.md"
           CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\config\joydex.advanced.example.json"
           Link="config\joydex.advanced.example.json"

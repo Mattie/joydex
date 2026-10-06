@@ -705,3 +705,56 @@ The user also reported minor UI flakiness and considered it unrelated. No reprod
 cause was established. Shared held-key behavior, backend switching and crash recovery
 remain physical acceptance gaps. The device candidate remains running after the successful
 ordinary-controls, reconnect and capture isolation canaries.
+
+## Milestone 7 — Secrets plugin
+
+Status: native consent and management checkpoint in progress, 2026-09-13. The physical device
+candidate remains running and was not interrupted by this work.
+
+The 2026-10-04 mainline migration includes the later broker process, authenticated
+transport, management UI, packaged helper, caller-environment and byte-passthrough
+execution, and detached-task ownership. The early checkpoint below describes the
+initial implementation; [the Secrets guide](../../SECRETS.md) documents current behavior.
+
+The new `Joydex.Secrets` project establishes the broker-owned domain and persistence
+boundary for stable local requester identity, exact project and delivery-mode authentication,
+five consent decisions, exact-operation or client-scoped remembered rules, one-use
+reservations, sanitized durable audit, and exec injection through a minimal child
+environment. The first provider reads one explicitly configured dotenv file with a
+strict bounded parser; it performs no file search, interpolation or process-environment
+mutation. Client credentials are random, stored as one-way verifiers in the registry,
+and can be protected for the current Windows user in the helper credential store.
+
+The exec path freezes executable bytes, explicit fingerprint inputs, arguments,
+working-directory identity, secret-to-environment mappings and output disclosure in
+the operation digest. Immediately before launch it rechecks client and project identity,
+policy epoch and remembered rule, provider alias identity, reparse-free paths and file
+content. Open handles hold the working directory and approved files stable across process
+creation. Output is redacted; a bounded capture that truncates returns only a constant
+marker. A write-through launch commit lets a restarted broker refuse automatic replay
+when the prior outcome is uncertain and keeps completed request IDs terminal across
+restart. Client and policy mutation share the final authorization/commit lock boundary;
+a cancellation observed after commit produces a conclusive pre-launch failure record.
+
+Independent critical review found authority-expiry, restart replay, path replacement,
+alias remapping, cross-project redemption, cancellation and truncated-redaction gaps.
+Those paths were corrected before this checkpoint. The pinned-SDK Release selection now
+passes **41 tests, 0 failed, 0 skipped**, covering the authorization scopes and precedence,
+strict provider behavior, registry/policy/audit persistence, DPAPI storage, concurrent
+one-use redemption, broker consent decisions, expiry and identity failures, unconfirmed
+restart handling, environment isolation, real hidden child launch, redaction, truncation
+and working-directory replacement. These are background-safe tests using temporary data
+and synthetic secret values.
+
+The native consent surface now uses a modeless taskbar toast with request identity and command
+details separated from the decision controls. It shows environment-variable names, starts with
+agent-wide scope unchecked, and disables the two one-request choices when broader scope is
+selected. The Secrets configuration page lists and revokes remembered decisions, manages secret
+sources, and shows approval modes, usage totals, and sanitized recent activity. The helper creates
+its protected same-user requester identity on the first valid `exec` call, so there is no agent
+registration step. Client-scoped permanent denies now follow the scope shown by that toast.
+
+This checkpoint did not yet provide the broker process and authenticated local transport, a
+packaged helper executable, provider editor, plugin catalog and RuntimeHost composition,
+package wiring, latency evidence or an attended button-bound canary. Those pieces remain required
+before Secrets V1 is complete.

@@ -636,6 +636,7 @@ internal enum NavGlyph
     PromptPickers,
     ButtonMaps,
     RoomVoice,
+    Secrets,
     General,
 }
 
@@ -872,6 +873,12 @@ internal sealed class NavButton : Control
                 graphics.DrawArc(pen, left + 1, top + 5, 13, 9, 0, 180);
                 graphics.DrawLine(pen, left + 7, top + 12, left + 7, bottom);
                 graphics.DrawLine(pen, left + 3, bottom, left + 11, bottom);
+                break;
+            case NavGlyph.Secrets:
+                graphics.DrawEllipse(pen, left, top + 2, 7, 7);
+                graphics.DrawLine(pen, left + 6, top + 8, right, bottom - 1);
+                graphics.DrawLine(pen, right - 4, bottom - 5, right - 1, bottom - 8);
+                graphics.DrawLine(pen, right - 7, bottom - 8, right - 4, bottom - 11);
                 break;
             case NavGlyph.General:
                 graphics.DrawLine(pen, left, top + 2, right, top + 2);

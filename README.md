@@ -173,6 +173,10 @@ Configure it under **Configure → Room Voice**. The tray's **Room Voice** item 
 
 Joydex can accept authenticated, transcript-only Pebble Index 01 webhooks and forward them to one selected local Codex task. The receiver is disabled by default and listens only on loopback; the phone-facing HTTPS proxy or tunnel remains an explicit operator responsibility. Read the [Pebble Index setup and security guide](docs/PEBBLE_INDEX.md) before enabling it.
 
+## Experimental Secrets broker
+
+Joydex can show a native approval toast for a local agent's first secret-backed command and inject selected `.env` values into the approved child process without returning them to the agent. Secret sources, remembered decisions, approval modes, usage counts, and sanitized activity are managed under **Configure… → Secrets**; agent requests need no prior registration. Read the [Joydex Secrets guide](docs/SECRETS.md) for setup, helper commands, and the same-user security boundary.
+
 ## Experimental wireless touchscreen
 
 Joydex also includes an experimental ESPHome example for the
@@ -246,12 +250,15 @@ Trace output uses one-based button numbers, matching `config.json`. Move one con
 | `src/Joydex.Windows` | DirectInput, shortcut resolution and injection, safety guards, task links, hooks, and task-alert LED services |
 | `src/Joydex.App` | Tray lifecycle, configuration UI, dry-run inspector, prompt overlays, diagnostics, and button maps |
 | `src/Joydex.DesktopBridgeHost` | Experimental, constrained broker for sending Room Voice and Pebble Index prompts through Codex Desktop's task tools |
+| `src/Joydex.SecretsHost` | Native local Secrets broker and approval toast |
 | `src/Joydex.HookRelay` | Native hook command that forwards Codex lifecycle events to Joydex |
 | `src/Joydex.Guardian` | Crash cleanup for active task-status LEDs |
 | `tools/Joydex.Trace` | DirectInput discovery and event tracing |
+| `tools/Joydex.Secrets.Cli` | Authenticated helper for alias discovery, approval requests, waiting, and approved execution |
 | `firmware/esphome/voice-pe` | Source-only Home Assistant Voice PE firmware, cues, custom components, and build tooling |
 | `tests/Joydex.Tests` | Unit and Windows interop coverage |
 | `skills/calibrate-button-maps` | Agent workflow and utility for custom button-map region calibration |
+| `skills/joydex-secrets` | Agent workflow for approved secret use without raw-value retrieval |
 | `config/joydex.example.json` | Safe, machine-neutral starter configuration |
 | `config/joydex.advanced.example.json` | Sanitized two-controller working example |
 | `docs/` | Case study, setup guides, research notes, and images |

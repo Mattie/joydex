@@ -19,7 +19,7 @@ The initial implementation objective is specific: opening and using Configuratio
 | **VOICEPLUGIN** | Voice aggregate and owner supervision registered as plugin; visible Room Voice uses snapshots | PLUGINPILOT | Existing media/ownership tests and attended continuity scenario pass |
 | **PEBBLEPLUGIN** | Independent worker retaining hardened ingress/recovery and tracked shutdown; add explicit held/attempt state only where still needed; exact token/path compatibility | VOICEPLUGIN, shared Desktop gateway | Existing dedupe/auth/startup/save regressions and new crash fixtures pass; phone sender remains compatible |
 | **DEVICEPLUGINS** | DirectInput source and VIRPIL aggregate, per-source key ownership and Guardian alignment | HOSTSEAM, PLUGINPILOT | Existing profiles plus multi-device hold/crash/backend canaries pass |
-| **SECRETSV1** | Named-client enrollment, native popup, four choices, exact remembered rules, .env provider, exec helper | PROCESSUI, action registry | Identity/consent/failure tests, latency measurement and attended binding test |
+| **SECRETSV1** | First-use local requester identity, native popup, five choices, exact/client-scoped remembered rules, .env provider, exec helper | PROCESSUI, action registry | Identity/consent/failure tests, latency measurement and attended binding test |
 | **AGENTSKILL** | Helper/MCP integration and staged skill | SECRETSV1 | Authorized skill scan/install process and one-use/cached/denied agent scenarios |
 | **DESKTOPGATEWAY** | Integrator or one xhigh delegate adds gateway-owned creation intents, provenance, durable bindings and ambiguous-result reconciliation | Desktop gate, PLUGINPILOT | Creation/binding crash fixtures and installed-version canary; existing Voice/Pebble method scopes remain constrained |
 | **DISCORDV1** | Discord.Net worker, allowed projects, fresh creation, per-binding delivery and recovery | DESKTOPGATEWAY | End-to-end new Desktop task and reconnect test in restricted test channel |
@@ -131,7 +131,7 @@ No third-party package, firmware, or skill is installed by this design turn. Can
 | Question | Current design default | Smallest check that settles it |
 |---|---|---|
 | Can our external bridge create Desktop-owned tasks? | Conditional private adapter, no fallback owner | Installed Desktop gate above |
-| Can a tool prove originating Codex task? | NAMEDCLIENT first | Verified host metadata / per-task launch-capability prototype |
+| Can a tool prove originating Codex task? | LOCALREQUESTER is cooperative only | Verified host metadata / per-task launch-capability prototype |
 | How are controller keys released after hard process death? | Preserve existing orderly cleanup; explicitly implement any stronger crash guarantee | Inspect injected-key mechanisms, then kill-owner integration test |
 | Does separate media STA preserve Voice timing? | Voice worker retains all media traffic | Existing host canary + attended continuity |
 | Which IPC/package versions work on pinned .NET 8? | StreamJsonRpc and Discord.Net candidates | Minimal transport/build spike with exact artifacts |

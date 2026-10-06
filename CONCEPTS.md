@@ -298,9 +298,53 @@ A bounded host reservation for observing a selected device's next eligible input
 dispatching its normal binding. It belongs to a UI connection and expires on completion,
 cancellation, disconnect or timeout.
 
-**Registered Secret Client**:
-A broker-enrolled local client with an authenticated credential and canonical project scope.
-A submitted task ID is only a label until trusted host context proves its origin.
+**Local Secret Requester**:
+A local helper identity that Joydex creates automatically on first use and binds to a canonical
+project scope. Its protected credential keeps remembered decisions stable across requests. The
+requester name and any submitted task ID remain cooperative labels until trusted host context
+proves their origin.
+
+**Direct Secret Execution**:
+The ordinary agent flow in which one request names the required environment variables and exact
+child-process argument vector. Joydex obtains consent, injects approved values into that child,
+and relays child stdin, stdout and stderr unchanged with the exact child exit code. An optional
+JSON mode returns bounded, redacted output. Values are supplied through the child environment;
+the approved child controls what its output reveals. Direct execution uses the requester's current
+working directory and inherited environment, with Joydex-approved values replacing matching names.
+_Avoid_: Recipe, raw secret retrieval
+
+**Joydex Local Profile**:
+A value-free discovery file atomically rewritten by the normal tray process at
+`%LOCALAPPDATA%\Joydex\profile.yaml`. It records the current data root, configuration path and
+packaged executable paths so local tools can find the matching Joydex helper without inspecting
+running processes. It identifies the most recently started normal profile and does not claim that
+Joydex is still running.
+_Avoid_: Process discovery, registry locator
+
+**Secrets Execution Lifetime**:
+Attached is the default: the broker owns the execution job and stops the tree on caller loss,
+broker exit, timeout, or root-process completion. Detached is explicitly approved: one hidden
+Explorer-launched helper owns the job independently of caller and broker. Detached tasks have
+no timeout unless requested, no reboot recovery, and direct status/stop control by task ID.
+Lifetime is part of both exact-operation and client approval scope.
+
+**Detached Task Commit**:
+The one-use handoff boundary after the helper has prepared its job and validated executable
+files, and the broker has rechecked authorization and durably consumed the launch. Before
+commit, losing the connection launches nothing; after commit, the helper owns execution.
+A missing acknowledgement is uncertain and must be resolved using the same task ID.
+
+**Agent Detached Secret Request**:
+A policy-only request left after its helper stops waiting. It records whether the agent continued
+without Joydex injecting the requested secrets or did not run the command. It has no one-use reservation, cannot
+revive the original command, and can only create a remembered rule for future requests.
+_Avoid_: Pending execution, expired request
+
+**First Secret Request**:
+An alias that has not appeared in an earlier valid request from the same local requester and
+canonical project. Joydex calls it out in the consent toast so a newly introduced credential use
+is easy to spot.
+_Avoid_: First command, first request ID
 
 **Discord Task Binding**:
 A gateway-owned record connecting a Discord thread to the fresh Desktop-owned task that

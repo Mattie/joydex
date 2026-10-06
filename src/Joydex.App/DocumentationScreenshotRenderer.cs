@@ -86,6 +86,7 @@ internal static class DocumentationScreenshotRenderer
             {
                 ("Prompt Pickers", "joydex-prompt-pickers.png", new Size(1200, 800)),
                 ("Button Maps", "joydex-button-maps-configuration.png", new Size(1200, 800)),
+                ("Secrets", "joydex-secrets-configuration.png", new Size(1200, 800)),
                 ("General", "joydex-general-configuration.png", new Size(1200, 800)),
             })
             {

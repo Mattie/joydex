@@ -166,6 +166,10 @@ internal sealed class WindowsFormsRuntimeAppStartupHost : IRuntimeAppStartupHost
 
     public void RunTray(string configurationPath, bool demoMode, string? demoPipeName)
     {
+        if (!demoMode)
+        {
+            _ = JoydexLocalProfileStore.TryPublish(configurationPath, AppContext.BaseDirectory);
+        }
         using var context = new RuntimeTrayApplicationContext(
             configurationPath,
             demoMode,

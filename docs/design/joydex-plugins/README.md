@@ -16,7 +16,7 @@ The refresh incorporates the committed Voice, Pebble, configuration and controll
 | [Joydex PAD and controllers](04-pad-and-controllers.md) | Wireless touchscreen plugin, DirectInput plugin, VIRPIL outputs, shared binding engine and task alerts |
 | [Pebble Index plugin](05-pebble-index.md) | Independent ingress, durable delivery, bearer storage, migration and failure cases |
 | [Discord bot plugin](06-discord.md) | Fresh Desktop tasks in whitelisted projects, Discord thread mapping, authorization, delivery and compatibility gate |
-| [Secrets plugin](07-secrets.md) | Four choices, attributable clients, remembered grants, native popup, agent access and experimental .env provider |
+| [Secrets plugin](07-secrets.md) | Five choices, attributable clients, remembered grants, native popup, agent access and experimental .env provider |
 | [Delivery plan and acceptance](08-delivery-plan.md) | Ordered implementation slices, dependencies, acceptance matrix, rollout and unresolved checks |
 | [Prior art and evidence](09-prior-art.md) | Reuse shortlist, source links, license evidence and research limits |
 | [Agent implementation plan](10-agent-orchestration.md) | Overseer, Sol xhigh/medium assignments, worktree ownership, waves and integration gates |
@@ -38,7 +38,7 @@ flowchart TB
     E <--> B["Discord worker"]
     E <-->|"approval metadata only"| S["Secrets broker + consent window"]
     B <--> DC["Discord threads"]
-    S <-->|"per-client authenticated requests"| A["Agent helper / registered client"]
+    S <-->|"stable local requester"| A["Agent helper"]
     D <--> CD["Codex Desktop-owned tasks"]
 ~~~
 
@@ -52,7 +52,7 @@ The engine provides only services with actual reuse. Voice keeps its audio pipel
 | **KEEPFORMS** | Recommended UI: preserve our themed WinForms controls first. Moving ownership fixes the interruption; a visual rewrite is optional later. |
 | **WORKERPLUGINS** | Recommended deployment: process workers for Voice, Discord, Pebble and Secrets; trusted local device modules may initially share the engine process. |
 | **FRESHONLY** | Required Discord behavior: create a new Desktop task in an allowed saved project, then bind only that task to the new Discord thread. |
-| **NAMEDCLIENT** | Recommended first secrets identity: a registered client credential tied to an approved project. Use actual task identity only when request origin can be proven. |
+| **LOCALREQUESTER** | Initial secrets identity: the helper automatically creates a protected same-user identity tied to the current project. It is stable for remembered decisions but does not prove task origin. |
 | **ENVFIRST** | Recommended experimental secret source: a user-selected .env read only by the broker, with exact secret references and a clear later provider boundary. |
 
 These keywords identify proposed choices; they do not need separate approval before implementation planning can proceed. The implementation plan also names capability checks whose failure changes what we can deliver.
@@ -60,7 +60,7 @@ These keywords identify proposed choices; they do not need separate approval bef
 ## The three important limits
 
 1. **Desktop creation needs proof.** Our existing private compatibility bridge deliberately excludes creation and project enumeration. The Codex app tools available inside this conversation establish product capabilities, but they are not an external API contract for a shipped Joydex plugin. Discord must pass an installed-version probe before its transport is considered settled.
-2. **Names are labels, not credentials.** A caller can supply a real task ID and project name without originating from that task. The secrets design requires a broker-issued credential and distinguishes a named client from verified task origin.
+2. **Names are labels, not proof of origin.** The helper's protected local credential keeps one cooperative requester stable, but a caller can still supply a real task ID or project name without originating from that task. Verified task identity requires trusted host context.
 3. **A process boundary contains crashes, not a hostile Windows user.** Bundled plugins run as our logged-in user. The .env experiment and DPAPI storage cannot prevent another unrestricted process under that user from reading accessible files or inspecting processes.
 
 ## Proposed architecture records

@@ -41,6 +41,20 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     --output $output
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+& $dotnet publish (Join-Path $repositoryRoot 'src\Joydex.SecretsHost\Joydex.SecretsHost.csproj') `
+    --configuration Release `
+    --runtime win-x64 `
+    --self-contained false `
+    --output $output
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+& $dotnet publish (Join-Path $repositoryRoot 'tools\Joydex.Secrets.Cli\Joydex.Secrets.Cli.csproj') `
+    --configuration Release `
+    --runtime win-x64 `
+    --self-contained false `
+    --output $output
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 & $dotnet publish (Join-Path $repositoryRoot 'src\Joydex.PebbleWorker\Joydex.PebbleWorker.csproj') `
     --configuration Release `
     --runtime win-x64 `
