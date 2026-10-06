@@ -18,7 +18,9 @@ if ([IO.Path]::GetFileName($appPath) -ne 'Joydex.App.exe' -or
     !(Test-Path -LiteralPath $configurationPath -PathType Leaf)) {
     throw 'The Joydex profile must identify an existing application and configuration.'
 }
-if (Get-Process -Name 'Joydex.App' -ErrorAction SilentlyContinue) {
+$sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+if (Get-Process -Name 'Joydex.App' -ErrorAction SilentlyContinue |
+    Where-Object { $_.SessionId -eq $sessionId }) {
     throw 'Joydex is already running. Shut down its tray before using this launcher.'
 }
 
@@ -38,7 +40,7 @@ $desktop.Document.Application.ShellExecute(
 
 $deadline = (Get-Date).AddSeconds(15)
 do {
-    $app = Get-CimInstance Win32_Process -Filter "Name = 'Joydex.App.exe'" |
+    $app = Get-CimInstance Win32_Process -Filter "Name = 'Joydex.App.exe' AND SessionId = $sessionId" |
         Where-Object { $_.ExecutablePath -eq $appPath } | Select-Object -First 1
     if ($app) {
         $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($app.ParentProcessId)"
