@@ -203,7 +203,7 @@ public sealed class SecretsConfigurationAndTransportTests : IDisposable
         var server = new SecretsBrokerPipeServer(
             endpoint,
             runtime,
-            maximumRunDuration: TimeSpan.FromSeconds(1));
+            maximumRunDuration: TimeSpan.FromSeconds(30));
         using var cancellation = new CancellationTokenSource();
         var serverTask = server.RunAsync(cancellation.Token);
         var client = new SecretsBrokerPipeClient(_directory);
@@ -429,8 +429,9 @@ public sealed class SecretsConfigurationAndTransportTests : IDisposable
                     projectReference,
                     RequestId: timedRequest.RequestId,
                     Reservation: timedAllowed.Reservation,
+                    ExecutionTimeoutSeconds: 3,
                     CallerEnvironment: new Dictionary<string, string>()),
-                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(15),
                 CancellationToken.None);
 
             Assert.Equal(SecretsRequestStatus.Revoked, timedRun.Status);

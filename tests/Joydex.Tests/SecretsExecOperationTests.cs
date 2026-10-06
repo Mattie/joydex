@@ -339,9 +339,9 @@ public sealed class SecretsExecOperationTests : IDisposable
         var attempt = Guid.NewGuid();
         var journal = new SecretsAuditJournal(Path.Combine(_directory, "cancel-after-start-audit.jsonl"));
         var launcher = new SecretsExecLauncher(journal);
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => launcher.RunAsync(
+        var execution = launcher.RunAsync(
             attempt,
             "request-cancel-after-start",
             "release-helper",
@@ -350,7 +350,8 @@ public sealed class SecretsExecOperationTests : IDisposable
             operation,
             values,
             new Dictionary<string, string>(),
-            cancellation.Token));
+            cancellation.Token);
+        await CancelAfterLaunchAsync(execution, journal, attempt, cancellation);
 
         Assert.False(File.Exists(marker));
         Assert.Empty(journal.FindUnconfirmedLaunches());
@@ -384,9 +385,9 @@ public sealed class SecretsExecOperationTests : IDisposable
             process.WaitForExit(5000);
             return false;
         });
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => launcher.RunAsync(
+        var execution = launcher.RunAsync(
             attempt,
             "request-unconfirmed-cancel",
             "release-helper",
@@ -395,7 +396,8 @@ public sealed class SecretsExecOperationTests : IDisposable
             operation,
             values,
             new Dictionary<string, string>(),
-            cancellation.Token));
+            cancellation.Token);
+        await CancelAfterLaunchAsync(execution, journal, attempt, cancellation);
 
         Assert.Contains(attempt, journal.FindUnconfirmedLaunches());
         Assert.Contains(
@@ -403,6 +405,25 @@ public sealed class SecretsExecOperationTests : IDisposable
             record => record.AttemptId == attempt
                 && record.Kind == SecretsAuditEventKind.LaunchUnconfirmed
                 && record.Outcome == "cancellation-kill-unconfirmed");
+    }
+
+    private static async Task CancelAfterLaunchAsync(Task execution, SecretsAuditJournal journal,
+        Guid attempt, CancellationTokenSource cancellation)
+    {
+        try
+        {
+            while (!journal.ReadAll().Any(record => record.AttemptId == attempt
+                && record.Kind == SecretsAuditEventKind.LaunchStarted))
+            {
+                Assert.False(execution.IsCompleted, "Execution ended before the test observed child startup.");
+                await Task.Delay(10, cancellation.Token);
+            }
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => execution);
+        }
     }
 
     public void Dispose()

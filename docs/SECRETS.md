@@ -58,6 +58,8 @@ The helper submits the request, waits for the local decision, and runs the comma
 
 To retain the previous structured result, add `--output-mode json` before `--`. This captures bounded stdout/stderr, replaces Joydex-injected values with `[REDACTED]`, and prints one JSON result. It does not redact other values inherited from the caller. Its `secretsInjected` field says whether the broker supplied the requested variables. Output mode is part of the approval scope.
 
+For interpreter-backed scripts or commands that read configuration files, repeat `--fingerprint PATH` before `--` for each input whose contents should be bound to the approval. For example, `--fingerprint .\publish.ps1 --fingerprint .\publish.json -- powershell.exe -File .\publish.ps1` includes both files in the exact-operation digest. Paths are relative to the caller's current directory and must stay within the project worktree. Changed content asks again under an exact-operation rule; a change after approval is rejected before launch. Joydex fingerprints the executable automatically, but does not infer script dependencies or configuration inputs from arguments. Explicit agent-wide approvals still cover future commands within their scope.
+
 The normal approval timeout is 90 seconds. It cancels the request and does not start the command. You can set a shorter or longer wait from 1 to 110 seconds:
 
 ```powershell
@@ -74,6 +76,8 @@ Use `--execution-timeout SECONDS` to shorten the one-hour child-process limit. I
 When no child starts, exit code 11 means denied, cancelled, expired, or revoked; 12 means the helper detached or a lower-level wait timed out; 13 means the provider is unavailable; 14 means the client identity was rejected; and 15 covers other broker statuses. Invalid arguments and local transport failures return 2. Default mode reports wrapper failures on stderr and leaves stdout for the command. A completed child keeps its own exit code; use JSON mode when a structured distinction matters.
 
 The lower-level `request`, `wait`, `cancel`, and `run` commands, operation files, and saved-recipe storage remain available for advanced automation. They are not part of the normal Secrets UI or agent workflow.
+
+For an advanced operation file with `outputDisclosure: passthrough`, redeem its reservation with `run --output-mode passthrough` to connect stdin, stdout, and stderr and return the exact child exit code. Other output disclosures use the default JSON result. The selected run mode must match the approved operation.
 
 ## Attached and detached execution
 

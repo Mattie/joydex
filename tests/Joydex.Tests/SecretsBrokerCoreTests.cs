@@ -58,7 +58,8 @@ public sealed class SecretsBrokerCoreTests : IDisposable
     public async Task CommittedExecutionStaysActivePastApprovalExpiryUntilCancelled()
     {
         using var harness = new Harness(_directory);
-        var pending = harness.Submit("long-running", "ping -n 60 127.0.0.1 > nul");
+        var ping = Path.Combine(Environment.SystemDirectory, "PING.EXE");
+        var pending = harness.Submit("long-running", $"{ping} -n 60 127.0.0.1 > nul");
         var shown = Assert.Single(harness.Broker.PendingRequests());
         var allowed = harness.Broker.Decide(pending.AttemptId, shown.DisplayChallenge,
             SecretsConsentChoice.Yes, requireOperation: true);

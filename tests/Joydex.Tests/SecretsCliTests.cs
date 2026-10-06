@@ -100,6 +100,92 @@ public sealed class SecretsCliTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecFingerprintsScriptsAndConfigurationForRememberedApprovals()
+    {
+        await using var harness = new CliHarness(_directory);
+        var script = Path.Combine(_directory, "script.ps1");
+        var config = Path.Combine(_directory, "settings.json");
+        File.WriteAllText(script, "[Console]::Write('first')");
+        File.WriteAllText(config, "{}");
+        Process Start() => StartCli(harness, (IReadOnlyDictionary<string, string>?)null, _directory,
+            "--fingerprint", "script.ps1", "--fingerprint", "settings.json",
+            "--", harness.PowerShell, "-NoProfile", "-File", "script.ps1");
+        async Task Finish(Process process, string expected)
+        {
+            var output = await process.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(20));
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(string.Empty, await process.StandardError.ReadToEndAsync());
+            Assert.Equal(0, process.ExitCode);
+            Assert.Equal(expected, output);
+        }
+        using (var first = Start())
+        {
+            var pending = await harness.WaitForRequestAsync(first);
+            Assert.Contains(pending.FingerprintInputs, path => string.Equals(path, script, StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(pending.FingerprintInputs, path => string.Equals(path, config, StringComparison.OrdinalIgnoreCase));
+            harness.Runtime.Decide(pending.AttemptId, pending.DisplayChallenge, SecretsConsentChoice.YesAlways, true);
+            await Finish(first, "first");
+        }
+        using (var unchanged = Start()) await Finish(unchanged, "first");
+        File.WriteAllText(script, "[Console]::Write('changed')");
+        using (var changedScript = Start())
+        {
+            var pending = await harness.WaitForRequestAsync(changedScript);
+            harness.Runtime.Decide(pending.AttemptId, pending.DisplayChallenge, SecretsConsentChoice.YesAlways, true);
+            await Finish(changedScript, "changed");
+        }
+        File.WriteAllText(config, "{\"changed\":true}");
+        using var changedConfig = Start();
+        Approve(harness, await harness.WaitForRequestAsync(changedConfig));
+        await Finish(changedConfig, "changed");
+    }
+
+    [Fact]
+    public async Task AdvancedRequestWaitRunSupportsApprovedPassthroughStreams()
+    {
+        await using var harness = new CliHarness(_directory);
+        var operationFile = Path.Combine(_directory, "operation.json");
+        var operation = new ExecOperationProposal(harness.PowerShell,
+            ["-NoProfile", "-Command", "[Console]::OpenStandardInput().CopyTo([Console]::OpenStandardOutput()); [Console]::Error.Write('child error'); exit 301"],
+            _directory, new Dictionary<string, string> { ["SYNTHETIC_TOKEN"] = "SYNTHETIC_TOKEN" }, [], SecretOutputDisclosure.Passthrough);
+        var json = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+        json.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
+        File.WriteAllText(operationFile, JsonSerializer.Serialize(operation, json));
+        Process Start(string command, params string[] options) => StartHelper(harness, null, _directory,
+            [command, "--data-root", _directory, "--client", "codex", "--project", "joydex", "--request", "advanced-streams", ..options]);
+        using (var request = Start("request", "--reason", "Test advanced streams", "--operation-file", operationFile))
+        {
+            var output = await request.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            await request.WaitForExitAsync();
+            using var response = JsonDocument.Parse(output);
+            Assert.Equal("pending", response.RootElement.GetProperty("status").GetString());
+        }
+        Approve(harness, Assert.Single(harness.Runtime.PendingRequests()));
+        string reservation;
+        using (var wait = Start("wait"))
+        {
+            var output = await wait.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            await wait.WaitForExitAsync();
+            using var response = JsonDocument.Parse(output);
+            Assert.Equal("allowed", response.RootElement.GetProperty("status").GetString());
+            reservation = response.RootElement.GetProperty("reservation").GetString()!;
+        }
+        using var run = Start("run", "--reservation", reservation, "--output-mode", "passthrough");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var payload = new byte[] { 0, 255, 13, 10, 42 };
+        // Capture raw bytes without text conversion or a broker JSON envelope.
+        using var captured = new MemoryStream();
+        var outputTask = run.StandardOutput.BaseStream.CopyToAsync(captured, timeout.Token);
+        await run.StandardInput.BaseStream.WriteAsync(payload, timeout.Token);
+        run.StandardInput.Close();
+        await outputTask;
+        await run.WaitForExitAsync(timeout.Token);
+        Assert.Equal(payload, captured.ToArray());
+        Assert.Equal("child error", await run.StandardError.ReadToEndAsync(timeout.Token));
+        Assert.Equal(301, run.ExitCode);
+    }
+
+    [Fact]
     public async Task ClosingWrapperTerminatesApprovedChild()
     {
         await using var harness = new CliHarness(_directory);
@@ -196,7 +282,13 @@ public sealed class SecretsCliTests : IDisposable
     private static Process StartCli(CliHarness harness,
         IReadOnlyDictionary<string, string>? environment,
         string? workingDirectory,
-        params string[] tail)
+        params string[] tail) => StartHelper(harness, environment, workingDirectory,
+            new[] { "exec", "--data-root", harness.DataRoot, "--client", "codex",
+                "--project", "joydex", "--reason", "Test CLI streams", "--secret", "SYNTHETIC_TOKEN",
+                "--approval-timeout", "10", "--execution-timeout", "15" }.Concat(tail));
+
+    private static Process StartHelper(CliHarness harness,
+        IReadOnlyDictionary<string, string>? environment, string? workingDirectory, IEnumerable<string> arguments)
     {
         // Run the CLI with its own dependency files, not the test project's copied apphost.
         var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent!.Name;
@@ -213,9 +305,7 @@ public sealed class SecretsCliTests : IDisposable
             foreach (var variable in environment)
                 start.Environment[variable.Key] = variable.Value;
         }
-        foreach (var argument in new[] { "exec", "--data-root", harness.DataRoot, "--client", "codex",
-                     "--project", "joydex", "--reason", "Test CLI streams", "--secret", "SYNTHETIC_TOKEN",
-                     "--approval-timeout", "10", "--execution-timeout", "15" }.Concat(tail))
+        foreach (var argument in arguments)
             start.ArgumentList.Add(argument);
         return Process.Start(start)!;
     }

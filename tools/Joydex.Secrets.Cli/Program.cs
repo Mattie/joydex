@@ -93,7 +93,7 @@ internal static class Program
             args.CommandTokens.Skip(1).ToArray(),
             workingDirectory,
             secrets.ToDictionary(secret => secret, secret => secret, StringComparer.OrdinalIgnoreCase),
-            [],
+            args.Many("fingerprint").Select(path => Path.GetFullPath(path, workingDirectory)).ToArray(),
             detached ? SecretOutputDisclosure.None : passthrough ? SecretOutputDisclosure.Passthrough : SecretOutputDisclosure.Summary,
             Lifetime: detached ? SecretsExecutionLifetime.Detached : SecretsExecutionLifetime.Attached,
             DetachedTimeoutSeconds: detachedTimeout, TaskId: taskId);
@@ -352,6 +352,12 @@ internal static class Program
 
     private static async Task<int> RunAsync(SecretsBrokerPipeClient client, Arguments args)
     {
+        var outputMode = args.Optional("output-mode") ?? "json";
+        if (outputMode is not ("passthrough" or "json"))
+            throw new ArgumentException("--output-mode must be passthrough or json.");
+        if (outputMode == "passthrough")
+            return await RunApprovedAndWriteAsync(client, args.Required("client"), args.Required("project"),
+                args.Required("request"), args.Required("reservation"), 3600, passthrough: true);
         var reply = await SendAsync(client, new(
             SecretsBrokerCommandKind.Run,
             args.Required("client"),
@@ -454,7 +460,7 @@ internal static class Program
                 || extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase)))
         {
             throw new ArgumentException(
-                $"'{path}' is a script. Name cmd.exe or powershell.exe after -- and pass the script as an argument.");
+                $"'{path}' is a script. Name cmd.exe or powershell.exe after --, pass the script as an argument, and add --fingerprint SCRIPT_PATH before -- to bind approval to its contents.");
         }
         return path;
     }
@@ -636,7 +642,7 @@ internal static class Program
         return options;
     }
 
-    private const string Usage = "Usage: joydex-secrets exec [--detach] --client ID --project REF --reason TEXT --secret ENV_NAME [--secret ENV_NAME] [--approval-timeout SECONDS] [--on-approval-timeout cancel|run-without-secrets|leave-pending] [--execution-timeout SECONDS] [--output-mode passthrough|json] -- PROGRAM [ARG ...]\nDetached control: joydex-secrets <status|stop> --task TASK_ID [--data-root PATH]\nDetached execution rejects --output-mode and alternative approval-timeout actions.\nAdvanced: joydex-secrets <aliases|request|wait|cancel|run> --client ID --project REF [options]";
+    private const string Usage = "Usage: joydex-secrets exec [--detach] --client ID --project REF --reason TEXT --secret ENV_NAME [--secret ENV_NAME] [--fingerprint PATH ...] [--approval-timeout SECONDS] [--on-approval-timeout cancel|run-without-secrets|leave-pending] [--execution-timeout SECONDS] [--output-mode passthrough|json] -- PROGRAM [ARG ...]\nDetached control: joydex-secrets <status|stop> --task TASK_ID [--data-root PATH]\nDetached execution rejects --output-mode and alternative approval-timeout actions.\nAdvanced: joydex-secrets <aliases|request|wait|cancel|run> --client ID --project REF [options]\nAdvanced run: add --output-mode passthrough when the approved operation declares outputDisclosure: passthrough; otherwise omit it for JSON results.";
 
     private enum ApprovalTimeoutAction
     {
@@ -736,6 +742,7 @@ internal static class Program
                     "request",
                     "reason",
                     "secret",
+                    "fingerprint",
                     "approval-timeout",
                     "on-approval-timeout",
                     "execution-timeout",
@@ -743,7 +750,7 @@ internal static class Program
                 "request" => ["client", "project", "request", "reason", "recipe", "operation-file", "parameter"],
                 "wait" => ["client", "project", "request", "timeout"],
                 "cancel" => ["client", "project", "request"],
-                "run" => ["client", "project", "request", "reservation"],
+                "run" => ["client", "project", "request", "reservation", "output-mode"],
                 "status" or "stop" => ["task"],
                 _ => throw new ArgumentException(Usage),
             };
