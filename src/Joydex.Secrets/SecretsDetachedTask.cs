@@ -123,7 +123,8 @@ public static class SecretsDetachedTask
             info.Environment.Clear();
             foreach (var pair in launch.Environment) info.Environment[pair.Key] = pair.Value;
             child = SecretsOwnedProcess.Start(info, job);
-            files.Dispose();
+            // Interpreters may open their inputs after startup. Keep the approved
+            // files leased until the child and its descendants have stopped.
             launch.Environment.Clear(); info.Environment.Clear();
             receipt = receipt with { State = "running", HelperProcessId = self.Id, HelperStartedAt = self.StartTime.ToUniversalTime(),
                 ChildProcessId = child.Id, ChildStartedAt = child.StartTime.ToUniversalTime(),

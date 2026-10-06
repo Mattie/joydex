@@ -33,7 +33,8 @@ public sealed record SecretsAuditRecord(
     int? ProcessId = null,
     DateTimeOffset? ProcessStartedAt = null,
     Guid? ClientRegistrationId = null,
-    long? ClientGeneration = null);
+    long? ClientGeneration = null,
+    string? ProjectIdentityDigest = null);
 
 /// <summary>A durable request identity whose launch boundary was already crossed.</summary>
 public enum SecretsCommittedOutcome
@@ -455,6 +456,8 @@ public sealed class SecretsAuditJournal
             || record.Aliases.Count > 64
             || record.Aliases.Any(alias => string.IsNullOrWhiteSpace(alias) || alias.Length > 96)
             || (record.OperationDigest is not null && record.OperationDigest.Length != 64)
+            || (record.ProjectIdentityDigest is not null && (record.ProjectIdentityDigest.Length != 64
+                || record.ProjectIdentityDigest.Any(character => !char.IsAsciiHexDigit(character))))
             || (record.Outcome is not null && record.Outcome.Length > 64)
             || (record.ClientRegistrationId is null) != (record.ClientGeneration is null)
             || record.ClientGeneration < 1)

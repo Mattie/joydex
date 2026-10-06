@@ -133,11 +133,59 @@ public sealed class SecretsBrokerCoreTests : IDisposable
             SecretsConsentChoice.No,
             requireOperation: true);
 
+        harness.ReopenBroker();
         harness.Submit("second-use", command: "exit /b 1");
         var secondShown = Assert.Single(harness.Broker.PendingRequests());
 
         Assert.Equal(["deploy-token"], firstShown.NewAliases);
         Assert.Empty(secondShown.NewAliases);
+    }
+
+    [Fact]
+    public void ReenrolledRequesterWithSameLabelsGetsFirstUseWarning()
+    {
+        using var harness = new Harness(_directory);
+        harness.Submit("old-registration");
+        harness.Clients.Revoke("release-helper");
+        using var enrollment = harness.Clients.Enroll("release-helper", "Release helper",
+            [harness.Project], [SecretDeliveryMode.ExecInject]);
+        var credential = enrollment.CopyCredential();
+        try
+        {
+            harness.ReopenBroker();
+            harness.Broker.Submit(harness.Submission("new-registration"), credential);
+            Assert.Equal(["deploy-token"], Assert.Single(harness.Broker.PendingRequests()).NewAliases);
+        }
+        finally { CryptographicOperations.ZeroMemory(credential); }
+    }
+
+    [Fact]
+    public void ChangedCanonicalProjectWithSameLabelGetsFirstUseWarning()
+    {
+        using var harness = new Harness(_directory);
+        harness.Submit("old-project");
+        var root = Path.Combine(_directory, "new-project");
+        Directory.CreateDirectory(root);
+        var project = harness.Project with { ProjectId = "new-project", CanonicalProjectRoot = root,
+            CanonicalWorktreeRoot = root, WorktreeId = "new-worktree" };
+        var registration = harness.Clients.EnsureLocalRequester("release-helper", "Release helper",
+            project, SecretDeliveryMode.ExecInject, harness.Credential);
+        Assert.Equal(harness.Principal.RegistrationId, registration.Principal.RegistrationId);
+        harness.ReopenBroker();
+        var submission = harness.Submission("new-project");
+        harness.Submit(submission with { Operation = submission.Operation! with { WorkingDirectory = root } });
+        Assert.Equal(["deploy-token"], Assert.Single(harness.Broker.PendingRequests()).NewAliases);
+    }
+
+    [Fact]
+    public void LegacyAuditWithoutAuthenticatedIdentityCannotHideFirstUse()
+    {
+        using var harness = new Harness(_directory);
+        harness.Audit.Append(new(Guid.NewGuid(), SecretsAuditEventKind.RequestOutcome,
+            harness.Clock.GetUtcNow(), "legacy", "release-helper", "joydex", ["deploy-token"],
+            OperationDigest: new string('a', 64), Outcome: "pending"));
+        harness.Submit("current");
+        Assert.Equal(["deploy-token"], Assert.Single(harness.Broker.PendingRequests()).NewAliases);
     }
 
     [Fact]
