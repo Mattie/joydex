@@ -3,8 +3,23 @@ namespace Joydex.App;
 internal static class Program
 {
     [STAThread]
-    private static void Main(string[] args)
+    private static int Main(string[] args)
     {
+        var shutdown = args.Any(argument =>
+            string.Equals(argument, "--shutdown", StringComparison.OrdinalIgnoreCase));
+        var restart = args.Any(argument =>
+            string.Equals(argument, "--restart", StringComparison.OrdinalIgnoreCase));
+        if (shutdown || restart)
+        {
+            if (args.Length != 1 || shutdown == restart) return 2;
+            var executablePath = Environment.ProcessPath ?? Application.ExecutablePath;
+            return (shutdown
+                    ? JoydexShutdownControl.RequestAsync(executablePath)
+                    : JoydexShutdownControl.RestartAsync(executablePath))
+                .GetAwaiter()
+                .GetResult();
+        }
+
         Application.SetHighDpiMode(
             DocumentationScreenshotRenderer.IsRenderRequest(args)
                 ? HighDpiMode.DpiUnaware
@@ -24,7 +39,7 @@ internal static class Program
                 "Joydex demo could not start",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
-            return;
+            return 1;
         }
 
         RuntimeAppStartupMode startupMode;
@@ -39,17 +54,17 @@ internal static class Program
                 "Joydex could not start",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
-            return;
+            return 1;
         }
 
         if (DocumentationScreenshotRenderer.TryRender(args))
         {
-            return;
+            return 0;
         }
 
         if (TryRenderButtonMap(args))
         {
-            return;
+            return 0;
         }
 
         try
@@ -69,7 +84,9 @@ internal static class Program
                     : "Joydex could not start",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
+            return 1;
         }
+        return 0;
     }
 
     private static bool TryRenderButtonMap(IReadOnlyList<string> args)

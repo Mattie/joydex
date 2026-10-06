@@ -71,7 +71,8 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private readonly Dictionary<RuntimeCommandKind, PendingCommand> _pendingCommands = [];
     private readonly Dictionary<TraySettingsAction, PendingSettingsWrite> _pendingSettingsWrites = [];
     private readonly Task _connectTask;
-    private RuntimeClientConnection? _connection;
+    private JoydexShutdownControl? _shutdownControl;
+    private volatile RuntimeClientConnection? _connection;
     private RuntimeSnapshot? _snapshot;
     private RuntimeSettingsWriter? _settingsWriter;
     private RoomVoiceForm? _voiceForm;
@@ -589,6 +590,16 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
 
     private void PublishConnection(RuntimeClientConnection connection)
     {
+        if (!_demoMode)
+        {
+            _shutdownControl ??= new JoydexShutdownControl(
+                Environment.ProcessPath ?? Application.ExecutablePath,
+                _configurationPath,
+                _ui,
+                () => BeginExit(),
+                () => _connection is { } current
+                    && !current.Completion.IsCompleted && IsUsable(current.State));
+        }
         _connection = connection;
         var generation = checked(++_connectionGeneration);
         _inputGeneration = NextInputGeneration(_inputGeneration);
@@ -1852,6 +1863,10 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
         }
         finally
         {
+            if (_shutdownControl is not null)
+            {
+                await _shutdownControl.DisposeAsync().ConfigureAwait(true);
+            }
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
             _icon.Dispose();
