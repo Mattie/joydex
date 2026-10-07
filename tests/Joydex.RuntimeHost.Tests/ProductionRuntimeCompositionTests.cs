@@ -133,6 +133,39 @@ public sealed class ProductionRuntimeCompositionTests
         Assert.DoesNotContain(rejected, factory.PluginRefreshes);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StartupCreatesVoiceOwnerBeforeAllowingUnchangedSettingsShortcut(bool failFirstAttempt)
+    {
+        using var scratch = new ScratchDirectory();
+        var factory = new FakeFactory();
+        if (failFirstAttempt)
+        {
+            factory.FailNextCreate[SettingsAggregateId.Voice] = new IOException("voice unavailable");
+        }
+        await using var composition = new ProductionRuntimeComposition(factory, default);
+        await using var coordinator = RuntimeSettingsCoordinator.Create(
+            RuntimeSettingsPaths.InDataRoot(scratch.Root),
+            new DefaultSettingsImpactPlanner(() => composition.VoiceSessionActive),
+            composition);
+
+        var startup = await coordinator.ReconcileStartupAsync(CancellationToken.None);
+        var voice = Assert.Single(startup.Aggregates, state => state.Aggregate == SettingsAggregateId.Voice);
+
+        Assert.Equal(
+            failFirstAttempt ? SettingsActivationState.Failed : SettingsActivationState.Applied,
+            voice.Activation);
+        Assert.Equal(1, factory.Created.Count(item => item == SettingsAggregateId.Voice));
+        Assert.Empty(factory.VoiceMessagingRefreshes);
+
+        var retry = await coordinator.ActivateDesiredAsync(SettingsAggregateId.Voice, CancellationToken.None);
+
+        Assert.Equal(SettingsActivationState.Applied, retry.State);
+        Assert.IsType<FakeVoiceOwner>(factory.Latest(SettingsAggregateId.Voice));
+        Assert.Equal(failFirstAttempt ? 2 : 1, factory.Created.Count(item => item == SettingsAggregateId.Voice));
+    }
+
     [Fact]
     public async Task StartupFailureRetriesOnlyThroughTheSettingsAuthority()
     {
