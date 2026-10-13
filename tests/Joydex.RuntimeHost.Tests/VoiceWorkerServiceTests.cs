@@ -6,6 +6,8 @@ using Joydex.Core.Voice;
 using Joydex.Ipc;
 using Joydex.VoiceWorker;
 using Joydex.Windows.Voice;
+using Nerdbank.Streams;
+using StreamJsonRpc;
 
 namespace Joydex.RuntimeHost.Tests;
 
@@ -18,10 +20,18 @@ public sealed class VoiceWorkerServiceTests
         var ticket = new VoiceWorkerLaunchTicket("unused", "capability", 4,
             VoiceWorkerProtocol.MajorVersion, VoiceWorkerProtocol.MinorVersion,
             process.Id, process.StartTime.ToUniversalTime().Ticks, process.SessionId);
-        var (rpc, bounded) = RuntimeJsonRpc.Create(new MemoryStream());
+        var (workerStream, hostStream) = FullDuplexStream.CreatePair();
+        var (rpc, bounded) = RuntimeJsonRpc.Create(workerStream);
+        var (hostRpc, hostBounded) = RuntimeJsonRpc.Create(hostStream);
         using (rpc)
         using (bounded)
+        using (hostRpc)
+        using (hostBounded)
         {
+            var host = new DryRunHost();
+            hostRpc.AddLocalRpcTarget(host);
+            hostRpc.StartListening();
+            rpc.StartListening();
             await using var service = new VoiceWorkerService(ticket, rpc);
             var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
             var request = new VoiceWorkerStartRequest(ticket.Capability, ticket.Generation,
@@ -36,15 +46,31 @@ public sealed class VoiceWorkerServiceTests
                     Path.Combine(directory, "voice.json"), Path.Combine(directory, "bridge.exe"), "unused"));
 
             var response = await service.StartAsync(request, CancellationToken.None);
+            await host.Ready.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             Assert.Null(response.Failure);
             Assert.NotNull(response.Snapshot);
             Assert.Equal(RuntimeVoiceSessionState.Armed, response.Snapshot.Voice.SessionState);
             Assert.False(response.Snapshot.Voice.OwnerReady);
             Assert.False(response.Snapshot.Voice.SessionActive);
-            Assert.False(service.Completion.IsCompleted);
+            Assert.False(service.Completion.IsCompleted, service.Completion.Exception?.ToString());
             Assert.False(Directory.Exists(directory));
         }
+    }
+
+    private sealed class DryRunHost
+    {
+        public TaskCompletionSource Ready { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        [JsonRpcMethod(VoiceWorkerProtocol.Log)]
+        public void Log(VoiceWorkerLogMessage message)
+        {
+            if (message.Message.StartsWith("Voice PE dry-run simulation started for dot", StringComparison.Ordinal))
+                Ready.TrySetResult();
+        }
+
+        [JsonRpcMethod(VoiceWorkerProtocol.PublishSnapshot)]
+        public void PublishSnapshot(VoiceWorkerSnapshot snapshot) { }
     }
 
     [Theory]
