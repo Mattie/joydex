@@ -30,10 +30,13 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
     private readonly string _userDataDirectory;
     private readonly Func<string, CancellationToken, Task<string>> _negotiate;
     private readonly Action _mediaConnected;
+    private readonly Action? _answerApplied;
     private readonly Task _realtimeReady;
     private readonly Task _realtimeCompletion;
     private readonly Func<CancellationToken, Task> _stopRealtime;
     private readonly Func<ValueTask> _disposeRealtime;
+    private readonly bool _localMediaFirst;
+    private readonly bool _trimInitialSpeakerSilence;
     private readonly int _conversationSpeakerGain;
     private readonly bool _preserveAssistantAudioDiagnostics;
     private readonly string _diagnosticsDirectory;
@@ -84,6 +87,7 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
     private long _speakerSessionDiagnosticTotalFrames;
     private DateTimeOffset _speakerSessionDiagnosticStartedAt;
     private int _spokenHangupRequested;
+    private int _answerAppliedNotified;
     private int _started;
     private int _disposed;
     private Task? _stopTask;
@@ -102,16 +106,22 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
         Action<CodexVoiceConversationKind, string, bool>? transcriptChanged = null,
         Action<string>? activityChanged = null,
         Action<string>? log = null,
-        string? diagnosticsDirectory = null)
+        string? diagnosticsDirectory = null,
+        bool localMediaFirst = false,
+        bool trimInitialSpeakerSilence = false,
+        Action? answerApplied = null)
     {
         _mediaDispatcher = mediaDispatcher ?? throw new ArgumentNullException(nameof(mediaDispatcher));
         _userDataDirectory = Path.GetFullPath(userDataDirectory);
         _negotiate = negotiate ?? throw new ArgumentNullException(nameof(negotiate));
         _mediaConnected = mediaConnected ?? throw new ArgumentNullException(nameof(mediaConnected));
+        _answerApplied = answerApplied;
         _realtimeReady = realtimeReady ?? throw new ArgumentNullException(nameof(realtimeReady));
         _realtimeCompletion = realtimeCompletion ?? throw new ArgumentNullException(nameof(realtimeCompletion));
         _stopRealtime = stopRealtime ?? throw new ArgumentNullException(nameof(stopRealtime));
         _disposeRealtime = disposeRealtime ?? throw new ArgumentNullException(nameof(disposeRealtime));
+        _localMediaFirst = localMediaFirst;
+        _trimInitialSpeakerSilence = trimInitialSpeakerSilence;
         if (conversationSpeakerGain is < VoicePePreferences.MinimumConversationSpeakerGain
             or > VoicePePreferences.MaximumConversationSpeakerGain)
         {
@@ -204,8 +214,22 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
     public async IAsyncEnumerable<VoiceSpeakerOutput> ReadSpeakerOutputAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        var contentStarted = !_trimInitialSpeakerSilence;
+        var trimmedFrames = 0;
         await foreach (var output in _speakerOutput.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
+            if (!contentStarted && output.Kind == VoiceSpeakerOutputKind.Audio && output.Frame is { } frame)
+            {
+                // A native dot call can deliver seconds of silent RTP while attach is still pending.
+                // Discard only the leading exact-zero PCM, preserving even the quietest speech.
+                if (PeakAbsolutePcm16(frame.Payload.Span) == 0)
+                {
+                    trimmedFrames++;
+                    continue;
+                }
+                contentStarted = true;
+                _log?.Invoke($"Joydex trimmed initial silent speaker frames; frames={trimmedFrames}; durationMs={trimmedFrames * 20}.");
+            }
             yield return output;
         }
     }
@@ -227,6 +251,22 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
     {
         try
         {
+            if (_localMediaFirst)
+            {
+                await StopInOrderAsync(
+                    async () =>
+                    {
+                        var localStop = Stopwatch.StartNew();
+                        await PostMessageAsync(new { type = "stop" }, CancellationToken.None).ConfigureAwait(false);
+                        await _browserStopped.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                        _log?.Invoke($"Native dot local media stop completed; elapsedMs={localStop.ElapsedMilliseconds}.");
+                        // Let the room transport drain while remote stop is pending. StopAsync
+                        // still joins the acknowledgment before cleanup can admit another wake.
+                        CompleteLocalMediaOutput();
+                    },
+                    () => _stopRealtime(CancellationToken.None)).ConfigureAwait(false);
+                return;
+            }
             try
             {
                 await _stopRealtime(CancellationToken.None).ConfigureAwait(false);
@@ -250,9 +290,24 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
         {
             await CompleteSpeakerSessionDiagnosticCaptureAsync().ConfigureAwait(false);
             LogMediaSummary();
-            _speakerOutput.Writer.TryComplete();
-            _completion.TrySetResult();
+            CompleteLocalMediaOutput();
         }
+    }
+
+    internal void CompleteLocalMediaOutput()
+    {
+        _speakerOutput.Writer.TryComplete();
+        _completion.TrySetResult();
+    }
+
+    internal static async Task StopInOrderAsync(Func<Task> localStop, Func<Task> serverStop)
+    {
+        Exception? localFailure = null;
+        try { await localStop().ConfigureAwait(false); }
+        catch (Exception exception) { localFailure = exception; }
+        // Always release the remote allocation, even if local media shutdown fails.
+        await serverStop().ConfigureAwait(false);
+        if (localFailure is not null) throw localFailure;
     }
 
     public async ValueTask DisposeAsync()
@@ -357,10 +412,13 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
     }
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs eventArgs)
+        => HandleWebMessage(eventArgs.WebMessageAsJson);
+
+    internal void HandleWebMessage(string messageJson)
     {
         try
         {
-            using var document = JsonDocument.Parse(eventArgs.WebMessageAsJson);
+            using var document = JsonDocument.Parse(messageJson);
             var root = document.RootElement;
             var type = root.TryGetProperty("type", out var typeElement)
                 ? typeElement.GetString()
@@ -377,6 +435,14 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
                         && sdpElement.GetString() is { Length: > 0 } sdp)
                     {
                         _offer.TrySetResult(sdp);
+                    }
+                    break;
+
+                case "answer-applied":
+                    if (Interlocked.Exchange(ref _answerAppliedNotified, 1) == 0)
+                    {
+                        _log?.Invoke("Joydex WebRTC answer is applied.");
+                        _answerApplied?.Invoke();
                     }
                     break;
 
@@ -427,6 +493,8 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
                     {
                         _pendingUserTranscript = MergeUserTranscript(_pendingUserTranscript, addedTranscript);
                         _transcriptChanged?.Invoke(CodexVoiceConversationKind.User, addedTranscript, false);
+                        // A prefix can become ordinary speech: "cancel" followed by "my timer".
+                        // Only the completed user transcript can authorize ending the call.
                     }
                     break;
 
@@ -458,11 +526,7 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
                     _log?.Invoke(
                         $"Joydex received a completed user transcript for local controls; "
                         + $"length={completedTranscript.Length}; spokenHangup={isSpokenHangup}.");
-                    if (isSpokenHangup && Interlocked.Exchange(ref _spokenHangupRequested, 1) == 0)
-                    {
-                        _log?.Invoke("Joydex recognized a spoken hangup command; ending the room Voice Session.");
-                        _ = StopFromSpokenHangupAsync();
-                    }
+                    RequestSpokenHangup(completedTranscript);
                     break;
 
                 case "assistant-turn-done":
@@ -848,6 +912,16 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
             + $"inboundSampleSeconds={ReadDouble(message, "inboundSamplesDuration"):F2}.");
     }
 
+    private void RequestSpokenHangup(string transcript)
+    {
+        if (IsSpokenHangupCommand(transcript)
+            && Interlocked.Exchange(ref _spokenHangupRequested, 1) == 0)
+        {
+            _log?.Invoke("Joydex recognized a spoken hangup command; ending the room Voice Session.");
+            _ = StopFromSpokenHangupAsync();
+        }
+    }
+
     private async Task StopFromSpokenHangupAsync()
     {
         try
@@ -1059,7 +1133,7 @@ internal sealed class WebView2VoiceDuplexAudioSession : IVoiceDuplexAudioSession
             + $"speakerPeak={Volatile.Read(ref _speakerPeakAbsolute)}.");
     }
 
-    private static int PeakAbsolutePcm16(byte[] payload)
+    private static int PeakAbsolutePcm16(ReadOnlySpan<byte> payload)
     {
         var peak = 0;
         for (var offset = 0; offset < payload.Length; offset += sizeof(short))

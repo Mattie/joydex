@@ -11,12 +11,20 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         AutoSize = true,
         Text = "Enable Room Voice",
     };
-    private readonly ComboBox _sessionMode = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly ComboBox _sessionMode = new() { Name = "RoomVoiceEngine", Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly TextBox _endpoint = new() { Dock = DockStyle.Fill };
     private readonly TextBox _taskReference = new() { Dock = DockStyle.Fill };
     private readonly TextBox _taskLabel = new() { Dock = DockStyle.Fill };
-    private readonly TextBox _dedicatedTaskReference = new() { Dock = DockStyle.Fill };
+    private readonly TextBox _dedicatedTaskReference = new() { Name = "RoomVoiceCodexThread", Dock = DockStyle.Fill };
     private readonly TextBox _dedicatedTaskLabel = new() { Dock = DockStyle.Fill };
+    private readonly TextBox _dotLabel = new() { Name = "RoomVoiceDot", Dock = DockStyle.Fill, ReadOnly = true, PlaceholderText = "Select the current dot" };
+    private readonly TextBox _dotPython = new() { Dock = DockStyle.Fill, PlaceholderText = "Automatic — Codex bundled Python" };
+    private readonly Button _selectDot = new RoundedButton { AutoSize = true, Text = "Select current dot", Name = "RoomVoiceSelectDot" };
+    private DotVoiceTarget? _dotTarget;
+    private GroupBox? _workspaceGroup;
+    private GroupBox? _desktopBridgeGroup;
+    private TableLayoutPanel? _codexConversationFields;
+    private TableLayoutPanel? _dotConversationFields;
     private readonly TextBox _codexAppServerPath = new()
     {
         Dock = DockStyle.Fill,
@@ -138,13 +146,18 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         _voiceTargetTaskId = initial.VoiceTargetTaskId;
         _voiceTargetHostId = initial.VoiceTargetHostId;
         _voiceTargetTaskLabel = initial.VoiceTargetTaskLabel;
+        _dotTarget = initial.DotTarget;
+        _dotLabel.Text = _dotTarget?.Label ?? string.Empty;
+        _dotPython.Text = initial.DotPythonExecutable;
+        _selectDot.Click += async (_, _) => await SelectDotAsync().ConfigureAwait(true);
 
         AutoScroll = true;
         Dock = DockStyle.Fill;
 
         _enabled.Checked = initial.Enabled;
         _sessionMode.Items.AddRange([
-            new SessionModeChoice(VoicePeSessionMode.JoydexOwner, "Joydex voice chat handoff"),
+            new SessionModeChoice(VoicePeSessionMode.JoydexOwner, "Codex task voice (legacy)"),
+            new SessionModeChoice(VoicePeSessionMode.NativeDot, "Dot voice (experimental)"),
             new SessionModeChoice(VoicePeSessionMode.LastVoiceFallback, "Native LASTVOICE (unavailable; dry run only)"),
         ]);
         _sessionMode.SelectedItem = _sessionMode.Items
@@ -257,6 +270,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             Text = "This folder is the agent's intended working location and session archive. It is not a filesystem security boundary.",
         }, 0, 3);
         var workspaceGroup = CreateGroup("Agent workspace", workspaceLayout);
+        _workspaceGroup = workspaceGroup;
         UpdateWorkspaceStatus(initial);
 
         var conversationFields = new TableLayoutPanel
@@ -268,9 +282,36 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         };
         conversationFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         conversationFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        AddField(conversationFields, 0, "Dedicated task label", _dedicatedTaskLabel);
-        AddField(conversationFields, 1, "Realtime voice", _realtimeVoice);
-        AddField(conversationFields, 2, "Speaker gain", _conversationSpeakerGain);
+        AddField(conversationFields, 0, "Voice engine", _sessionMode);
+        _codexConversationFields = new TableLayoutPanel
+        {
+            AutoSize = true,
+            ColumnCount = 2,
+            Dock = DockStyle.Top,
+            Margin = Padding.Empty,
+        };
+        _codexConversationFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _codexConversationFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        AddField(_codexConversationFields, 0, "Codex thread", _dedicatedTaskReference);
+        AddField(_codexConversationFields, 1, "Thread label", _dedicatedTaskLabel);
+        AddField(_codexConversationFields, 2, "Realtime voice", _realtimeVoice);
+        conversationFields.Controls.Add(_codexConversationFields, 0, 1);
+        conversationFields.SetColumnSpan(_codexConversationFields, 2);
+
+        _dotConversationFields = new TableLayoutPanel
+        {
+            AutoSize = true,
+            ColumnCount = 2,
+            Dock = DockStyle.Top,
+            Margin = Padding.Empty,
+        };
+        _dotConversationFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _dotConversationFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        AddField(_dotConversationFields, 0, "Dot", _dotLabel);
+        _dotConversationFields.Controls.Add(_selectDot, 1, 1);
+        conversationFields.Controls.Add(_dotConversationFields, 0, 2);
+        conversationFields.SetColumnSpan(_dotConversationFields, 2);
+        AddField(conversationFields, 3, "Speaker gain", _conversationSpeakerGain);
         var conversationGroup = CreateGroup("Conversation", conversationFields);
 
         var desktopBridgeCommands = new FlowLayoutPanel
@@ -317,6 +358,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         desktopBridgeLayout.Controls.Add(desktopBridgeCommands, 0, 2);
         desktopBridgeLayout.Controls.Add(_desktopBridgeStatus, 0, 3);
         var desktopBridgeGroup = CreateGroup("Desktop task messaging (experimental)", desktopBridgeLayout);
+        _desktopBridgeGroup = desktopBridgeGroup;
         if (_allowExternalActions)
         {
             _ = RefreshDesktopBridgeStatusAsync();
@@ -471,11 +513,10 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         };
         advancedFields.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         advancedFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        AddField(advancedFields, 0, "Session route", _sessionMode);
-        AddField(advancedFields, 1, "Dedicated task deep link", _dedicatedTaskReference);
-        AddField(advancedFields, 2, "App Server executable override", _codexAppServerPath);
-        AddField(advancedFields, 3, "LASTVOICE fallback task", _taskReference);
-        AddField(advancedFields, 4, "Fallback task label", _taskLabel);
+        AddField(advancedFields, 0, "App Server executable override", _codexAppServerPath);
+        AddField(advancedFields, 1, "LASTVOICE fallback task", _taskReference);
+        AddField(advancedFields, 2, "Fallback task label", _taskLabel);
+        AddField(advancedFields, 3, "Dot Python override", _dotPython);
         var advancedCommands = new FlowLayoutPanel
         {
             AutoSize = true,
@@ -497,7 +538,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             ForeColor = SystemColors.GrayText,
             MaximumSize = new Size(680, 0),
             Padding = new Padding(8, 0, 8, 8),
-            Text = "Joydex automatically follows Codex Desktop updates when the executable override is blank. Room Voice acquires the dedicated chat on wake and releases it after hangup, so Codex Desktop can use it between calls. Native LASTVOICE is unavailable because Codex cannot guarantee the saved task destination; its saved settings support dry-run simulation only.",
+            Text = "Codex task calls follow Desktop runtime updates and acquire the dedicated chat only during a call. Native dot calls use the selected dot's voice and context, and require revalidation after a Codex runtime upgrade. Native LASTVOICE supports dry-run simulation only.",
         }, 0, 2);
         var advancedGroup = CreateGroup("Advanced", advancedLayout);
 
@@ -526,8 +567,8 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             Text = "Configure the dedicated room device, conversation, and recovery diagnostics.",
         }, 0, 0);
         root.Controls.Add(_enabled, 0, 1);
-        root.Controls.Add(workspaceGroup, 0, 2);
-        root.Controls.Add(conversationGroup, 0, 3);
+        root.Controls.Add(conversationGroup, 0, 2);
+        root.Controls.Add(workspaceGroup, 0, 3);
         root.Controls.Add(desktopBridgeGroup, 0, 4);
         root.Controls.Add(tuningGroup, 0, 5);
         root.Controls.Add(diagnosticsGroup, 0, 6);
@@ -566,7 +607,9 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         DesktopTaskMessagingEnabled: _desktopTaskMessaging.Checked,
         VoiceTargetTaskId: _voiceTargetTaskId,
         VoiceTargetHostId: _voiceTargetHostId,
-        VoiceTargetTaskLabel: _voiceTargetTaskLabel).Normalize();
+        VoiceTargetTaskLabel: _voiceTargetTaskLabel,
+        DotTarget: _dotTarget,
+        DotPythonExecutable: _dotPython.Text).Normalize();
 
     internal void ApplyPreferences(VoicePePreferences preferences)
     {
@@ -611,6 +654,9 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             _voiceTargetTaskId = normalized.VoiceTargetTaskId;
             _voiceTargetHostId = normalized.VoiceTargetHostId;
             _voiceTargetTaskLabel = normalized.VoiceTargetTaskLabel;
+            _dotTarget = normalized.DotTarget;
+            _dotLabel.Text = _dotTarget?.Label ?? string.Empty;
+            _dotPython.Text = normalized.DotPythonExecutable;
         }
         finally
         {
@@ -1319,17 +1365,42 @@ internal sealed class RoomVoiceSettingsControl : UserControl
     {
         var ownerMode = (_sessionMode.SelectedItem as SessionModeChoice)?.Mode
             == VoicePeSessionMode.JoydexOwner;
+        var dotMode = (_sessionMode.SelectedItem as SessionModeChoice)?.Mode == VoicePeSessionMode.NativeDot;
+        if (_codexConversationFields is not null) _codexConversationFields.Visible = ownerMode;
+        if (_dotConversationFields is not null) _dotConversationFields.Visible = dotMode;
+        _selectDot.Enabled = dotMode && _allowExternalActions;
+        _dotLabel.Enabled = dotMode;
+        _dotPython.Enabled = dotMode;
+        if (_workspaceGroup is not null) _workspaceGroup.Visible = !dotMode;
+        if (_desktopBridgeGroup is not null) _desktopBridgeGroup.Visible = !dotMode;
         _dedicatedTaskReference.Enabled = ownerMode;
         _dedicatedTaskLabel.Enabled = ownerMode;
-        _codexAppServerPath.Enabled = ownerMode;
+        _codexAppServerPath.Enabled = ownerMode || dotMode;
         _agentProject.Enabled = ownerMode;
         _agentWorkspacePath.Enabled = ownerMode;
         _provisionWorkspaceButton.Enabled = _allowExternalActions
             && ownerMode
             && _provisionWorkspace is not null;
         _realtimeVoice.Enabled = ownerMode;
-        _conversationSpeakerGain.Enabled = ownerMode;
+        _conversationSpeakerGain.Enabled = ownerMode || dotMode;
         _desktopTaskMessaging.Enabled = ownerMode;
+    }
+
+    private async Task SelectDotAsync()
+    {
+        if (!_allowExternalActions) return;
+        _selectDot.Enabled = false;
+        try
+        {
+            _dotTarget = await DotVoiceSession.DiscoverAsync(ReadPreferences(), _tuningCancellationToken).ConfigureAwait(true);
+            _dotLabel.Text = _dotTarget.Label;
+        }
+        catch (OperationCanceledException) when (_tuningCancellationToken.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            if (!IsDisposed) MessageBox.Show(this, exception.Message, "Select dot", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally { if (!IsDisposed) UpdateRouteFields(); }
     }
 
     private void OnDisposed(object? sender, EventArgs eventArgs)

@@ -52,7 +52,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
 
     public VoicePeSessionMode Mode => _mode;
 
-    public bool OwnerReady => _mode == VoicePeSessionMode.JoydexOwner
+    public bool OwnerReady => _mode is VoicePeSessionMode.JoydexOwner or VoicePeSessionMode.NativeDot
         && _mediaSta?.Completion.IsCompleted == false;
 
     public bool IsSessionActive => _dedicatedCoordinator?.IsSessionActive == true;
@@ -152,6 +152,8 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                     desktopTaskBridgePipeName,
                     cancellationToken)
                 .ConfigureAwait(false),
+            VoicePeSessionMode.NativeDot => await StartDotAsync(normalized, safety,
+                endpoint, webViewDataDirectory, conversation, runtimeLog, cancellationToken).ConfigureAwait(false),
             _ => throw new InvalidDataException($"Unsupported Voice PE session mode {normalized.SessionMode}."),
         };
     }
@@ -285,6 +287,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
 
     public async Task RefreshConversationAsync(CancellationToken cancellationToken = default)
     {
+        if (_mode == VoicePeSessionMode.NativeDot) return;
         if (_conversationReader is null)
         {
             _conversation.SetFallbackState(enabled: true, dryRun: _fallbackSimulation);
@@ -643,6 +646,147 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
         }
     }
 
+    private static async Task<VoicePeBridgeRuntime> StartDotAsync(
+        VoicePePreferences preferences, SafetyOptions safety,
+        Uri endpoint, string webViewDataDirectory, RoomVoiceConversationModel conversation,
+        Action<string> log, CancellationToken cancellationToken)
+    {
+        if (safety.DryRun)
+            return StartDotSimulation(preferences.DotTarget!,
+                new EspHomeVoicePeTransport(endpoint, log), conversation, log);
+
+        using (var device = new EspHomeVoicePeTuningClient(endpoint))
+        {
+            if (!await device.GetBargeInAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException("Turn on Joydex Audio Barge In on the Voice PE before starting dot calls.");
+        }
+        // Check compatibility, cached login and the saved identity without allocating a call.
+        await using (var preflight = await DotVoiceSession.CreateAsync(preferences, cancellationToken).ConfigureAwait(false)) { }
+        VoiceMediaStaHost? mediaSta = null;
+        VoiceRuntimeAsyncGate? publicationGate = null;
+        VoicePeControlAdapter? adapter = null;
+        DedicatedVoiceCoordinator? coordinator = null;
+        IVoicePeControlTransport? unownedControlTransport = null;
+        var ownershipCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var label = preferences.DotTarget!.Label;
+        try
+        {
+            mediaSta = await VoiceMediaStaHost.StartAsync(cancellationToken).ConfigureAwait(false);
+            publicationGate = new VoiceRuntimeAsyncGate();
+            conversation.ReplaceHistory([]);
+            conversation.SetRuntimeState(VoicePeSessionState.Armed, true, false, $"Room Voice is armed for {label}.");
+            coordinator = new DedicatedVoiceCoordinator(
+                async token =>
+                {
+                    DotVoiceSession? dot = null;
+                    OwnedVoiceDuplexAudioSession? owned = null;
+                    try
+                    {
+                        dot = await DotVoiceSession.CreateAsync(preferences, token, log).ConfigureAwait(false);
+                        var media = new WebView2VoiceDuplexAudioSession(mediaSta, webViewDataDirectory,
+                            dot.StartAsync, () => { }, dot.Ready, dot.Completion, dot.StopAsync,
+                            () => ValueTask.CompletedTask, preferences.ConversationSpeakerGain,
+                            preferences.PreserveAssistantAudioDiagnostics,
+                            conversation.UpdateLiveTranscript, conversation.AddActivity, log,
+                            localMediaFirst: true, trimInitialSpeakerSilence: true,
+                            answerApplied: dot.MarkAnswerApplied);
+                        owned = new OwnedVoiceDuplexAudioSession(media, dot,
+                            failure => ownershipCompletion.TrySetException(failure));
+                        await media.StartAsync(token).ConfigureAwait(false);
+                        return owned;
+                    }
+                    catch
+                    {
+                        try
+                        {
+                            if (owned is not null) await owned.DisposeAsync().ConfigureAwait(false);
+                            else if (dot is not null) await dot.DisposeAsync().ConfigureAwait(false);
+                        }
+                        catch (Exception cleanupFailure)
+                        {
+                            var failure = new VoiceOwnershipCleanupException("The native dot startup cleanup was incomplete.", [cleanupFailure]);
+                            ownershipCompletion.TrySetException(failure);
+                            throw failure;
+                        }
+                        throw;
+                    }
+                },
+                () => new RecoveringVoicePeDuplexAudioTransport(() => new VoicePeSendspinAudioTransport(endpoint, log), log),
+                log,
+                sessionListening: async token =>
+                {
+                    await adapter!.ConfirmSessionStartedAsync(token).ConfigureAwait(false);
+                    conversation.SetRuntimeState(VoicePeSessionState.Listening, true, true, $"Talking with {label}");
+                }, closeDeviceWhileMediaStops: true);
+            unownedControlTransport = new EspHomeVoicePeTransport(endpoint, log);
+            adapter = new VoicePeControlAdapter(unownedControlTransport,
+                async token =>
+                {
+                    var previous = conversation.GetSnapshot();
+                    log("Native dot wake received; starting account verification and media setup.");
+                    conversation.SetRuntimeState(VoicePeSessionState.Starting, true, false, $"Calling {label}");
+                    var result = await coordinator.StartAsync(token).ConfigureAwait(false);
+                    ApplyStartResult(conversation, previous, result);
+                    if (result.Status == VoiceSessionStartStatus.Canceled)
+                        conversation.SetRuntimeState(VoicePeSessionState.Armed, true, false, $"Room Voice is armed for {label}.");
+                    return result;
+                }, log, startVoiceSetsListeningState: true, stopVoice: coordinator.StopActiveAsync,
+                toggleMicrophoneMute: () =>
+                {
+                    var muted = coordinator.ToggleMicrophoneMute();
+                    if (muted.HasValue) conversation.SetRuntimeState(
+                        muted.Value ? VoicePeSessionState.Muted : VoicePeSessionState.Listening,
+                        true, true, muted.Value ? "Microphone muted" : $"Talking with {label}");
+                    return muted;
+                });
+            unownedControlTransport = null;
+            coordinator.SessionEnded += () => publicationGate.TryRun(async token =>
+            {
+                // Cleanup uncertainty faults the generation instead of admitting another wake.
+                if (ownershipCompletion.Task.IsFaulted) return;
+                await adapter.ConfirmSessionEndedAsync(token).ConfigureAwait(false);
+                publicationGate.TryPublish(token, () => conversation.SetRuntimeState(
+                    VoicePeSessionState.Armed, true, false, $"Room Voice is armed for {label}."));
+            });
+            await adapter.ConfirmSessionEndedAsync(cancellationToken).ConfigureAwait(false);
+            adapter.Start();
+            log($"Native dot route is armed for {label}; Codex runtime is version pinned.");
+            return new VoicePeBridgeRuntime(adapter, coordinator, mediaSta, publicationGate, null, null,
+                conversation, log, VoicePeSessionMode.NativeDot,
+                ObserveFirstCompletionAsync(ownershipCompletion.Task, mediaSta.Completion));
+        }
+        catch (Exception failure)
+        {
+            var cleanup = await VoiceRuntimeStartupRollback.DisposeAsync(publicationGate,
+                (IAsyncDisposable?)adapter ?? unownedControlTransport, coordinator, mediaSta).ConfigureAwait(false);
+            throw VoiceRuntimeStartupRollback.ClassifyStartupFailure(failure, cleanup);
+        }
+    }
+
+    /// <summary>
+    /// Simulates wakes for a validated dot target without authentication, media, or a fallback task.
+    /// The returned runtime owns the endpoint control transport.
+    /// </summary>
+    internal static VoicePeBridgeRuntime StartDotSimulation(
+        DotVoiceTarget target,
+        IVoicePeControlTransport transport,
+        RoomVoiceConversationModel conversation,
+        Action<string> log)
+    {
+        var adapter = new VoicePeControlAdapter(transport, cancellationToken =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = $"DRY RUN Voice PE wake; dot={target.Label}; action=native-dot-call; no call allocated";
+            log(message);
+            return Task.FromResult(new VoiceSessionStartResult(VoiceSessionStartStatus.Simulated, message));
+        }, log);
+        adapter.Start();
+        conversation.SetFallbackState(enabled: true, dryRun: true);
+        log($"Voice PE dry-run simulation started for dot {target.Label}.");
+        return new VoicePeBridgeRuntime(adapter, null, null, null, null, null,
+            conversation, log, VoicePeSessionMode.NativeDot, Task.CompletedTask);
+    }
+
     private static async Task RearmAfterOwnerSessionAsync(
         VoicePeControlAdapter adapter,
         CodexVoiceConversationReader conversationReader,
@@ -976,7 +1120,7 @@ internal sealed class OwnedVoiceDuplexAudioSession : IVoiceDuplexAudioSession
         catch (Exception ownerFailure)
         {
             var ownershipFailure = new VoiceOwnershipCleanupException(
-                "The Voice Session ended, but Joydex could not confirm release of its Codex task writer.",
+                "The Voice Session ended, but Joydex could not confirm release of its ownership.",
                 mediaFailure is null ? [ownerFailure] : [mediaFailure, ownerFailure]);
             _ownershipCleanupFailed?.Invoke(ownershipFailure);
             throw ownershipFailure;

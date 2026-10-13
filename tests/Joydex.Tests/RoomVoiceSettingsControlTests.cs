@@ -9,6 +9,60 @@ namespace Joydex.Tests;
 
 public sealed class RoomVoiceSettingsControlTests
 {
+    [Fact]
+    public void VoiceEngineChoicePreservesCodexWorkspaceAndSavedDotWhenSwitching()
+    {
+        RunOnSta(() =>
+        {
+            var dot = new DotVoiceTarget("account-test", "user-test", "account-test~dot-test",
+                "01000000-0000-0000-0000-000000000000", "Example dot");
+            var preferences = VoicePePreferences.Default with
+            {
+                Enabled = true, DeviceEndpoint = "http://192.0.2.10/",
+                SessionMode = VoicePeSessionMode.JoydexOwner,
+                DedicatedTaskId = Guid.NewGuid().ToString("D"),
+                AgentWorkspacePath = Path.Combine(Path.GetTempPath(), "joydex_voice"),
+                RealtimeVoice = "sol", DotTarget = dot,
+                DesktopTaskMessagingEnabled = true,
+            };
+            using var control = new RoomVoiceSettingsControl(preferences,
+                _ => Task.FromResult(true), (_, _) => Task.FromResult(VoicePeWakeTuning.Default),
+                (_, tuning, _) => Task.FromResult(tuning), allowExternalActions: false);
+            var engine = (ComboBox)control.Controls.Find("RoomVoiceEngine", searchAllChildren: true).Single();
+            var conversation = control.Controls.OfType<TableLayoutPanel>().Single()
+                .Controls.OfType<GroupBox>().Single(group => group.Text == "Conversation");
+            var codexThread = (TextBox)conversation.Controls.Find("RoomVoiceCodexThread", searchAllChildren: true).Single();
+            var dotLabel = (TextBox)conversation.Controls.Find("RoomVoiceDot", searchAllChildren: true).Single();
+            Assert.Equal("Codex task voice (legacy)", engine.SelectedItem!.ToString());
+            Assert.True(codexThread.Visible);
+            Assert.True(codexThread.ReadOnly);
+            Assert.Equal(CodexTaskReference.BuildDeepLink(preferences.DedicatedTaskId), codexThread.Text);
+            Assert.False(dotLabel.Visible);
+            engine.SelectedIndex = 1;
+            Assert.False(codexThread.Visible);
+            Assert.True(dotLabel.Visible);
+            Assert.Equal(dot.Label, dotLabel.Text);
+            var dotMode = control.ReadPreferences();
+            Assert.Equal(VoicePeSessionMode.NativeDot, dotMode.SessionMode);
+            Assert.Empty(dotMode.Validate());
+            Assert.Equal(dot, dotMode.DotTarget);
+            Assert.Equal(preferences.DedicatedTaskId, dotMode.DedicatedTaskId);
+            Assert.Equal(preferences.AgentWorkspacePath, dotMode.AgentWorkspacePath);
+            Assert.Equal("sol", dotMode.RealtimeVoice);
+            Assert.True(dotMode.DesktopTaskMessagingEnabled);
+            control.ApplyPreferences(dotMode);
+            engine.SelectedIndex = 0;
+            Assert.True(codexThread.Visible);
+            Assert.False(dotLabel.Visible);
+            var codexMode = control.ReadPreferences();
+            Assert.Equal(VoicePeSessionMode.JoydexOwner, codexMode.SessionMode);
+            Assert.Empty(codexMode.Validate());
+            Assert.Equal(dot, codexMode.DotTarget);
+            Assert.Equal(preferences.DedicatedTaskId, codexMode.DedicatedTaskId);
+            Assert.True(codexMode.DesktopTaskMessagingEnabled);
+        });
+    }
+
     [Theory]
     [InlineData(530, 400)]
     [InlineData(870, 1100)]
@@ -24,8 +78,11 @@ public sealed class RoomVoiceSettingsControlTests
             Assert.True(control.VerticalScroll.Visible);
             Assert.False(control.HorizontalScroll.Visible);
             var advanced = FindAdvancedGroup(control);
-            Assert.True(advanced.Height >= advanced.GetPreferredSize(advanced.Size).Height);
-            var lastField = advanced.Controls.OfType<TableLayoutPanel>().Single()
+            var advancedLayout = advanced.Controls.OfType<TableLayoutPanel>().Single();
+            // Check the allocated content, rather than a preferred-size query with different constraints.
+            Assert.True(advanced.DisplayRectangle.Contains(advancedLayout.Bounds),
+                $"Advanced content {advancedLayout.Bounds} exceeds its display area {advanced.DisplayRectangle}.");
+            var lastField = advancedLayout
                 .Controls.OfType<TableLayoutPanel>().Single()
                 .Controls.OfType<TextBox>().Last();
             control.ScrollControlIntoView(lastField);

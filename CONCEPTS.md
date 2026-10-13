@@ -4,6 +4,14 @@ Joydex connects physical controls and room devices to explicit Codex actions. It
 
 ## Language
 
+**Pending Async Question**:
+A question Codex has successfully sent through `request_user_input_async` and the user has not
+resolved through its question-card reply. The agent may keep working, but the task still
+needs attention. Its task-alert LED remains in the attention state across tool completion, turn
+completion, unrelated prompts and Joydex restart. Each reply resolves only its original call and
+question index. Joydex stores hashes of those identifiers, never question or answer text.
+_Avoid_: Blocking tool call, completed question
+
 **Dedicated Voice Endpoint**:
 A room device assigned to Joydex voice conversations instead of shared concurrently with Home Assistant Assist.
 _Avoid_: Controller, satellite
@@ -108,8 +116,22 @@ actual bottom or choosing **Latest ↓** restores follow mode. Live partial grow
 preserve either the bottom-follow state or the reader's earlier viewport.
 
 **Voice Audio Bridge**:
-The concurrent microphone-uplink and speaker-downlink path between the Dedicated Voice Endpoint and Codex Realtime. Joydex uses signed PCM16 at its media boundary. The Voice PE LAN uses the custom WebSocket for microphone/control and the stock clocked Sendspin player with Opus for speaker output; the ChatGPT-authenticated App Server side uses WebRTC. Production firmware configures the custom endpoint as uplink-only, without a Joydex raw-PCM speaker or resampler source.
+The concurrent microphone-uplink and speaker-downlink path between the Dedicated Voice Endpoint and either Codex Realtime or a Native Dot Call. Joydex uses signed PCM16 at its media boundary. The Voice PE LAN uses the custom WebSocket for microphone/control and the stock clocked Sendspin player with Opus for speaker output; the conversation service uses WebRTC. Production firmware configures the custom endpoint as uplink-only, without a Joydex raw-PCM speaker or resampler source.
+The saved **Voice engine** choice selects Codex task voice or dot voice. Enabling the bridge does
+not choose a new engine; both the Codex workspace/task and dot target remain saved when switching.
+Conversation setup shows the selected engine's dot or saved Codex thread. Codex-specific voice
+and tool preferences stay saved while dot voice is selected and take effect again when switching back.
 _Avoid_: Voice shortcut, log observer
+
+**Dot Voice Target**:
+The exact native dot selected for room calls, together with its owning account, user and a
+conversation reference that identifies the dot. Changing the current primary dot does not change this saved target.
+_Avoid_: Dedicated Voice Task, model name
+
+**Native Dot Call**:
+A Voice Session whose conversation and capabilities belong to the selected dot.
+It uses the room endpoint's microphone and speaker without acquiring a Codex task.
+_Avoid_: Codex task call, task-to-dot handoff
 
 **Speaker Playback Boundary**:
 An ordered annotation derived from Realtime data-channel `output_audio_buffer` events, with assistant `turn.created`/`turn.done` as the compatibility fallback. It describes the best-known logical assistant-response interval but never gates the independently delivered WebRTC RTP audio. Ending boundaries stay ordered behind every complete speaker frame Joydex already received. They end the logical response without ending the Voice Session's physical Sendspin stream.

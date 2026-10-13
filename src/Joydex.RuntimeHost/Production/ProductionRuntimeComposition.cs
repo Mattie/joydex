@@ -222,6 +222,8 @@ internal sealed class ProductionRuntimeComposition : IRuntimeComposition
             ThrowIfDisposed();
             _activationAttempted = true;
             if (aggregate == SettingsAggregateId.Voice
+                // Other aggregates load the bundle before Voice has created its owner.
+                && _initialized.Contains(SettingsAggregateId.Voice)
                 && _activeBundle is not null
                 && VoiceTargetSettings.TryApplyOnly(
                     _activeBundle,

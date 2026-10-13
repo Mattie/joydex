@@ -7,6 +7,38 @@ namespace Joydex.Tests;
 
 public sealed class DedicatedVoiceCoordinatorTests
 {
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task NativeDotCanCloseRoomAudioDuringRemoteStopWithoutAdmittingAnotherWake(
+        bool overlap, bool stopFails)
+    {
+        var releaseStop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var media = new FakeMediaSession { StopRelease = releaseStop.Task, StopFails = stopFails };
+        var device = new FakeDeviceTransport();
+        var ended = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var coordinator = new DedicatedVoiceCoordinator(
+            _ => Task.FromResult<IVoiceDuplexAudioSession>(media), () => device, _ => { },
+            closeDeviceWhileMediaStops: overlap);
+        coordinator.SessionEnded += () => ended.TrySetResult();
+        Assert.Equal(VoiceSessionStartStatus.Confirmed, (await coordinator.StartAsync()).Status);
+        media.Complete();
+        try
+        {
+            await media.StopEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(overlap, device.Closed);
+            Assert.False(ended.Task.IsCompleted);
+            Assert.True(coordinator.IsSessionActive);
+            Assert.Equal(VoiceSessionStartStatus.SessionActive, (await coordinator.StartAsync()).Status);
+        }
+        finally { releaseStop.TrySetResult(); }
+        await ended.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(device.Closed);
+        Assert.True(media.Disposed);
+        Assert.False(coordinator.IsSessionActive);
+    }
+
     [Fact]
     public async Task ConfirmsOnlyAfterBothMediaLegsOpenAndRearmsAfterTypedClose()
     {
@@ -730,6 +762,10 @@ public sealed class DedicatedVoiceCoordinatorTests
 
         public bool Disposed { get; private set; }
 
+        public Task? StopRelease { get; init; }
+        public bool StopFails { get; init; }
+        public TaskCompletionSource StopEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource<VoicePcmFrame> MicrophoneFrameReceived { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -759,10 +795,12 @@ public sealed class DedicatedVoiceCoordinatorTests
             CancellationToken cancellationToken = default) =>
             _speakerOutput.Reader.ReadAllAsync(cancellationToken);
 
-        public ValueTask StopAsync(CancellationToken cancellationToken = default)
+        public async ValueTask StopAsync(CancellationToken cancellationToken = default)
         {
             _completion.TrySetResult();
-            return ValueTask.CompletedTask;
+            StopEntered.TrySetResult();
+            if (StopRelease is not null) await StopRelease.WaitAsync(cancellationToken);
+            if (StopFails) throw new IOException("remote stop was not acknowledged");
         }
 
         public ValueTask DisposeAsync()

@@ -1,9 +1,92 @@
 using System.Text.Json;
+using Joydex.Core.TaskAlerts;
 
 namespace Joydex.Tests;
 
 public sealed class HookRelayTests
 {
+    [Fact]
+    public void AsyncQuestionsRemainAttentionUntilEachReplyIncludingAfterStopAndRestart()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var sent = new HookInput("PostToolUse", "session", "turn", null, @"C:\fixture\rollout.jsonl",
+            "request_user_input_async", JsonSerializer.SerializeToElement(new { questions = new[]
+            {
+                new { title = "First private fixture question" }, new { title = "Second private fixture question" },
+            } }), ToolUseId: "call-fixture", ToolResponse: JsonSerializer.SerializeToElement("{\"accepted\":true}"));
+        var pool = new TaskAlertPool();
+        Assert.Empty(HookRelay.BuildEvents(sent with { HookEventName = "PreToolUse" }, now));
+        foreach (var item in HookRelay.BuildEvents(sent, now)) pool.Apply(item);
+        Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
+        var pending = pool.CaptureState().Assignments.Single().PendingAsyncQuestions!;
+        Assert.Equal(2, pending.Length);
+
+        // Neither the async acknowledgment nor an unrelated tool's completion is an answer.
+        foreach (var item in HookRelay.BuildEvents(sent, now.AddSeconds(1))) pool.Apply(item);
+        Assert.Equal(2, pool.CaptureState().Assignments.Single().PendingAsyncQuestions!.Length);
+        Assert.False(pool.Apply(new(CodexLifecycleEvent.ToolCompleted, "session", "turn", now.AddSeconds(2), pending[0])));
+        pool.Apply(new(CodexLifecycleEvent.Stop, "session", "turn", now.AddSeconds(3)));
+        pool.Advance(now.AddSeconds(5));
+        Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
+
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-async-hook", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "state.json");
+        try
+        {
+            TaskAlertStateStore.Save(path, pool.CaptureState());
+            Assert.DoesNotContain("private fixture question", File.ReadAllText(path));
+            var restored = new TaskAlertPool();
+            restored.Restore(TaskAlertStateStore.Load(path));
+            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
+            foreach (var item in HookRelay.BuildEvents(Reply(sent, "call-fixture", 0), now.AddSeconds(6))) restored.Apply(item);
+            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
+            Assert.Single(restored.CaptureState().Assignments.Single().PendingAsyncQuestions!);
+
+            // An unknown reply and an ordinary new prompt cannot dismiss the outstanding card.
+            foreach (var item in HookRelay.BuildEvents(Reply(sent, "other-call", 1), now.AddSeconds(7))) restored.Apply(item);
+            foreach (var item in HookRelay.BuildEvents(sent with
+                { HookEventName = "UserPromptSubmit", ToolName = null, Prompt = "Another request" }, now.AddSeconds(8)))
+                restored.Apply(item);
+            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
+            foreach (var item in HookRelay.BuildEvents(Reply(sent, "call-fixture", 1), now.AddSeconds(9))) restored.Apply(item);
+            Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
+            Assert.Empty(restored.CaptureState().Assignments.Single().PendingAsyncQuestions!);
+            restored.Apply(new(CodexLifecycleEvent.Stop, "session", "answer-turn", now.AddSeconds(10)));
+            restored.Advance(now.AddSeconds(12));
+            Assert.Equal(TaskAlertState.Completed, Assert.Single(restored.Assignments).State);
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("{\"accepted\":false}")]
+    [InlineData("Tool failed")]
+    [InlineData("{\"accepted\":\"true\"}")]
+    public void UnacceptedAsyncCallsDoNotCreateAttention(string response)
+    {
+        var input = new HookInput("PostToolUse", "session", "turn", null, @"C:\fixture\rollout.jsonl",
+            "request_user_input_async", JsonSerializer.SerializeToElement(new { questions = new[] { new { title = "Question" } } }),
+            ToolUseId: "call-fixture", ToolResponse: JsonSerializer.SerializeToElement(response));
+        Assert.Empty(HookRelay.BuildEvents(input, DateTimeOffset.UtcNow));
+    }
+
+    [Theory]
+    [InlineData("<send_user_message_question_reply>invalid</send_user_message_question_reply>")]
+    [InlineData("<send_user_message_question_reply>[{}]</send_user_message_question_reply>")]
+    [InlineData("Ordinary text containing <send_user_message_question_reply>[]</send_user_message_question_reply>")]
+    public void MalformedOrEmbeddedReplyTextDoesNotClearQuestions(string prompt) =>
+        Assert.Empty(AsyncQuestionHooks.ReadAnswerKeys("session", prompt));
+
+    private static HookInput Reply(HookInput original, string callId, int index) => original with
+    {
+        HookEventName = "UserPromptSubmit", ToolName = null, TurnId = "answer-turn",
+        Prompt = "<send_user_message_question_reply>" + JsonSerializer.Serialize(new[] { new
+        {
+            questionItemId = JsonSerializer.Serialize(new object[] { "request_user_input_async", callId, index }),
+            question = "Private fixture question", answer = "Private fixture answer",
+        } }) + "</send_user_message_question_reply>",
+    };
+
     [Theory]
     [InlineData(null, false)]
     [InlineData("", false)]

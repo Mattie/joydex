@@ -1,4 +1,6 @@
 using System.IO.Pipes;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Joydex.Core.TaskAlerts;
@@ -9,6 +11,111 @@ namespace Joydex.Tests;
 public sealed class TaskAlertPipeServerTests
 {
     private static readonly TimeSpan AsyncTimeout = TimeSpan.FromSeconds(10);
+
+    [Fact]
+    public async Task CompiledRelayDeliversWholeQuestionAndAnswerBatches()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-relay-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var statePath = Path.Combine(directory, "state.json");
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "preferences.json"),
+                statePath: statePath);
+            var pipeName = $"Joydex.Tests.{Guid.NewGuid():N}";
+            await using var server = new TaskAlertPipeServer(coordinator, _ => { }, pipeName);
+            server.Start();
+            var sent = new HookInput("PostToolUse", "session", "turn", null, @"C:\fixture\rollout.jsonl",
+                "request_user_input_async", JsonSerializer.SerializeToElement(new { questions = new[]
+                {
+                    new { title = "First fixture question" }, new { title = "Second fixture question" },
+                } }), ToolUseId: "call-fixture", ToolResponse: JsonSerializer.SerializeToElement("{\"accepted\":true}"));
+            await RunRelayAsync(pipeName, sent);
+            await WaitUntilAsync(() => TaskAlertStateStore.Load(statePath).Assignments.SingleOrDefault()
+                ?.PendingAsyncQuestions?.Length == 2, AsyncTimeout);
+            var replies = Enumerable.Range(0, 2).Select(index => new
+            {
+                questionItemId = JsonSerializer.Serialize(new object[] { "request_user_input_async", "call-fixture", index }),
+                question = "Fixture question", answer = "Fixture answer",
+            });
+            await RunRelayAsync(pipeName, sent with
+            {
+                HookEventName = "UserPromptSubmit", ToolName = null, TurnId = "answer-turn",
+                Prompt = "<send_user_message_question_reply>" + JsonSerializer.Serialize(replies)
+                    + "</send_user_message_question_reply>",
+            });
+            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Running,
+                AsyncTimeout);
+            Assert.DoesNotContain("Fixture question", File.ReadAllText(statePath));
+            Assert.DoesNotContain("Fixture answer", File.ReadAllText(statePath));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    private static async Task RunRelayAsync(string pipeName, HookInput input)
+    {
+        // The test output carries the relay assembly without its self-contained native runtime.
+        var runtimeRoot = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", ".."));
+        var start = new ProcessStartInfo(Path.Combine(runtimeRoot, "dotnet.exe"))
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true,
+            RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardInputEncoding = new UTF8Encoding(false),
+        };
+        start.ArgumentList.Add("exec");
+        start.ArgumentList.Add("--runtimeconfig");
+        start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Joydex.Tests.runtimeconfig.json"));
+        start.ArgumentList.Add("--depsfile");
+        start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Joydex.Tests.deps.json"));
+        start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "Joydex.HookRelay.dll"));
+        start.ArgumentList.Add("--pipe");
+        start.ArgumentList.Add(pipeName);
+        using var process = Process.Start(start)!;
+        await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(input));
+        process.StandardInput.Close();
+        await process.WaitForExitAsync().WaitAsync(AsyncTimeout);
+        Assert.True(process.ExitCode == 0, await process.StandardError.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task AsyncQuestionSurvivesStopAndClearsThroughTheProductionPipe()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-pipe-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
+            var pipeName = $"Joydex.Tests.{Guid.NewGuid():N}";
+            await using var server = new TaskAlertPipeServer(coordinator, _ => { }, pipeName);
+            server.Start();
+            var now = DateTimeOffset.UtcNow;
+            var key = AttentionCorrelation.CreateAsyncQuestion("session", "call-fixture", 0);
+            await SendPayloadAsync(pipeName, JsonSerializer.Serialize(new
+            {
+                @event = "AsyncUserInputRequest", sessionId = "session", turnId = "turn",
+                attentionKey = key, receivedAtUnixMs = now.ToUnixTimeMilliseconds(),
+            }));
+            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Approval,
+                AsyncTimeout);
+            await SendPayloadAsync(pipeName, JsonSerializer.Serialize(new
+            {
+                @event = "Stop", sessionId = "session", turnId = "turn",
+                receivedAtUnixMs = now.AddMilliseconds(1).ToUnixTimeMilliseconds(),
+            }));
+            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.CompleteAfter is not null,
+                AsyncTimeout);
+            await Task.Delay(TaskAlertPool.StopGrace + TimeSpan.FromMilliseconds(100));
+            Assert.Equal(TaskAlertState.Approval, Assert.Single(coordinator.GetSnapshot().Assignments).State);
+            await SendPayloadAsync(pipeName, JsonSerializer.Serialize(new
+            {
+                @event = "AsyncUserInputAnswered", sessionId = "session", turnId = "answer-turn",
+                attentionKey = key, receivedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            }));
+            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Completed,
+                AsyncTimeout);
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
 
     [Fact]
     public async Task AcceptsConcurrentMessagesAndReducesWithoutWaitingForConsumers()

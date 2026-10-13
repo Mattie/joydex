@@ -225,6 +225,7 @@
     async function acceptAnswer(sdp) {
       if (!peer) throw new Error('No WebRTC peer is waiting for an answer.');
       await peer.setRemoteDescription({ type: 'answer', sdp });
+      post({ type: 'answer-applied' });
     }
 
     function sendMicrophone(message) {

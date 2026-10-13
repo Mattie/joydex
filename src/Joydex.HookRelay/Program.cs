@@ -13,7 +13,6 @@ internal static partial class HookRelay
     {
         string? eventName = null;
         string? sessionId = null;
-        string? turnId = null;
         try
         {
             var input = JsonSerializer.Deserialize(
@@ -21,29 +20,12 @@ internal static partial class HookRelay
                 HookJsonContext.Default.HookInput);
             eventName = input?.HookEventName;
             sessionId = input?.SessionId;
-            turnId = input?.TurnId;
             if (IsTrackableSession(input)
                 && !string.IsNullOrWhiteSpace(sessionId)
                 && IsSupportedEvent(eventName))
             {
-                var relayEvent = MapRelayEvent(eventName!, input?.ToolName);
-                if (relayEvent is null)
-                {
-                    return 0;
-                }
-
-                TrySend(
-                    GetPipeName(args),
-                    relayEvent,
-                    sessionId,
-                    turnId,
-                    AttentionCorrelation.Create(
-                        sessionId,
-                        turnId,
-                        input?.ToolName,
-                        input?.ToolInput ?? default),
-                    TaskAlertSuppression.NormalizeWorkspace(input?.Cwd),
-                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                var events = BuildEvents(input!, DateTimeOffset.UtcNow).ToArray();
+                if (events.Length > 0) TrySend(GetPipeName(args), events);
             }
         }
         catch
@@ -59,14 +41,7 @@ internal static partial class HookRelay
         return 0;
     }
 
-    private static void TrySend(
-        string pipeName,
-        string eventName,
-        string sessionId,
-        string? turnId,
-        string? attentionKey,
-        string? workspace,
-        long receivedAtUnixMs)
+    private static void TrySend(string pipeName, IReadOnlyList<TaskAlertEvent> events)
     {
         try
         {
@@ -88,38 +63,21 @@ internal static partial class HookRelay
             // ERROR_PIPE_BUSY both drop inside the 20 ms connection budget.
             using var pipe = new FileStream(handle, FileAccess.Write, bufferSize: 4096, isAsync: false);
             using var writer = new Utf8JsonWriter(pipe);
-            writer.WriteStartObject();
-            writer.WriteString("event", eventName);
-            writer.WriteString("sessionId", sessionId);
-            if (turnId is null)
+            // One hook uses one connection. Immediate, best-effort opens could otherwise drop
+            // later questions while the receiver is preparing its next pipe instance.
+            if (events.Count > 1) writer.WriteStartArray();
+            foreach (var item in events)
             {
-                writer.WriteNull("turnId");
+                writer.WriteStartObject();
+                writer.WriteString("event", item.Event.ToString());
+                writer.WriteString("sessionId", item.SessionId);
+                writer.WriteString("turnId", item.TurnId);
+                writer.WriteString("attentionKey", item.AttentionKey);
+                writer.WriteString("workspace", item.Workspace);
+                writer.WriteNumber("receivedAtUnixMs", item.ReceivedAt.ToUnixTimeMilliseconds());
+                writer.WriteEndObject();
             }
-            else
-            {
-                writer.WriteString("turnId", turnId);
-            }
-
-            if (attentionKey is null)
-            {
-                writer.WriteNull("attentionKey");
-            }
-            else
-            {
-                writer.WriteString("attentionKey", attentionKey);
-            }
-
-            if (workspace is null)
-            {
-                writer.WriteNull("workspace");
-            }
-            else
-            {
-                writer.WriteString("workspace", workspace);
-            }
-
-            writer.WriteNumber("receivedAtUnixMs", receivedAtUnixMs);
-            writer.WriteEndObject();
+            if (events.Count > 1) writer.WriteEndArray();
             writer.Flush();
         }
         catch (Exception exception) when (exception is IOException or TimeoutException)
@@ -151,6 +109,43 @@ internal static partial class HookRelay
         !IsSubagent(input)
         && !string.IsNullOrWhiteSpace(input?.TranscriptPath);
 
+    /// <summary>Translate hook metadata into content-free lifecycle events for persistent top-level tasks.</summary>
+    internal static IEnumerable<TaskAlertEvent> BuildEvents(HookInput input, DateTimeOffset receivedAt)
+    {
+        if (!IsTrackableSession(input) || string.IsNullOrWhiteSpace(input.SessionId)
+            || !IsSupportedEvent(input.HookEventName)) yield break;
+
+        TaskAlertEvent Create(CodexLifecycleEvent kind, string? key = null) => new(kind,
+            input.SessionId, input.TurnId, receivedAt, key, TaskAlertSuppression.NormalizeWorkspace(input.Cwd));
+
+        if (input.HookEventName == "PostToolUse" && input.ToolName == "request_user_input_async")
+        {
+            // PostToolUse acknowledges that the questions were sent, not that they were answered.
+            // Failed or blocked calls never create attention that the user cannot resolve.
+            if (!AsyncQuestionHooks.WasAccepted(input.ToolResponse)
+                || input.ToolInput.ValueKind != JsonValueKind.Object
+                || !input.ToolInput.TryGetProperty("questions", out var questions)
+                || questions.ValueKind != JsonValueKind.Array
+                || questions.GetArrayLength() is < 1 or > 32) yield break;
+            for (var index = 0; index < questions.GetArrayLength(); index++)
+            {
+                var key = AttentionCorrelation.CreateAsyncQuestion(input.SessionId, input.ToolUseId, index);
+                if (key is not null) yield return Create(CodexLifecycleEvent.AsyncUserInputRequest, key);
+            }
+            yield break;
+        }
+
+        var mapped = MapRelayEvent(input.HookEventName!, input.ToolName);
+        if (mapped is null) yield break;
+        yield return Create(Enum.Parse<CodexLifecycleEvent>(mapped), AttentionCorrelation.Create(
+            input.SessionId, input.TurnId, input.ToolName, input.ToolInput));
+        if (input.HookEventName == "UserPromptSubmit")
+        {
+            foreach (var key in AsyncQuestionHooks.ReadAnswerKeys(input.SessionId, input.Prompt))
+                yield return Create(CodexLifecycleEvent.AsyncUserInputAnswered, key);
+        }
+    }
+
     private static string? MapRelayEvent(string eventName, string? toolName) => eventName switch
     {
         "PreToolUse" when string.Equals(toolName, "request_user_input", StringComparison.Ordinal) =>
@@ -179,7 +174,10 @@ internal sealed record HookInput(
     [property: JsonPropertyName("transcript_path")] string? TranscriptPath,
     [property: JsonPropertyName("tool_name")] string? ToolName,
     [property: JsonPropertyName("tool_input")] JsonElement ToolInput,
-    [property: JsonPropertyName("cwd")] string? Cwd = null);
+    [property: JsonPropertyName("cwd")] string? Cwd = null,
+    [property: JsonPropertyName("tool_use_id")] string? ToolUseId = null,
+    [property: JsonPropertyName("tool_response")] JsonElement ToolResponse = default,
+    [property: JsonPropertyName("prompt")] string? Prompt = null);
 
 [JsonSerializable(typeof(HookInput))]
 internal sealed partial class HookJsonContext : JsonSerializerContext;

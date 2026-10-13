@@ -1,5 +1,8 @@
 # Codex Windows compatibility
 
+This is the historical 26.930 baseline. Current installed-build evidence is in
+[Codex Windows 26.1007 compatibility](CODEX_WINDOWS_26_1007_COMPATIBILITY.md).
+
 Static validation on 2026-10-06 used these installed versions:
 
 | Component | Version |

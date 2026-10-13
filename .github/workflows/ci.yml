@@ -20,6 +20,14 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Install Python for signaling protocol tests
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+
+      - name: Test native Dot signaling without network access
+        run: python -I .\tests\dot_signaling_test.py
+
       - name: Restore
         run: dotnet restore .\Joydex.sln
 
@@ -34,6 +42,9 @@ jobs:
 
       - name: Build
         run: dotnet build .\Joydex.sln --configuration Release --no-restore
+
+      - name: Build attended Dot canary
+        run: dotnet build .\tools\Joydex.DotVoiceCanary\Joydex.DotVoiceCanary.csproj --configuration Release
 
       - name: Test
         # Keep independent test hosts from competing for the same small runner's CPU.

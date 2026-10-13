@@ -16,6 +16,8 @@ public enum CodexLifecycleEvent
     ToolCompleted,
     Stop,
     Fault,
+    AsyncUserInputRequest,
+    AsyncUserInputAnswered,
 }
 
 public sealed record TaskAlertEvent(
@@ -55,7 +57,8 @@ public sealed record TaskAlertStoredAssignment(
     DateTimeOffset? CompleteAfter,
     TaskAlertCorrelationCount[] CorrelatedAttention,
     int UncorrelatedAttentionCount,
-    string? WorkspaceKey = null);
+    string? WorkspaceKey = null,
+    string[]? PendingAsyncQuestions = null);
 
 /// <summary>Stores one privacy-preserving correlation hash and its pending count.</summary>
 public sealed record TaskAlertCorrelationCount(string Key, int Count);

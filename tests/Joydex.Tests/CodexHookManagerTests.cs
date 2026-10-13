@@ -35,7 +35,7 @@ public sealed class CodexHookManagerTests : IDisposable
             "^request_user_input$",
             installed["hooks"]!["PreToolUse"]![0]!["matcher"]!.GetValue<string>());
         Assert.Equal(
-            "^(Bash|apply_patch|request_user_input|mcp__.*)$",
+            "^(Bash|apply_patch|request_user_input(_async)?|mcp__.*)$",
             installed["hooks"]!["PostToolUse"]![0]!["matcher"]!.GetValue<string>());
         Assert.Null(installed["hooks"]!["PostToolUse"]![0]!["hooks"]![0]!["async"]);
 
@@ -94,7 +94,7 @@ public sealed class CodexHookManagerTests : IDisposable
                   "type": "{{type}}", "command": "{{command}}", "commandWindows": "{{command}}",
                   "timeout": {{timeout}}, "statusMessage": "{{CodexHookManager.StatusMarker}}"
                 } ] } ],
-                "PostToolUse": [ { "matcher": "^(Bash|apply_patch|request_user_input|mcp__.*)$", "hooks": [ {
+                "PostToolUse": [ { "matcher": "^(Bash|apply_patch|request_user_input(_async)?|mcp__.*)$", "hooks": [ {
                   "type": "{{type}}", "command": "{{command}}", "commandWindows": "{{command}}",
                   "timeout": {{timeout}}, "statusMessage": "{{CodexHookManager.StatusMarker}}"
                 } ] } ],

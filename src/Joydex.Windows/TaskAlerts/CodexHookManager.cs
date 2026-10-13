@@ -19,7 +19,7 @@ public sealed class CodexHookManager(string hooksPath)
         new("UserPromptSubmit"),
         new("PermissionRequest"),
         new("PreToolUse", "^request_user_input$"),
-        new("PostToolUse", "^(Bash|apply_patch|request_user_input|mcp__.*)$"),
+        new("PostToolUse", "^(Bash|apply_patch|request_user_input(_async)?|mcp__.*)$"),
         new("Stop"),
     ];
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
