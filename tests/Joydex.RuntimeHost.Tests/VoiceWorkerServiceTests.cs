@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Joydex.App;
 using Joydex.Contracts;
+using Joydex.Core.Voice;
 using Joydex.Ipc;
 using Joydex.VoiceWorker;
 using Joydex.Windows.Voice;
@@ -10,6 +11,42 @@ namespace Joydex.RuntimeHost.Tests;
 
 public sealed class VoiceWorkerServiceTests
 {
+    [Fact]
+    public async Task DotOnlyDryRunKeepsTheWorkerAliveWithoutAVoiceOwner()
+    {
+        using var process = Process.GetCurrentProcess();
+        var ticket = new VoiceWorkerLaunchTicket("unused", "capability", 4,
+            VoiceWorkerProtocol.MajorVersion, VoiceWorkerProtocol.MinorVersion,
+            process.Id, process.StartTime.ToUniversalTime().Ticks, process.SessionId);
+        var (rpc, bounded) = RuntimeJsonRpc.Create(new MemoryStream());
+        using (rpc)
+        using (bounded)
+        {
+            await using var service = new VoiceWorkerService(ticket, rpc);
+            var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+            var request = new VoiceWorkerStartRequest(ticket.Capability, ticket.Generation,
+                VoiceWorkerProtocol.MajorVersion, VoiceWorkerProtocol.MinorVersion,
+                new VoiceWorkerPreferences(7, true, "http://127.0.0.1:1/", "", "",
+                    (int)VoicePeSessionMode.NativeDot, "", "", "", "", "", "", "", 1,
+                    false, false, "", "", "",
+                    new DotVoiceTarget("account-123", "user-123", "account-123~dot-123",
+                        "01000000-0000-0000-0000-000000000000", "Example dot")),
+                new VoiceWorkerSafety(true, true, [], []),
+                new VoiceWorkerPaths(Path.Combine(directory, "webview"),
+                    Path.Combine(directory, "voice.json"), Path.Combine(directory, "bridge.exe"), "unused"));
+
+            var response = await service.StartAsync(request, CancellationToken.None);
+
+            Assert.Null(response.Failure);
+            Assert.NotNull(response.Snapshot);
+            Assert.Equal(RuntimeVoiceSessionState.Armed, response.Snapshot.Voice.SessionState);
+            Assert.False(response.Snapshot.Voice.OwnerReady);
+            Assert.False(response.Snapshot.Voice.SessionActive);
+            Assert.False(service.Completion.IsCompleted);
+            Assert.False(Directory.Exists(directory));
+        }
+    }
+
     [Theory]
     [InlineData(false, 1)]
     [InlineData(true, 2)]
