@@ -152,7 +152,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                     desktopTaskBridgePipeName,
                     cancellationToken)
                 .ConfigureAwait(false),
-            VoicePeSessionMode.NativeDot => await StartDotAsync(normalized, safety, fallbackCoordinator,
+            VoicePeSessionMode.NativeDot => await StartDotAsync(normalized, safety,
                 endpoint, webViewDataDirectory, conversation, runtimeLog, cancellationToken).ConfigureAwait(false),
             _ => throw new InvalidDataException($"Unsupported Voice PE session mode {normalized.SessionMode}."),
         };
@@ -647,13 +647,13 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
     }
 
     private static async Task<VoicePeBridgeRuntime> StartDotAsync(
-        VoicePePreferences preferences, SafetyOptions safety, PinnedVoiceCoordinator fallbackCoordinator,
+        VoicePePreferences preferences, SafetyOptions safety,
         Uri endpoint, string webViewDataDirectory, RoomVoiceConversationModel conversation,
         Action<string> log, CancellationToken cancellationToken)
     {
         if (safety.DryRun)
-            return StartFallback(preferences with { SessionMode = VoicePeSessionMode.LastVoiceFallback },
-                fallbackCoordinator, endpoint, conversation, log, simulate: true);
+            return StartDotSimulation(preferences.DotTarget!,
+                new EspHomeVoicePeTransport(endpoint, log), conversation, log);
 
         using (var device = new EspHomeVoicePeTuningClient(endpoint))
         {
@@ -761,6 +761,30 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 (IAsyncDisposable?)adapter ?? unownedControlTransport, coordinator, mediaSta).ConfigureAwait(false);
             throw VoiceRuntimeStartupRollback.ClassifyStartupFailure(failure, cleanup);
         }
+    }
+
+    /// <summary>
+    /// Simulates wakes for a validated dot target without authentication, media, or a fallback task.
+    /// The returned runtime owns the endpoint control transport.
+    /// </summary>
+    internal static VoicePeBridgeRuntime StartDotSimulation(
+        DotVoiceTarget target,
+        IVoicePeControlTransport transport,
+        RoomVoiceConversationModel conversation,
+        Action<string> log)
+    {
+        var adapter = new VoicePeControlAdapter(transport, cancellationToken =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = $"DRY RUN Voice PE wake; dot={target.Label}; action=native-dot-call; no call allocated";
+            log(message);
+            return Task.FromResult(new VoiceSessionStartResult(VoiceSessionStartStatus.Simulated, message));
+        }, log);
+        adapter.Start();
+        conversation.SetFallbackState(enabled: true, dryRun: true);
+        log($"Voice PE dry-run simulation started for dot {target.Label}.");
+        return new VoicePeBridgeRuntime(adapter, null, null, null, null, null,
+            conversation, log, VoicePeSessionMode.NativeDot, Task.CompletedTask);
     }
 
     private static async Task RearmAfterOwnerSessionAsync(
