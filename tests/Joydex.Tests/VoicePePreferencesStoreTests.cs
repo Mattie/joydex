@@ -315,7 +315,7 @@ public sealed class VoicePePreferencesStoreTests : IDisposable
 
         var preferences = VoicePePreferencesStore.LoadOrCreate(path);
 
-        Assert.Equal(6, preferences.SchemaVersion);
+        Assert.Equal(VoicePePreferences.CurrentSchemaVersion, preferences.SchemaVersion);
         Assert.False(preferences.DesktopTaskMessagingEnabled);
         Assert.Empty(preferences.VoiceTargetTaskId);
         Assert.Equal(original, File.ReadAllText(Path.Combine(_directory, "voice-pe.schema-v5.backup.json")));

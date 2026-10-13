@@ -93,7 +93,7 @@ internal sealed class VoiceWorkerService : IAsyncDisposable
             lock (_conversationStateGate) { _wasSessionActive = runtime.IsSessionActive; }
             conversation.RuntimeStateChanged += OnConversationChanged;
             conversation.Changed += OnConversationChanged;
-            if (runtime.Mode == VoicePeSessionMode.JoydexOwner)
+            if (runtime.Mode is VoicePeSessionMode.JoydexOwner or VoicePeSessionMode.NativeDot)
             {
                 _ = ObserveRuntimeCompletionAsync(runtime);
             }
@@ -257,7 +257,8 @@ internal sealed class VoiceWorkerService : IAsyncDisposable
             || request.Preferences.RealtimeVoice is null
             || request.Preferences.VoiceTargetTaskId is null
             || request.Preferences.VoiceTargetHostId is null
-            || request.Preferences.VoiceTargetTaskLabel is null)
+            || request.Preferences.VoiceTargetTaskLabel is null
+            || request.Preferences.DotPythonExecutable is null)
         {
             throw new InvalidDataException("The Voice worker Start payload is invalid.");
         }
@@ -516,7 +517,9 @@ internal sealed class VoiceWorkerService : IAsyncDisposable
         value.DesktopTaskMessagingEnabled,
         value.VoiceTargetTaskId,
         value.VoiceTargetHostId,
-        value.VoiceTargetTaskLabel);
+        value.VoiceTargetTaskLabel,
+        value.DotTarget,
+        value.DotPythonExecutable);
 
     private static SafetyOptions MapSafety(VoiceWorkerSafety value) => new()
     {

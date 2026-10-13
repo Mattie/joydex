@@ -7,7 +7,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Actions\Compatibility\CodexWindows26930.json" />
+    <EmbeddedResource Include="Actions\Compatibility\CodexWindows261007.json" />
+    <Content Include="Voice\dot-signaling.py" Link="Assets\Voice\dot-signaling.py"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

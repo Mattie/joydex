@@ -36,7 +36,8 @@ public sealed class TaskAlertPool
                     assignment.CompleteAfter,
                     pending?.CaptureCorrelated() ?? [],
                     pending?.UncorrelatedCount ?? 0,
-                    assignment.WorkspaceKey);
+                    assignment.WorkspaceKey,
+                    pending?.CaptureAsyncQuestions() ?? []);
             })
             .ToArray());
 
@@ -64,7 +65,8 @@ public sealed class TaskAlertPool
                 || stored.WorkspaceKey is not null
                     && !TaskAlertSuppression.IsWorkspaceKey(stored.WorkspaceKey)
                 || stored.CompleteAfter is { } completeAfter
-                    && (completeAfter == default || completeAfter <= stored.UpdatedAt)
+                    && (completeAfter == default || completeAfter <= stored.UpdatedAt
+                        && stored.PendingAsyncQuestions is not { Length: > 0 })
                 || !restoredAssignments.TryAdd(
                     stored.Slot,
                     new TaskAlertAssignment(
@@ -82,7 +84,8 @@ public sealed class TaskAlertPool
 
             var pending = PendingAttention.Restore(
                 stored.CorrelatedAttention,
-                stored.UncorrelatedAttentionCount);
+                stored.UncorrelatedAttentionCount,
+                stored.PendingAsyncQuestions);
             if (pending.Any)
             {
                 if (stored.State != TaskAlertState.Approval)
@@ -127,7 +130,7 @@ public sealed class TaskAlertPool
         var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace);
         var existing = _assignments.Values.FirstOrDefault(candidate =>
             string.Equals(candidate.SessionId, taskEvent.SessionId, StringComparison.Ordinal));
-        if (taskEvent.Event == CodexLifecycleEvent.ToolCompleted)
+        if (taskEvent.Event is CodexLifecycleEvent.ToolCompleted or CodexLifecycleEvent.AsyncUserInputAnswered)
         {
             if (existing is null || taskEvent.ReceivedAt < existing.UpdatedAt)
             {
@@ -145,7 +148,15 @@ public sealed class TaskAlertPool
                 _assignments[existing.Slot] = withWorkspace;
             }
 
-            return ApplyToolCompletion(withWorkspace, taskEvent) || workspaceChanged;
+            return (taskEvent.Event == CodexLifecycleEvent.AsyncUserInputAnswered
+                ? ApplyAsyncAnswer(withWorkspace, taskEvent)
+                : ApplyToolCompletion(withWorkspace, taskEvent)) || workspaceChanged;
+        }
+
+        if (taskEvent.Event == CodexLifecycleEvent.AsyncUserInputRequest
+            && !PendingAttention.IsSha256Hash(taskEvent.AttentionKey))
+        {
+            return false;
         }
 
         if (existing is null)
@@ -178,7 +189,7 @@ public sealed class TaskAlertPool
                 or CodexLifecycleEvent.UserInputRequest
             && !string.Equals(existing.TurnId, taskEvent.TurnId, StringComparison.Ordinal))
         {
-            _pendingAttention.Remove(taskEvent.SessionId);
+            ClearBlockingAttention(taskEvent.SessionId);
         }
 
         var updated = taskEvent.Event switch
@@ -186,11 +197,12 @@ public sealed class TaskAlertPool
             CodexLifecycleEvent.UserPromptSubmit => existing with
             {
                 TurnId = taskEvent.TurnId,
-                State = TaskAlertState.Running,
+                State = HasAsyncQuestions(taskEvent.SessionId) ? TaskAlertState.Approval : TaskAlertState.Running,
                 UpdatedAt = taskEvent.ReceivedAt,
                 CompleteAfter = null,
             },
-            CodexLifecycleEvent.PermissionRequest or CodexLifecycleEvent.UserInputRequest => existing with
+            CodexLifecycleEvent.PermissionRequest or CodexLifecycleEvent.UserInputRequest
+                or CodexLifecycleEvent.AsyncUserInputRequest => existing with
             {
                 TurnId = taskEvent.TurnId,
                 State = TaskAlertState.Approval,
@@ -220,14 +232,22 @@ public sealed class TaskAlertPool
 
         if (taskEvent.Event == CodexLifecycleEvent.UserPromptSubmit)
         {
-            _pendingAttention.Remove(taskEvent.SessionId);
+            ClearBlockingAttention(taskEvent.SessionId);
         }
         else if (taskEvent.Event is CodexLifecycleEvent.PermissionRequest
                      or CodexLifecycleEvent.UserInputRequest)
         {
             GetPendingAttention(taskEvent.SessionId).Add(taskEvent.AttentionKey);
         }
-        else if (taskEvent.Event is CodexLifecycleEvent.Stop or CodexLifecycleEvent.Fault)
+        else if (taskEvent.Event == CodexLifecycleEvent.AsyncUserInputRequest)
+        {
+            GetPendingAttention(taskEvent.SessionId).AddAsyncQuestion(taskEvent.AttentionKey!);
+        }
+        else if (taskEvent.Event == CodexLifecycleEvent.Stop)
+        {
+            ClearBlockingAttention(taskEvent.SessionId);
+        }
+        else if (taskEvent.Event == CodexLifecycleEvent.Fault)
         {
             _pendingAttention.Remove(taskEvent.SessionId);
         }
@@ -244,7 +264,8 @@ public sealed class TaskAlertPool
         foreach (var pair in _assignments.ToArray())
         {
             var assignment = pair.Value;
-            if (assignment.CompleteAfter is { } completeAfter && completeAfter <= now)
+            if (assignment.CompleteAfter is { } completeAfter && completeAfter <= now
+                && !HasAsyncQuestions(assignment.SessionId))
             {
                 assignment = assignment with
                 {
@@ -396,6 +417,38 @@ public sealed class TaskAlertPool
         return true;
     }
 
+    private bool ApplyAsyncAnswer(TaskAlertAssignment existing, TaskAlertEvent taskEvent)
+    {
+        if (taskEvent.AttentionKey is null
+            || !_pendingAttention.TryGetValue(taskEvent.SessionId, out var pending)
+            || !pending.CompleteAsyncQuestion(taskEvent.AttentionKey))
+        {
+            return false;
+        }
+
+        if (!pending.Any) _pendingAttention.Remove(taskEvent.SessionId);
+        var state = pending.Any ? TaskAlertState.Approval
+            : existing.CompleteAfter is { } stoppedAt && stoppedAt <= taskEvent.ReceivedAt
+                ? TaskAlertState.Completed : TaskAlertState.Running;
+        _assignments[existing.Slot] = existing with
+        {
+            State = state,
+            UpdatedAt = taskEvent.ReceivedAt,
+            CompleteAfter = state == TaskAlertState.Completed ? null : existing.CompleteAfter,
+        };
+        return true;
+    }
+
+    private bool HasAsyncQuestions(string sessionId) =>
+        _pendingAttention.TryGetValue(sessionId, out var pending) && pending.HasAsyncQuestions;
+
+    private void ClearBlockingAttention(string sessionId)
+    {
+        if (!_pendingAttention.TryGetValue(sessionId, out var pending)) return;
+        pending.ClearBlocking();
+        if (!pending.Any) _pendingAttention.Remove(sessionId);
+    }
+
     private PendingAttention GetPendingAttention(string sessionId)
     {
         if (!_pendingAttention.TryGetValue(sessionId, out var pending))
@@ -516,9 +569,22 @@ public sealed class TaskAlertPool
     private sealed class PendingAttention
     {
         private readonly Dictionary<string, int> _correlated = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _asyncQuestions = new(StringComparer.Ordinal);
         private int _uncorrelated;
 
-        public bool Any => _uncorrelated > 0 || _correlated.Count > 0;
+        public bool Any => _uncorrelated > 0 || _correlated.Count > 0 || HasAsyncQuestions;
+        public bool HasAsyncQuestions => _asyncQuestions.Count > 0;
+
+        public string[] CaptureAsyncQuestions() => _asyncQuestions.Order(StringComparer.Ordinal).ToArray();
+
+        public void AddAsyncQuestion(string key) => _asyncQuestions.Add(key);
+        public bool CompleteAsyncQuestion(string key) => _asyncQuestions.Remove(key);
+
+        public void ClearBlocking()
+        {
+            _correlated.Clear();
+            _uncorrelated = 0;
+        }
 
         public int UncorrelatedCount => _uncorrelated;
 
@@ -529,7 +595,8 @@ public sealed class TaskAlertPool
 
         public static PendingAttention Restore(
             TaskAlertCorrelationCount[] correlations,
-            int uncorrelatedCount)
+            int uncorrelatedCount,
+            string[]? asyncQuestions)
         {
             if (correlations is null || uncorrelatedCount < 0)
             {
@@ -537,6 +604,11 @@ public sealed class TaskAlertPool
             }
 
             var pending = new PendingAttention { _uncorrelated = uncorrelatedCount };
+            foreach (var key in asyncQuestions ?? [])
+            {
+                if (!IsSha256Hash(key) || !pending._asyncQuestions.Add(key))
+                    throw new InvalidDataException("The task-alert state contains an invalid async question key.");
+            }
             foreach (var correlation in correlations)
             {
                 if (correlation is null
@@ -582,7 +654,7 @@ public sealed class TaskAlertPool
             return true;
         }
 
-        private static bool IsSha256Hash(string? value) =>
+        public static bool IsSha256Hash(string? value) =>
             value is { Length: 64 }
             && value.All(character => character is >= '0' and <= '9'
                 or >= 'A' and <= 'F'

@@ -10,7 +10,7 @@ public sealed class CodexKeybindingServiceTests
     public void SnapshotMigrationMatchesExactBuildNativeFixtures()
     {
         using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(
-            AppContext.BaseDirectory, "Fixtures", "CodexWindows26930Aliases.json")));
+            AppContext.BaseDirectory, "Fixtures", "CodexWindows261007Aliases.json")));
         foreach (var testCase in document.RootElement.GetProperty("cases").EnumerateArray())
         {
             var actual = CodexKeybindingService.ParseEntries(testCase.GetProperty("input").GetRawText());

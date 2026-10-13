@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Joydex.Windows\Joydex.Windows.csproj" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+    <Compile Include="..\..\src\Joydex.App\VoiceMediaStaHost.cs" Link="VoiceMediaStaHost.cs" />
+    <Compile Include="..\..\src\Joydex.App\WebView2VoiceDuplexAudioSession.cs" Link="WebView2VoiceDuplexAudioSession.cs" />
+    <Content Include="..\..\src\Joydex.App\Assets\Voice\index.html" Link="Assets\Voice\index.html" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\src\Joydex.App\Assets\Voice\duplex-processor.js" Link="Assets\Voice\duplex-processor.js" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="RemoveUnusedWpfReference" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup><Reference Remove="@(Reference)" Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" /></ItemGroup>
+  </Target>
+</Project>

@@ -11,7 +11,7 @@ public sealed class TaskAlertPipeServer(
     string pipeName = TaskAlertPipeServer.DefaultPipeName) : IAsyncDisposable
 {
     public const string DefaultPipeName = "Joydex.TaskAlerts.v1";
-    private const int MaximumMessageBytes = 16 * 1024;
+    private const int MaximumMessageBytes = 256 * 1024;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly HashSet<Task> _connections = [];
     private readonly object _connectionsLock = new();
@@ -123,39 +123,53 @@ public sealed class TaskAlertPipeServer(
                     }
                 }
 
-                var message = JsonSerializer.Deserialize<RelayMessage>(buffer.AsSpan(0, length));
-                if (message is null
-                    || string.IsNullOrWhiteSpace(message.SessionId)
-                    || message.SessionId.Length > 512
-                    || message.TurnId?.Length > 512
-                    || message.AttentionKey?.Length > 128
-                    || message.Workspace?.Length > TaskAlertSuppression.MaximumWorkspaceLength
-                    || !Enum.TryParse<CodexLifecycleEvent>(message.Event, ignoreCase: false, out var lifecycleEvent))
+                using var document = JsonDocument.Parse(buffer.AsMemory(0, length));
+                var root = document.RootElement;
+                var messages = root.ValueKind == JsonValueKind.Array
+                    ? root.EnumerateArray().Select(item => item.Deserialize<RelayMessage>()).ToArray()
+                    : [root.Deserialize<RelayMessage>()];
+                if (messages.Length is < 1 or > 33) return;
+                var events = new List<TaskAlertEvent>(messages.Length);
+                foreach (var message in messages)
                 {
-                    return;
+                    if (message is null
+                        || string.IsNullOrWhiteSpace(message.SessionId)
+                        || message.SessionId.Length > 512
+                        || message.TurnId?.Length > 512
+                        || message.AttentionKey?.Length > 128
+                        || message.Workspace?.Length > TaskAlertSuppression.MaximumWorkspaceLength
+                        || !Enum.TryParse<CodexLifecycleEvent>(message.Event, ignoreCase: false, out var lifecycleEvent))
+                    {
+                        return;
+                    }
+
+                    if (lifecycleEvent is not (CodexLifecycleEvent.UserPromptSubmit
+                        or CodexLifecycleEvent.PermissionRequest
+                        or CodexLifecycleEvent.UserInputRequest
+                        or CodexLifecycleEvent.AsyncUserInputRequest
+                        or CodexLifecycleEvent.AsyncUserInputAnswered
+                        or CodexLifecycleEvent.ToolCompleted
+                        or CodexLifecycleEvent.Stop))
+                    {
+                        return;
+                    }
+
+                    var receivedAt = DateTimeOffset.FromUnixTimeMilliseconds(message.ReceivedAtUnixMs);
+                    if (Math.Abs((DateTimeOffset.UtcNow - receivedAt).TotalMinutes) > 5)
+                    {
+                        return;
+                    }
+                    events.Add(new TaskAlertEvent(
+                        lifecycleEvent,
+                        message.SessionId,
+                        message.TurnId,
+                        receivedAt,
+                        message.AttentionKey,
+                        message.Workspace));
                 }
 
-                if (lifecycleEvent is not (CodexLifecycleEvent.UserPromptSubmit
-                    or CodexLifecycleEvent.PermissionRequest
-                    or CodexLifecycleEvent.UserInputRequest
-                    or CodexLifecycleEvent.ToolCompleted
-                    or CodexLifecycleEvent.Stop))
-                {
-                    return;
-                }
-
-                var receivedAt = DateTimeOffset.FromUnixTimeMilliseconds(message.ReceivedAtUnixMs);
-                if (Math.Abs((DateTimeOffset.UtcNow - receivedAt).TotalMinutes) > 5)
-                {
-                    return;
-                }
-                coordinator.TryPublish(new TaskAlertEvent(
-                    lifecycleEvent,
-                    message.SessionId,
-                    message.TurnId,
-                    receivedAt,
-                    message.AttentionKey,
-                    message.Workspace));
+                // Validate the whole packet before publishing it in its original order.
+                foreach (var taskEvent in events) coordinator.TryPublish(taskEvent);
             }
             catch (Exception exception) when (exception is IOException
                 or JsonException

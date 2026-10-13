@@ -1,0 +1,263 @@
+{
+  "provenance": {
+    "windowsPackage": "26.1007.2314.0",
+    "appRelease": "26.1007.21434",
+    "helper": "AK and kK, with iK alias map, from src-BJv5Mk7n.js; Windows normalization",
+    "asarSha256": "C5FDEF328CFA2AD9095786F9C3A7AAA447E68834D31299D6EF2592DA02029038",
+    "runtime": "0.162.0-alpha.17.2",
+    "validatedAt": "2026-10-11"
+  },
+  "cases": [
+    {
+      "name": "aliases",
+      "input": [
+        {
+          "command": "newThread",
+          "key": "Ctrl+N"
+        },
+        {
+          "command": "toggleSidePanelFullWidth",
+          "key": null
+        },
+        {
+          "command": "toggleBrowserPanel",
+          "key": "Ctrl+B"
+        },
+        {
+          "command": "focusQuickChat",
+          "key": "Ctrl+K"
+        },
+        {
+          "command": "closeTabOrWindow",
+          "key": "Ctrl+W",
+          "when": "editorFocus"
+        }
+      ],
+      "expected": [
+        {
+          "command": "newTask",
+          "key": "Ctrl+N"
+        },
+        {
+          "command": "toggleMaximizeSidePanel",
+          "key": null
+        },
+        {
+          "command": "stepWorkspaceLayout",
+          "key": "Ctrl+B"
+        },
+        {
+          "command": "openAvatarOverlay",
+          "key": "Ctrl+K"
+        },
+        {
+          "command": "closeTab",
+          "key": "Ctrl+W",
+          "when": "editorFocus"
+        },
+        {
+          "command": "closeWindow",
+          "key": "Ctrl+W",
+          "when": "editorFocus"
+        }
+      ]
+    },
+    {
+      "name": "canonical overlay wins",
+      "input": [
+        {
+          "command": "focusQuickChat",
+          "key": "Ctrl+K"
+        },
+        {
+          "command": "openAvatarOverlay",
+          "key": null
+        }
+      ],
+      "expected": [
+        {
+          "command": "openAvatarOverlay",
+          "key": null
+        }
+      ]
+    },
+    {
+      "name": "legacy becomes hold with metadata",
+      "input": [
+        {
+          "command": "globalDictationToggle",
+          "key": "Ctrl+K",
+          "when": "editorFocus"
+        }
+      ],
+      "expected": [
+        {
+          "command": "globalDictationHold",
+          "key": "Ctrl+K",
+          "when": "editorFocus"
+        }
+      ]
+    },
+    {
+      "name": "legacy null becomes single tap",
+      "input": [
+        {
+          "command": "globalDictationToggle",
+          "key": null,
+          "when": "editorFocus"
+        }
+      ],
+      "expected": [
+        {
+          "command": "globalDictationSingleTap",
+          "key": null
+        }
+      ]
+    },
+    {
+      "name": "canonical single tap suppresses legacy",
+      "input": [
+        {
+          "command": "globalDictationToggle",
+          "key": "Ctrl+K"
+        },
+        {
+          "command": "globalDictationSingleTap",
+          "key": null
+        }
+      ],
+      "expected": [
+        {
+          "command": "globalDictationSingleTap",
+          "key": null
+        }
+      ]
+    },
+    {
+      "name": "distinct hold becomes single tap without metadata",
+      "input": [
+        {
+          "command": "globalDictationHold",
+          "key": "Ctrl+H"
+        },
+        {
+          "command": "globalDictationToggle",
+          "key": "Ctrl+K",
+          "when": "editorFocus"
+        }
+      ],
+      "expected": [
+        {
+          "command": "globalDictationHold",
+          "key": "Ctrl+H"
+        },
+        {
+          "command": "globalDictationSingleTap",
+          "key": "Ctrl+K"
+        }
+      ]
+    },
+    {
+      "name": "duplicate first chord with aliases becomes null",
+      "input": [
+        {
+          "command": "globalDictationHold",
+          "key": "Control+K"
+        },
+        {
+          "command": "globalDictationToggle",
+          "key": "CmdOrCtrl+K Ctrl+Enter",
+          "when": "editorFocus"
+        }
+      ],
+      "expected": [
+        {
+          "command": "globalDictationHold",
+          "key": "Control+K"
+        },
+        {
+          "command": "globalDictationSingleTap",
+          "key": null
+        }
+      ]
+    },
+    {
+      "name": "explicit null hold is present",
+      "input": [
+        {
+          "command": "globalDictationHold",
+          "key": null
+        },
+        {
+          "command": "globalDictationToggle",
+          "key": "Ctrl+K",
+          "when": "editorFocus"
+        }
+      ],
+      "expected": [
+        {
+          "command": "globalDictationHold",
+          "key": null
+        },
+        {
+          "command": "globalDictationSingleTap",
+          "key": "Ctrl+K"
+        }
+      ]
+    },
+    {
+      "name": "first hold determines duplicate handling",
+      "input": [
+        {
+          "command": "globalDictationHold",
+          "key": "Ctrl+H"
+        },
+        {
+          "command": "globalDictationHold",
+          "key": "Ctrl+K"
+        },
+        {
+          "command": "globalDictationToggle",
+          "key": "Ctrl+K"
+        }
+      ],
+      "expected": [
+        {
+          "command": "globalDictationHold",
+          "key": "Ctrl+H"
+        },
+        {
+          "command": "globalDictationHold",
+          "key": "Ctrl+K"
+        },
+        {
+          "command": "globalDictationSingleTap",
+          "key": "Ctrl+K"
+        }
+      ]
+    },
+    {
+      "name": "multiple legacy entries see original snapshot",
+      "input": [
+        {
+          "command": "globalDictationToggle",
+          "key": "Ctrl+K"
+        },
+        {
+          "command": "globalDictationToggle",
+          "key": "Ctrl+L"
+        }
+      ],
+      "expected": [
+        {
+          "command": "globalDictationHold",
+          "key": "Ctrl+K"
+        },
+        {
+          "command": "globalDictationHold",
+          "key": "Ctrl+L"
+        }
+      ]
+    }
+  ]
+}

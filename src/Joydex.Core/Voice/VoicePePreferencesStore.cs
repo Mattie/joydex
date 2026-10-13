@@ -55,7 +55,7 @@ public static class VoicePePreferencesStore
         var migrated = schemaVersion != VoicePePreferences.CurrentSchemaVersion;
         if (migrated)
         {
-            if (schemaVersion is 4 or 5)
+            if (schemaVersion is 4 or 5 or 6)
             {
                 PreserveSchemaBackup(path, schemaVersion, documentBytes);
             }
@@ -154,6 +154,9 @@ public static class VoicePePreferencesStore
                 5 => MigrateFromV5(
                     JsonSerializer.Deserialize<VoicePePreferencesV5>(documentBytes, JsonOptions)
                     ?? throw new JsonException("The Voice PE settings file was empty.")),
+                6 => MigrateFromV6(
+                    JsonSerializer.Deserialize<VoicePePreferences>(documentBytes, JsonOptions)
+                    ?? throw new JsonException("The Voice PE settings file was empty.")),
                 VoicePePreferences.CurrentSchemaVersion =>
                     JsonSerializer.Deserialize<VoicePePreferences>(documentBytes, JsonOptions)
                     ?? throw new JsonException("The Voice PE settings file was empty."),
@@ -178,6 +181,16 @@ public static class VoicePePreferencesStore
         }
 
         return (normalized, schemaVersion);
+    }
+
+    private static VoicePePreferences MigrateFromV6(VoicePePreferences value)
+    {
+        if (value.SessionMode == VoicePeSessionMode.NativeDot || value.DotTarget is not null
+            || value.DotPythonExecutable.Length > 0)
+        {
+            throw new JsonException("Schema v6 cannot contain native dot settings.");
+        }
+        return value with { SchemaVersion = VoicePePreferences.CurrentSchemaVersion };
     }
 
     public static void Save(string path, VoicePePreferences preferences)

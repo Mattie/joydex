@@ -5,7 +5,7 @@ namespace Joydex.Ipc;
 internal static class VoiceWorkerProtocol
 {
     public const int MajorVersion = 1;
-    public const int MinorVersion = 0;
+    public const int MinorVersion = 1;
     public const int MaximumConversationPageEntries = 25;
     public const int MaximumConversationEntryIdCharacters = 256;
     public const int MaximumConversationEntryTextCharacters = 64 * 1024;
@@ -53,7 +53,9 @@ internal sealed record VoiceWorkerPreferences(
     bool DesktopTaskMessagingEnabled,
     string VoiceTargetTaskId,
     string VoiceTargetHostId,
-    string VoiceTargetTaskLabel);
+    string VoiceTargetTaskLabel,
+    Joydex.Core.Voice.DotVoiceTarget? DotTarget = null,
+    string DotPythonExecutable = "");
 
 internal sealed record VoiceWorkerSafety(
     bool DryRun,

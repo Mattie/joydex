@@ -4,6 +4,21 @@ public enum VoicePeSessionMode
 {
     LastVoiceFallback,
     JoydexOwner,
+    NativeDot,
+}
+
+/// <summary>The exact signed-in account and dot conversation selected for room calls.</summary>
+public sealed record DotVoiceTarget(string AccountId, string UserId, string DotId, string ThreadId, string Label)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsValid => IsIdentifier(AccountId) && IsIdentifier(UserId) && IsIdentifier(DotId)
+        && Guid.TryParseExact(ThreadId, "D", out _)
+        && !string.IsNullOrWhiteSpace(Label) && Label.Length <= VoicePePreferences.MaximumLabelLength
+        && !Label.Any(char.IsControl);
+
+    private static bool IsIdentifier(string? value) => !string.IsNullOrWhiteSpace(value)
+        && value.Length <= 160 && value.All(character => char.IsAsciiLetterOrDigit(character)
+            || character is '-' or '_' or '~');
 }
 
 /// <summary>
@@ -28,9 +43,11 @@ public sealed record VoicePePreferences(
     bool DesktopTaskMessagingEnabled = false,
     string VoiceTargetTaskId = "",
     string VoiceTargetHostId = "",
-    string VoiceTargetTaskLabel = "")
+    string VoiceTargetTaskLabel = "",
+    DotVoiceTarget? DotTarget = null,
+    string DotPythonExecutable = "")
 {
-    public const int CurrentSchemaVersion = 6;
+    public const int CurrentSchemaVersion = 7;
     public const int MaximumLabelLength = 120;
     public const int MinimumConversationSpeakerGain = 1;
     public const int MaximumConversationSpeakerGain = 4;
@@ -76,6 +93,7 @@ public sealed record VoicePePreferences(
             VoiceTargetTaskId = voiceTargetTaskId,
             VoiceTargetHostId = VoiceTargetHostId.Trim(),
             VoiceTargetTaskLabel = VoiceTargetTaskLabel.Trim(),
+            DotPythonExecutable = NormalizeFileSystemPath(DotPythonExecutable),
         };
     }
 
@@ -111,7 +129,7 @@ public sealed record VoicePePreferences(
                 errors.Add("An ESPHome device endpoint is required when the Voice PE bridge is enabled.");
             }
 
-            if (SessionMode == VoicePeSessionMode.JoydexOwner)
+            if (SessionMode is VoicePeSessionMode.JoydexOwner or VoicePeSessionMode.NativeDot)
             {
                 if (!string.IsNullOrWhiteSpace(CodexAppServerPath)
                     && !IsFullyQualifiedPath(CodexAppServerPath))
@@ -168,9 +186,23 @@ public sealed record VoicePePreferences(
         {
             errors.Add("The Voice Target task id and host id must be selected together.");
         }
-        if (DesktopTaskMessagingEnabled && SessionMode != VoicePeSessionMode.JoydexOwner)
+        // Keep the Codex tool preference saved while dot voice is selected; dot calls do not use it.
+        if (DesktopTaskMessagingEnabled && SessionMode == VoicePeSessionMode.LastVoiceFallback)
         {
             errors.Add("Desktop task messaging requires Joydex owner mode.");
+        }
+
+        if (DotTarget is not null && !DotTarget.IsValid)
+        {
+            errors.Add("The saved dot target is invalid. Select the dot again.");
+        }
+        if (Enabled && SessionMode == VoicePeSessionMode.NativeDot && DotTarget is null)
+        {
+            errors.Add("Select a dot before enabling native dot calls.");
+        }
+        if (DotPythonExecutable.Length > 0 && !IsFullyQualifiedPath(DotPythonExecutable))
+        {
+            errors.Add("The dot signaling Python executable override must be fully qualified.");
         }
 
         if (CodexTaskReference.TryParse(PinnedTaskId, out var fallbackTaskId)

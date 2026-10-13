@@ -2,20 +2,25 @@
 
 Room Voice is an experimental Joydex feature that turns one
 [Home Assistant Voice Preview Edition](https://www.home-assistant.io/voice-pe/)
-into a hands-free Codex endpoint. The device recognizes
-the wake word locally, Joydex owns a dedicated Codex task, and live microphone
+into a hands-free voice endpoint. Setup selects either a dedicated Codex task or an
+experimental native Dot call. The device recognizes the wake word locally, and live microphone
 and speaker audio travel over the local network.
 
 ## Status and boundaries
 
 Room Voice is a reusable example rather than a turnkey consumer feature.
 [`AGENTS.md`](../AGENTS.md) records the Codex Desktop build used to verify
-Joydex's ordinary command bindings. Room Voice has a separate compatibility
-boundary: it follows the most recently written structurally complete Codex Desktop App Server runtime and
-checks the required live capabilities before device media starts. The resolver
+Joydex's ordinary command bindings. Codex task voice has a separate compatibility
+boundary: it follows the most recently written structurally complete Codex Desktop App Server runtime
+and checks the required live capabilities before device media starts. The resolver
 is implemented in
 [`CodexAppServerRuntimeResolver.cs`](../src/Joydex.Windows/Voice/CodexAppServerRuntimeResolver.cs).
 Joydex does not distribute those Codex binaries.
+
+Native Dot voice requires the exact validated Codex runtime and code-mode host hashes, cached
+ChatGPT login and Python 3.11+. It reuses the room audio transport without acquiring a Codex
+task. The protocol, version pin and acceptance limits are described in
+[Native Dot voice research](DOTS_VOICE_INTEGRATION_RESEARCH.md).
 
 The dedicated task runs with `approvalPolicy: never` and a full-access sandbox.
 Its configured workspace is the intended place for files and session records;
@@ -82,7 +87,7 @@ exact developer or canary override.
 
 Open **Configure → Room Voice** and:
 
-1. Select **Joydex owns a dedicated task**.
+1. Under **Conversation → Voice engine**, select **Codex task voice (legacy)**.
 2. Enter the Voice PE **Device endpoint**.
 3. Choose an existing local Codex project, a new dedicated project, or a custom
    absolute **Working folder**.
@@ -90,6 +95,10 @@ Open **Configure → Room Voice** and:
    working directory before it saves the selection.
 5. Select a realtime voice and speaker gain.
 6. Enable Room Voice and save the configuration.
+
+To use a native dot instead, select **Dot voice (experimental)** and choose **Select current dot**
+in Conversation settings. Keep the device endpoint configured, then enable and save Room Voice.
+Switching engines preserves both the dot target and the saved Codex thread, workspace and voice.
 
 The default dedicated location is a sibling `joydex_voice` folder when Joydex
 is running from a Git checkout, or `Documents\joydex_voice` otherwise. Each

@@ -12,7 +12,7 @@ internal static class CodexWindowsDefaultBindings
     private static IReadOnlyDictionary<string, string[]> Load()
     {
         using var stream = typeof(CodexWindowsDefaultBindings).Assembly.GetManifestResourceStream(
-            "Joydex.Windows.Actions.Compatibility.CodexWindows26930.json")
+            "Joydex.Windows.Actions.Compatibility.CodexWindows261007.json")
             ?? throw new InvalidOperationException("The verified Windows shortcut inventory is missing.");
         using var document = JsonDocument.Parse(stream);
         return document.RootElement.GetProperty("commands").EnumerateObject().ToDictionary(

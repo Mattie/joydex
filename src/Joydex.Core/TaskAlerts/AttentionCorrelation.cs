@@ -6,10 +6,35 @@ namespace Joydex.Core.TaskAlerts;
 
 /// <summary>
 /// Creates a stable, privacy-preserving key for matching an attention request
-/// with the successful tool completion that follows it.
+/// with its successful tool completion or question-card reply.
 /// </summary>
 public static class AttentionCorrelation
 {
+    /// <summary>Matches one async question to its reply across turns without storing its text.</summary>
+    public static string? CreateAsyncQuestion(string? sessionId, string? callId, int questionIndex)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(callId)
+            || callId.Length > 256 || callId.Any(char.IsControl)
+            || questionIndex is < 0 or >= 32)
+        {
+            return null;
+        }
+
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            writer.WriteStringValue(sessionId);
+            writer.WriteStringValue("request_user_input_async");
+            writer.WriteStringValue(callId);
+            writer.WriteNumberValue(questionIndex);
+            writer.WriteEndArray();
+            writer.Flush();
+        }
+
+        return Hash(buffer);
+    }
+
     public static string? Create(
         string? sessionId,
         string? turnId,
@@ -38,6 +63,11 @@ public static class AttentionCorrelation
             writer.Flush();
         }
 
+        return Hash(buffer);
+    }
+
+    private static string Hash(ArrayBufferWriter<byte> buffer)
+    {
         Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
         SHA256.HashData(buffer.WrittenSpan, hash);
         return Convert.ToHexString(hash);

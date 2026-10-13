@@ -234,7 +234,9 @@ internal sealed class VoiceWorkerProcessGenerationFactory(
                 value.DesktopTaskMessagingEnabled,
                 value.VoiceTargetTaskId,
                 value.VoiceTargetHostId,
-                value.VoiceTargetTaskLabel),
+                value.VoiceTargetTaskLabel,
+                value.DotTarget,
+                value.DotPythonExecutable),
             new VoiceWorkerSafety(
                 configuration.Safety.DryRun,
                 configuration.Safety.RequireCodexForeground,

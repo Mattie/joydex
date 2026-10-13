@@ -14,6 +14,7 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
     private readonly Action<string> _log;
     private readonly IReadOnlyList<VoicePcmFrame> _readyCue;
     private readonly Func<CancellationToken, Task>? _sessionListening;
+    private readonly bool _closeDeviceWhileMediaStops;
     private readonly SemaphoreSlim _startGate = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
     private readonly object _activeGate = new();
@@ -26,13 +27,15 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
         Func<IVoicePeDuplexAudioTransport> deviceTransportFactory,
         Action<string> log,
         IReadOnlyList<VoicePcmFrame>? readyCue = null,
-        Func<CancellationToken, Task>? sessionListening = null)
+        Func<CancellationToken, Task>? sessionListening = null,
+        bool closeDeviceWhileMediaStops = false)
     {
         _mediaSessionFactory = mediaSessionFactory ?? throw new ArgumentNullException(nameof(mediaSessionFactory));
         _deviceTransportFactory = deviceTransportFactory ?? throw new ArgumentNullException(nameof(deviceTransportFactory));
         _log = log ?? throw new ArgumentNullException(nameof(log));
         _readyCue = readyCue ?? [];
         _sessionListening = sessionListening;
+        _closeDeviceWhileMediaStops = closeDeviceWhileMediaStops;
     }
 
     public event Action? SessionEnded;
@@ -278,6 +281,9 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
         finally
         {
             pumpCancellation.Cancel();
+            // Native dot media completes locally before its remote stop acknowledgment.
+            // Drain the room transport in parallel, but retain the active session until both end.
+            var deviceClose = _closeDeviceWhileMediaStops ? CloseDeviceAsync() : null;
             try
             {
                 await active.Media.StopAsync(CancellationToken.None).ConfigureAwait(false);
@@ -289,12 +295,15 @@ public sealed class DedicatedVoiceCoordinator : IAsyncDisposable
 
             try
             {
-                await active.Device.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+                await (deviceClose ?? CloseDeviceAsync()).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
                 failure ??= exception;
             }
+
+            async Task CloseDeviceAsync() =>
+                await active.Device.CloseAsync(CancellationToken.None).ConfigureAwait(false);
 
             await ObservePumpAsync(microphonePump).ConfigureAwait(false);
             await ObservePumpAsync(speakerPump).ConfigureAwait(false);
