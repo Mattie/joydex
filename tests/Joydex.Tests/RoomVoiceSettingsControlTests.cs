@@ -78,8 +78,11 @@ public sealed class RoomVoiceSettingsControlTests
             Assert.True(control.VerticalScroll.Visible);
             Assert.False(control.HorizontalScroll.Visible);
             var advanced = FindAdvancedGroup(control);
-            Assert.True(advanced.Height >= advanced.GetPreferredSize(advanced.Size).Height);
-            var lastField = advanced.Controls.OfType<TableLayoutPanel>().Single()
+            var advancedLayout = advanced.Controls.OfType<TableLayoutPanel>().Single();
+            // Check the allocated content, rather than a preferred-size query with different constraints.
+            Assert.True(advanced.DisplayRectangle.Contains(advancedLayout.Bounds),
+                $"Advanced content {advancedLayout.Bounds} exceeds its display area {advanced.DisplayRectangle}.");
+            var lastField = advancedLayout
                 .Controls.OfType<TableLayoutPanel>().Single()
                 .Controls.OfType<TextBox>().Last();
             control.ScrollControlIntoView(lastField);
