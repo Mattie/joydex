@@ -51,7 +51,7 @@ public sealed class SecretsBrokerCoreTests : IDisposable
 
         Assert.Equal(SecretsRequestStatus.Allowed, allowed.Status);
         Assert.Equal(0, result.ExitCode);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.RunAsync(allowed));
+        await Assert.ThrowsAsync<SecretsRequestException>(() => harness.RunAsync(allowed));
     }
 
     [Fact]
@@ -106,7 +106,7 @@ public sealed class SecretsBrokerCoreTests : IDisposable
         Assert.Equal(SecretsRequestStatus.AgentDetached, detached.Status);
         Assert.Equal(SecretsDetachReason.LeavePending, shown.DetachedReason);
         Assert.Equal(SecretsRequestStatus.Denied, remembered.Status);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Broker.RunAsync(
+        await Assert.ThrowsAsync<SecretsRequestException>(() => harness.Broker.RunAsync(
             "release-helper",
             harness.Credential,
             "joydex",
@@ -203,7 +203,7 @@ public sealed class SecretsBrokerCoreTests : IDisposable
         var allowed = harness.Submit("request-1");
         harness.Clock.Advance(TimeSpan.FromMinutes(1.55));
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var exception = await Assert.ThrowsAsync<SecretsRequestException>(() =>
             harness.RunAsync(allowed));
 
         Assert.Contains("remembered approval expired", exception.Message, StringComparison.Ordinal);
@@ -623,7 +623,7 @@ public sealed class SecretsBrokerCoreTests : IDisposable
 
         harness.OperatingMode.DenyAll(harness.Clock.GetUtcNow());
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var exception = await Assert.ThrowsAsync<SecretsRequestException>(() =>
             harness.RunAsync(allowed));
         Assert.Contains("denying all", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(
@@ -650,7 +650,7 @@ public sealed class SecretsBrokerCoreTests : IDisposable
 
         Assert.Equal(SecretsRequestStatus.Allowed, autoAllowed.Status);
         harness.Clock.Advance(TimeSpan.FromHours(24));
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var exception = await Assert.ThrowsAsync<SecretsRequestException>(() =>
             harness.RunAsync(autoAllowed));
         var deniedAgain = harness.Submit("after-auto-allow");
 

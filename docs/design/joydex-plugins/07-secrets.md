@@ -146,7 +146,45 @@ One request owns the visible approval slot. Show a small pending count and allow
 
 The common helper waits 90 seconds by default and cancels before broker expiry. It may instead detach with one explicit fallback. `run-without-secrets` starts the exact command with the caller's environment but without Joydex-injected values after removing the request's authority to receive them. `leave-pending` does not start the command. Both leave a short policy-only review state called **Agent Detached**. It has no reservation and can never transition back to an executable request. The popup explains what the agent did, hides Allow once, renames Deny this time to Dismiss, and disables remembered choices until the user checks **Apply my decision to all future commands from this agent**. A recorded choice applies only to future requests.
 
-When the Windows session locks, suspend presentation and all new redemptions, including cached approvals. On unlock require provider readiness; expired requests stay expired. Broker exit cancels pending requests. Persistent decisions survive; one-use reservations do not.
+Windows session availability gates fresh consent presentation only. Matching remembered grants,
+accepted unexpired one-use reservations, and an active global auto-allow window remain usable
+while the session is locked, disconnected, logged off, or its interactive state is unknown,
+provided the broker and the required launch mechanism are still running. All other authorization,
+provider, operation, expiry, and revocation checks continue to apply. Session transitions do not
+change policy epochs or cancel already-running executions.
+
+A request requiring fresh consent fails promptly with `ConsentUnavailable` and CLI exit code 16
+when presentation is unavailable. A transition away from an interactive desktop also ends pending
+executable requests and invalidates their popup challenges. Unlock does not revive those commands;
+a new invocation must use a new request ID. Explicitly detached policy-only reviews retain their
+existing bounded lifetime and can be shown again when presentation becomes available.
+True Windows sign-out may terminate the broker; there is no service or sign-out survival guarantee.
+Persistent decisions survive a broker restart; one-use reservations do not.
+
+Broker failures expose a safe reason code, failing stage, request/attempt IDs, and execution
+certainty. Supplementary `secrets/diagnostics.jsonl` records failures and session transitions,
+including broker instance/version and relevant authorization epochs. It contains no secret values,
+environments, command arguments, child output, or raw exception messages. Its retention is 30 days
+and at most 10,000 records; diagnostic storage failures do not affect grant redemption. The existing
+audit and durable launch ledger keep their formats and remain authoritative for launch outcomes.
+
+Use `joydex-secrets diagnose --data-root PATH --request ID` or
+`joydex-secrets diagnose --data-root PATH --last-failure` to read the available evidence, even
+with Joydex closed. Add `--output-mode json` for structured output. This command never enrolls a
+requester or fetches secrets. Missing historical reasons remain unknown, and an inconclusive
+committed launch must not be retried automatically. Clearing activity also clears supplementary
+diagnostics while preserving grants and the durable launch ledger.
+
+Request IDs are scoped to requester registrations and can collide across clients. Diagnosis
+reports ambiguous matches as unknown; use `--request ID --attempt GUID` from the original failure
+to select one attempt. `--last-failure` follows that record's attempt. Activity and the durable
+operation ledger are read independently, so damaged activity cannot hide readable launch evidence.
+Missing or unreadable launch history never proves that a command did not run. A malformed replay
+against a running request reports the committed execution as unconfirmed without cancelling it.
+If authentication or a lost broker route prevents correlation with a real attempt, a rejected
+run remains unknown. Empty attempt GUIDs are unavailable correlation, including in older diagnostic
+records. Neither request-ID lookup nor `--last-failure` assigns such a failure to an older sole
+attempt; an explicit original `--attempt GUID` can still select that attempt's durable evidence.
 
 ## Bindable actions
 

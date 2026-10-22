@@ -22,11 +22,11 @@ internal sealed class SecretsBrokerApplicationContext : ApplicationContext
         ArgumentNullException.ThrowIfNull(endpoint);
         _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         _parent = parent;
-        _runtime = new SecretsBrokerRuntime(endpoint.DataRoot);
+        _runtime = new SecretsBrokerRuntime(endpoint.DataRoot, SecretsConsentAvailability.Unknown);
         SystemEvents.SessionSwitch += OnSessionSwitch;
         lock (_sessionStateGate)
         {
-            _runtime.SetSessionLocked(WindowsSessionState.IsLocked());
+            _runtime.SetConsentAvailability(WindowsSessionState.ReadAvailability());
         }
         var server = new SecretsBrokerPipeServer(endpoint, _runtime);
         _serverTask = server.RunAsync(_lifetime.Token);
@@ -136,7 +136,13 @@ internal sealed class SecretsBrokerApplicationContext : ApplicationContext
         if (!locked && !unlocked) return;
         lock (_sessionStateGate)
         {
-            _runtime.SetSessionLocked(locked);
+            _runtime.SetConsentAvailability(eventArgs.Reason switch
+            {
+                SessionSwitchReason.SessionLock => SecretsConsentAvailability.Locked,
+                SessionSwitchReason.SessionLogoff => SecretsConsentAvailability.LoggedOff,
+                SessionSwitchReason.ConsoleDisconnect or SessionSwitchReason.RemoteDisconnect => SecretsConsentAvailability.Disconnected,
+                _ => WindowsSessionState.ReadAvailability(),
+            });
         }
         _ui.Post(_ =>
         {

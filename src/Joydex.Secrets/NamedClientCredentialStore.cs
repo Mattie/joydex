@@ -144,8 +144,10 @@ public sealed class NamedClientCredentialStore
     private static void EnsurePrivateDirectory(string path)
     {
         var user = CurrentUser();
+        var directory = new DirectoryInfo(path);
         var security = new DirectorySecurity();
-        security.SetOwner(user);
+        var alreadyOwned = Equals(directory.GetAccessControl(AccessControlSections.Owner)
+            .GetOwner(typeof(SecurityIdentifier)), user);
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
         security.AddAccessRule(new FileSystemAccessRule(
             user,
@@ -153,9 +155,19 @@ public sealed class NamedClientCredentialStore
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
             PropagationFlags.None,
             AccessControlType.Allow));
-        new DirectoryInfo(path).SetAccessControl(security);
-        var applied = new DirectoryInfo(path).GetAccessControl();
-        if (!applied.AreAccessRulesProtected || !HasOnlyCurrentUserRules(applied, user))
+        directory.SetAccessControl(security);
+        // Owners can replace the DACL without WRITE_OWNER. An elevated account may
+        // default to a group owner; apply the private DACL first so its FullControl
+        // rule permits the subsequent owner change. Never combine these writes.
+        if (!alreadyOwned)
+        {
+            var owner = new DirectorySecurity();
+            owner.SetOwner(user);
+            directory.SetAccessControl(owner);
+        }
+        var applied = directory.GetAccessControl();
+        if (!Equals(applied.GetOwner(typeof(SecurityIdentifier)), user)
+            || !applied.AreAccessRulesProtected || !HasOnlyCurrentUserRules(applied, user))
         {
             throw new UnauthorizedAccessException("The credential directory ACL could not be verified.");
         }
@@ -164,13 +176,22 @@ public sealed class NamedClientCredentialStore
     private static void EnsurePrivateFile(string path)
     {
         var user = CurrentUser();
+        var file = new FileInfo(path);
         var security = new FileSecurity();
-        security.SetOwner(user);
+        var alreadyOwned = Equals(file.GetAccessControl(AccessControlSections.Owner)
+            .GetOwner(typeof(SecurityIdentifier)), user);
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
         security.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
-        new FileInfo(path).SetAccessControl(security);
-        var applied = new FileInfo(path).GetAccessControl();
-        if (!applied.AreAccessRulesProtected || !HasOnlyCurrentUserRules(applied, user))
+        file.SetAccessControl(security);
+        if (!alreadyOwned)
+        {
+            var owner = new FileSecurity();
+            owner.SetOwner(user);
+            file.SetAccessControl(owner);
+        }
+        var applied = file.GetAccessControl();
+        if (!Equals(applied.GetOwner(typeof(SecurityIdentifier)), user)
+            || !applied.AreAccessRulesProtected || !HasOnlyCurrentUserRules(applied, user))
         {
             throw new UnauthorizedAccessException("The credential file ACL could not be verified.");
         }

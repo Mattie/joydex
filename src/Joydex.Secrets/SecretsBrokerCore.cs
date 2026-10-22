@@ -19,6 +19,7 @@ public enum SecretsRequestStatus
     Completed,
     LaunchUnconfirmed,
     InvalidRequest,
+    ConsentUnavailable,
 }
 
 /// <summary>Why the requesting helper stopped waiting while local policy review remained open.</summary>
@@ -43,7 +44,8 @@ public sealed record SecretsRequestResponse(
     string RequestId,
     Guid AttemptId,
     string? Reservation,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    SecretsFailure? Failure = null);
 
 /// <summary>Safe display model consumed only by the broker-owned consent surface.</summary>
 public sealed record SecretsPendingRequest(
@@ -125,7 +127,8 @@ public sealed class SecretsBrokerCore
     /// <summary>Authenticates and evaluates one request after durably recording its arrival.</summary>
     public SecretsRequestResponse Submit(
         SecretsRequestSubmission submission,
-        ReadOnlySpan<byte> credential)
+        ReadOnlySpan<byte> credential,
+        SecretsConsentAvailability consentAvailability = SecretsConsentAvailability.Available)
     {
         ArgumentNullException.ThrowIfNull(submission);
         var now = _time.GetUtcNow();
@@ -382,6 +385,17 @@ public sealed class SecretsBrokerCore
                     operation.Identity.Digest,
                     response.Status,
                     evaluation.MatchedRule, scope));
+                return response;
+            }
+
+            if (consentAvailability != SecretsConsentAvailability.Available)
+            {
+                var response = new SecretsRequestResponse(SecretsRequestStatus.ConsentUnavailable,
+                    submission.RequestId, attemptId, null, now, SecretsFailure.ConsentUnavailable);
+                _requests.Add(key, new(scope, operation, response, null, submission.Reason, null, AutoAllowed: false, [], null));
+                _audit.Append(OutcomeRecord(attemptId, now, submission.RequestId,
+                    authentication.Principal.ClientId, authentication.Project.ProjectReference,
+                    aliasIdentities, operation.Identity.Digest, response.Status, rule: null));
                 return response;
             }
 
@@ -904,7 +918,8 @@ public sealed class SecretsBrokerCore
             if (!_requests.TryGetValue(key, out request!)
                 || request.Response.Status != SecretsRequestStatus.Allowed)
             {
-                throw new InvalidOperationException("The request is not allowed for execution.");
+                throw new SecretsRequestException(request?.Response.Failure ?? new SecretsFailure(
+                    "request_not_allowed", "reservation", "The request is not allowed for execution."));
             }
             if (authentication.Principal.RegistrationId != request.Scope.Principal.RegistrationId
                 || authentication.Principal.Generation != request.Scope.Principal.Generation
@@ -927,8 +942,8 @@ public sealed class SecretsBrokerCore
                 if (evaluation.Disposition != SecretsPolicyDisposition.Allowed
                     || evaluation.MatchedRule?.RuleId != ruleId)
                 {
-                    throw new InvalidOperationException(
-                        "The remembered approval expired or no longer authorizes this request.");
+                    throw new SecretsRequestException(new("approval_no_longer_valid", "policy",
+                        "The remembered approval expired or no longer authorizes this request."));
                 }
             }
             var consumed = request.Operation.Lifetime == SecretsExecutionLifetime.Detached
@@ -942,7 +957,8 @@ public sealed class SecretsBrokerCore
                 currentOperatingMode.Epoch);
             if (consumed != SecretsReservationConsumeResult.Consumed)
             {
-                throw new InvalidOperationException($"The reservation cannot be used: {consumed}.");
+                throw new SecretsRequestException(new("reservation_" + consumed.ToString().ToLowerInvariant(),
+                    "reservation", $"The reservation cannot be used: {consumed}."));
             }
         }
 
@@ -1024,7 +1040,8 @@ public sealed class SecretsBrokerCore
                 MaintainRequests(_time.GetUtcNow());
                 if (!_requests.TryGetValue(key, out var current)
                     || current.Response.Status != SecretsRequestStatus.Allowed || current.LaunchCommitted)
-                    throw new InvalidOperationException("The request is no longer allowed for execution.");
+                    throw new SecretsRequestException(current?.Response.Failure ?? new SecretsFailure(
+                        "request_not_allowed", "authorization", "The request is no longer allowed for execution."));
                 _clients.WithLock(() => _policy.WithLock(() =>
                     WithOperatingModeSnapshotLock(_time.GetUtcNow(), operatingMode =>
                     {
@@ -1042,7 +1059,8 @@ public sealed class SecretsBrokerCore
                             var consumed = _reservations.Consume(reservation, originalAuthentication.Principal,
                                 request.Response.RequestId, request.Scope, authorizedPolicyEpoch, _time.GetUtcNow(), authorizedOperatingModeEpoch);
                             if (consumed != SecretsReservationConsumeResult.Consumed)
-                                throw new InvalidOperationException("The detached reservation is no longer usable.");
+                                throw new SecretsRequestException(new("reservation_" + consumed.ToString().ToLowerInvariant(),
+                                    "reservation", "The detached reservation is no longer usable."));
                         }
                         _audit.Append(launchCommit);
                         _requests[key] = current with { LaunchCommitted = true };
@@ -1055,14 +1073,60 @@ public sealed class SecretsBrokerCore
         else coordinateFinalAuthorization(Commit);
     }
 
-    private void SetTerminalStatus(RequestKey key, SecretsRequestStatus status)
+    /// <summary>Ends unresolved executable requests when their consent surface becomes unavailable.</summary>
+    internal void FailPendingConsent()
+    {
+        lock (_gate)
+        {
+            foreach (var key in _requests.Where(pair => pair.Value.Response.Status == SecretsRequestStatus.Pending)
+                         .Select(pair => pair.Key).ToArray())
+            {
+                SetTerminalStatus(key, SecretsRequestStatus.ConsentUnavailable, SecretsFailure.ConsentUnavailable);
+                _requests[key] = _requests[key] with { Challenge = null };
+            }
+        }
+    }
+
+    /// <summary>Preserves a run failure, including checks that failed before reservation consumption.</summary>
+    internal SecretsRequestResponse? RecordExecutionFailure(string clientId, ReadOnlySpan<byte> credential,
+        string projectReference, string requestId, SecretsFailure failure)
+    {
+        var authentication = _clients.Authenticate(clientId, credential, projectReference, SecretDeliveryMode.ExecInject);
+        if (authentication is null) return null;
+        lock (_gate)
+        {
+            var key = new RequestKey(authentication.Principal.RegistrationId, authentication.Principal.Generation, requestId);
+            if (!_requests.TryGetValue(key, out var request)) return null;
+            var unconfirmed = _audit.FindUnconfirmedLaunches().Contains(request.Response.AttemptId);
+            var committed = _audit.FindCommittedRequests().Where(item => item.AttemptId == request.Response.AttemptId).ToArray();
+            var launchState = unconfirmed ? "unconfirmed"
+                : committed.Any(item => item.Outcome is SecretsCommittedOutcome.Completed or SecretsCommittedOutcome.Terminated) ? "finished"
+                : "not_started";
+            // A rejected replay must not rewrite a completed result or cancel another redemption.
+            if (request.Response.Status is not SecretsRequestStatus.Allowed
+                and not SecretsRequestStatus.Revoked and not SecretsRequestStatus.ProviderUnavailable
+                and not SecretsRequestStatus.LaunchUnconfirmed)
+                return request.Response with { Failure = failure with { LaunchState = launchState } };
+            if (failure.Code == "reservation_missing" && request.Response.Status == SecretsRequestStatus.Allowed)
+                return request.Response with { Failure = failure with { LaunchState = unconfirmed ? "unconfirmed" : "unknown" } };
+            var status = unconfirmed ? SecretsRequestStatus.LaunchUnconfirmed
+                : failure.Code == "consent_unavailable" ? SecretsRequestStatus.ConsentUnavailable
+                : failure.Code == "provider_unavailable" ? SecretsRequestStatus.ProviderUnavailable
+                : SecretsRequestStatus.Revoked;
+            SetTerminalStatus(key, status, failure with { LaunchState = launchState });
+            return _requests[key].Response;
+        }
+    }
+
+    private void SetTerminalStatus(RequestKey key, SecretsRequestStatus status, SecretsFailure? failure = null)
     {
         var now = _time.GetUtcNow();
         lock (_gate)
         {
             if (!_requests.TryGetValue(key, out var request)) return;
-            if (request.Response.Status == status && request.Response.Reservation is null) return;
-            _audit.Append(OutcomeRecord(
+            if (request.Response.Status == status && request.Response.Reservation is null && failure is null) return;
+            if (request.Response.Status != status || request.Response.Reservation is not null)
+                _audit.Append(OutcomeRecord(
                 request.Response.AttemptId,
                 now,
                 request.Response.RequestId,
@@ -1079,6 +1143,7 @@ public sealed class SecretsBrokerCore
                     Status = status,
                     Reservation = null,
                     ExpiresAt = now,
+                    Failure = failure ?? request.Response.Failure,
                 },
             };
         }
@@ -1111,11 +1176,13 @@ public sealed class SecretsBrokerCore
         var currentPolicy = _policy.Read(now);
         if (currentPolicy.Epoch != authorizedPolicyEpoch)
         {
-            throw new InvalidOperationException("The secrets policy changed before launch.");
+            throw new SecretsRequestException(new("policy_changed", "authorization", "The secrets policy changed before launch.",
+                ExpectedPolicyEpoch: authorizedPolicyEpoch, CurrentPolicyEpoch: currentPolicy.Epoch));
         }
         if (operatingMode.Epoch != authorizedOperatingModeEpoch)
         {
-            throw new InvalidOperationException("The Secrets operating mode changed before launch.");
+            throw new SecretsRequestException(new("operating_mode_changed", "authorization", "The Secrets operating mode changed before launch.",
+                ExpectedOperatingModeEpoch: authorizedOperatingModeEpoch, CurrentOperatingModeEpoch: operatingMode.Epoch));
         }
         EnsureOperatingModeAuthorizes(request, operatingMode);
         if (!request.AutoAllowed && request.AuthorizingRuleId is { } ruleId)
@@ -1127,8 +1194,8 @@ public sealed class SecretsBrokerCore
             if (evaluation.Disposition != SecretsPolicyDisposition.Allowed
                 || evaluation.MatchedRule?.RuleId != ruleId)
             {
-                throw new InvalidOperationException(
-                    "The remembered approval expired or no longer authorizes this request.");
+                throw new SecretsRequestException(new("approval_no_longer_valid", "policy",
+                    "The remembered approval expired or no longer authorizes this request."));
             }
         }
 
@@ -1173,15 +1240,15 @@ public sealed class SecretsBrokerCore
     {
         if (operatingMode.Mode == SecretsOperatingMode.DenyAll)
         {
-            throw new InvalidOperationException("Secrets is denying all requests.");
+            throw new SecretsRequestException(new("deny_all", "policy", "Secrets is denying all requests."));
         }
         if (request.AutoAllowed && operatingMode.Mode != SecretsOperatingMode.AutoAllow24Hours)
         {
-            throw new InvalidOperationException("The temporary Secrets auto-allow window ended.");
+            throw new SecretsRequestException(new("auto_allow_expired", "policy", "The temporary Secrets auto-allow window ended."));
         }
         if (!request.AutoAllowed && operatingMode.Mode != SecretsOperatingMode.Ask)
         {
-            throw new InvalidOperationException("The Secrets operating mode changed before launch.");
+            throw new SecretsRequestException(new("operating_mode_changed", "policy", "The Secrets operating mode changed before launch."));
         }
     }
 
@@ -1347,6 +1414,7 @@ public sealed class SecretsBrokerCore
                         Status = SecretsRequestStatus.Revoked,
                         Reservation = null,
                         ExpiresAt = now,
+                        Failure = new("configuration_changed", "authorization", "The Secrets configuration changed after this request was authorized."),
                     },
                     Challenge = null,
                 };
@@ -1382,6 +1450,7 @@ public sealed class SecretsBrokerCore
                     {
                         Status = SecretsRequestStatus.Expired,
                         ExpiresAt = now,
+                        Failure = new("approval_expired", "reservation", "The request or its execution reservation expired before launch."),
                     },
                     Challenge = null,
                 };

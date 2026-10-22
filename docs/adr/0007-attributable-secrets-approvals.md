@@ -20,6 +20,23 @@ Updated 2026-09-23: Direct execution retains the requester's current directory a
 
 See the [secrets design](../design/joydex-plugins/07-secrets.md).
 
+Updated 2026-10-07: Windows session state controls whether fresh local consent can be presented,
+not whether an existing approval can be redeemed. Valid remembered grants, accepted unexpired
+one-use approvals and active auto-allow remain usable while the broker is running, including
+locked or disconnected sessions. A request needing fresh consent fails promptly when no prompt
+can be shown; unavailable presentation is neither a user denial nor revocation of saved grants.
+Pending executable requests terminate on loss of presentation, and unlock cannot revive them.
+Detached policy-only reviews keep their bounded review lifetime. No service or survival after
+true sign-out is introduced. All other authorization and launch checks remain enforced.
+
+Preserve structured, value-free failure reasons and request correlation in broker replies and
+a separate bounded diagnostics journal. Keep the existing audit and durable operation formats
+unchanged so rollback does not require migrating grants or launch history. Offline diagnosis
+reads evidence without enrolling a requester or fetching values; missing evidence remains unknown.
+Failed authentication or lost request correlation also remains unknown: rejecting a replay does
+not establish the original command's outcome. Do not infer an attempt from an empty ID or assign
+an uncorrelated failure to another attempt sharing its request ID.
+
 Updated 2026-09-29: Support explicit attached and detached execution lifetimes. Attached
 execution remains the default and is owned by the broker. Detached execution uses one
 headless SecretsHost per task, launched through the existing Explorer desktop; no persistent

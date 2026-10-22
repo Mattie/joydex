@@ -296,10 +296,30 @@ public static class SecretsDetachedTask
         Directory.CreateDirectory(directory);
         ExecOperationCanonicalizer.RejectReparsePoints(directory, "task directory", true);
         var user = WindowsIdentity.GetCurrent().User ?? throw new UnauthorizedAccessException("No user SID.");
-        var acl = new DirectorySecurity(); acl.SetOwner(user); acl.SetAccessRuleProtection(true, false);
+        var info = new DirectoryInfo(directory);
+        var acl = new DirectorySecurity();
+        var alreadyOwned = Equals(info.GetAccessControl(AccessControlSections.Owner)
+            .GetOwner(typeof(SecurityIdentifier)), user);
+        acl.SetAccessRuleProtection(true, false);
         acl.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
-        new DirectoryInfo(directory).SetAccessControl(acl);
+        info.SetAccessControl(acl);
+        // DACL replacement needs no WRITE_OWNER. Apply it separately before taking
+        // individual ownership of a path created with an elevated token's group owner.
+        if (!alreadyOwned)
+        {
+            var owner = new DirectorySecurity();
+            owner.SetOwner(user);
+            info.SetAccessControl(owner);
+        }
+        var applied = info.GetAccessControl();
+        var rules = applied.GetAccessRules(true, true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>().ToArray();
+        if (!Equals(applied.GetOwner(typeof(SecurityIdentifier)), user)
+            || !applied.AreAccessRulesProtected || rules.Length == 0
+            || rules.Any(rule => !Equals(rule.IdentityReference, user)
+                || rule.AccessControlType != AccessControlType.Allow))
+            throw new UnauthorizedAccessException("The task directory ACL could not be verified.");
     }
     private static Process Peer(PipeStream pipe, bool server)
     {

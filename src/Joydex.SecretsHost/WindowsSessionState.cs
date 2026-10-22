@@ -1,9 +1,10 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Joydex.Secrets;
 
 namespace Joydex.SecretsHost;
 
-/// <summary>Reads the current interactive-session lock flag and fails closed.</summary>
+/// <summary>Reads consent presentation availability; an unknown state cannot present a prompt.</summary>
 internal static class WindowsSessionState
 {
     private const int WtsSessionInfoEx = 25;
@@ -11,7 +12,7 @@ internal static class WindowsSessionState
     private const int WtsActive = 0;
     private const int WtsSessionStateUnlock = 1;
 
-    public static bool IsLocked()
+    public static SecretsConsentAvailability ReadAvailability()
     {
         IntPtr buffer = IntPtr.Zero;
         try
@@ -26,14 +27,17 @@ internal static class WindowsSessionState
                 || length < 20
                 || Marshal.ReadInt32(buffer) != WtsInfoExLevelOne)
             {
-                return true;
+                return SecretsConsentAvailability.Unknown;
             }
 
             // WTSINFOEX aligns its level-one union to 8 bytes in the win-x64 package.
             var unionOffset = IntPtr.Size == 8 ? 8 : 4;
             var connectionState = Marshal.ReadInt32(buffer, unionOffset + 4);
             var sessionFlags = Marshal.ReadInt32(buffer, unionOffset + 8);
-            return connectionState != WtsActive || sessionFlags != WtsSessionStateUnlock;
+            return connectionState != WtsActive ? SecretsConsentAvailability.Disconnected
+                : sessionFlags == WtsSessionStateUnlock ? SecretsConsentAvailability.Available
+                : sessionFlags == 0 ? SecretsConsentAvailability.Locked
+                : SecretsConsentAvailability.Unknown;
         }
         finally
         {

@@ -30,6 +30,7 @@ public sealed class SecretsCliTests : IDisposable
                 var pending = await harness.WaitForRequestAsync(process);
                 Assert.Equal(SecretsExecutionLifetime.Detached, pending.Lifetime);
                 Approve(harness, pending);
+                harness.Runtime.SetConsentAvailability(SecretsConsentAvailability.Disconnected);
                 var output = await process.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(20));
                 await process.WaitForExitAsync();
                 Assert.Equal(0, process.ExitCode);
@@ -255,6 +256,169 @@ public sealed class SecretsCliTests : IDisposable
         Assert.Equal(string.Empty, await process.StandardOutput.ReadToEndAsync());
         Assert.Contains("Denied", await process.StandardError.ReadToEndAsync());
         Assert.Equal(11, process.ExitCode);
+    }
+
+    [Fact]
+    public async Task LockedConsentFailsFastWithoutTimeoutFallbackAndCanBeDiagnosedOffline()
+    {
+        CliHarness harness;
+        var marker = Path.Combine(_directory, "must-not-launch.txt");
+        await using (harness = new CliHarness(_directory))
+        {
+            harness.Runtime.SetConsentAvailability(SecretsConsentAvailability.Locked);
+            using var process = StartCli(harness, "--request", "locked-cli-request",
+                "--on-approval-timeout", "run-without-secrets", "--", harness.CommandShell, "/d", "/c", $"echo launched>\"{marker}\"");
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(16, process.ExitCode);
+            Assert.Empty(await process.StandardOutput.ReadToEndAsync());
+            var error = await process.StandardError.ReadToEndAsync();
+            Assert.Contains("consent_unavailable", error);
+            Assert.Contains("locked-cli-request", error);
+            Assert.False(File.Exists(marker));
+            Assert.Empty(harness.Runtime.PendingRequests());
+        }
+
+        var filesBefore = Directory.GetFiles(_directory, "*", SearchOption.AllDirectories)
+            .ToDictionary(path => path, File.GetLastWriteTimeUtc);
+        using var diagnose = StartHelper(harness, null, null,
+            ["diagnose", "--data-root", _directory, "--last-failure", "--output-mode", "json"]);
+        var output = await diagnose.StandardOutput.ReadToEndAsync();
+        await diagnose.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, diagnose.ExitCode);
+        using var result = JsonDocument.Parse(output);
+        Assert.Equal("locked-cli-request", result.RootElement.GetProperty("requestId").GetString());
+        Assert.Equal("consent_unavailable", result.RootElement.GetProperty("failure").GetProperty("code").GetString());
+        Assert.Equal("not_started", result.RootElement.GetProperty("launchState").GetString());
+        Assert.DoesNotContain("synthetic-value", output);
+        foreach (var file in filesBefore) Assert.Equal(file.Value, File.GetLastWriteTimeUtc(file.Key));
+        Assert.Equal(filesBefore.Count, Directory.GetFiles(_directory, "*", SearchOption.AllDirectories).Length);
+    }
+
+    [Fact]
+    public async Task DiagnosingMissingHistoryCreatesNoRequesterOrFiles()
+    {
+        await using var harness = new CliHarness(_directory);
+        var absent = Path.Combine(_directory, "never-created");
+        using var process = StartHelper(harness, null, null,
+            ["diagnose", "--data-root", absent, "--request", "unknown-request", "--output-mode", "json"]);
+        var output = await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, process.ExitCode);
+        Assert.False(Directory.Exists(absent));
+        using var result = JsonDocument.Parse(output);
+        Assert.Equal("unknown", result.RootElement.GetProperty("launchState").GetString());
+        Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty("failure").ValueKind);
+    }
+
+    [Fact]
+    public async Task DiagnosisDoesNotCombineClientsThatReuseARequestId()
+    {
+        await using var harness = new CliHarness(_directory);
+        var completed = Guid.NewGuid();
+        var blocked = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var committed = new SecretsAuditRecord(completed, SecretsAuditEventKind.LaunchCommitted,
+            now, "shared-id", "other-client", "joydex", [], new string('a', 64),
+            ClientRegistrationId: Guid.NewGuid(), ClientGeneration: 1);
+        harness.Audit.Append(committed);
+        harness.Audit.Append(committed with { Kind = SecretsAuditEventKind.LaunchCompleted });
+        new SecretsDiagnostics(_directory).TryAppend(new(now, "failure", Guid.NewGuid(),
+            Environment.ProcessId, "test", SecretsConsentAvailability.Locked, 1,
+            "shared-id", blocked, SecretsFailure.ConsentUnavailable));
+
+        using (var process = StartHelper(harness, null, null,
+            ["diagnose", "--data-root", _directory, "--request", "shared-id", "--output-mode", "json"]))
+        {
+            var output = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, process.ExitCode);
+            using var result = JsonDocument.Parse(output);
+            Assert.Equal("unknown", result.RootElement.GetProperty("launchState").GetString());
+            Assert.True(result.RootElement.GetProperty("ambiguous").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty("failure").ValueKind);
+        }
+
+        foreach (var tail in new[] { new[] { "--last-failure" }, new[] { "--request", "shared-id", "--attempt", blocked.ToString() } })
+        {
+            using var process = StartHelper(harness, null, null,
+                new[] { "diagnose", "--data-root", _directory, "--output-mode", "json" }.Concat(tail));
+            var output = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, process.ExitCode);
+            using var result = JsonDocument.Parse(output);
+            Assert.Equal(blocked, result.RootElement.GetProperty("attemptId").GetGuid());
+            Assert.Equal("not_started", result.RootElement.GetProperty("launchState").GetString());
+            Assert.Empty(result.RootElement.GetProperty("launches").EnumerateArray());
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UncorrelatedFailureCannotSelectAnOlderAttemptOrClaimNothingRan(bool emptyGuid)
+    {
+        await using var harness = new CliHarness(_directory);
+        var completed = Guid.NewGuid();
+        var committed = new SecretsAuditRecord(completed, SecretsAuditEventKind.LaunchCommitted,
+            DateTimeOffset.UtcNow, "lost-correlation", "old-client", "joydex", [], new string('b', 64),
+            ClientRegistrationId: Guid.NewGuid(), ClientGeneration: 1);
+        harness.Audit.Append(committed);
+        harness.Audit.Append(committed with { Kind = SecretsAuditEventKind.LaunchCompleted });
+        new SecretsDiagnostics(_directory).TryAppend(new(DateTimeOffset.UtcNow, "failure", Guid.NewGuid(),
+            Environment.ProcessId, "test", SecretsConsentAvailability.Available, 1,
+            "lost-correlation", emptyGuid ? Guid.Empty : null,
+            new SecretsFailure("identity_unverified", "identity", "The requester could not be verified.")));
+
+        foreach (var tail in new[] { new[] { "--last-failure" }, new[] { "--request", "lost-correlation" } })
+        {
+            using var process = StartHelper(harness, null, null,
+                new[] { "diagnose", "--data-root", _directory, "--output-mode", "json" }.Concat(tail));
+            var output = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, process.ExitCode);
+            using var result = JsonDocument.Parse(output);
+            Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty("attemptId").ValueKind);
+            Assert.True(result.RootElement.GetProperty("uncorrelated").GetBoolean());
+            Assert.Equal(completed, Assert.Single(result.RootElement.GetProperty("candidateAttemptIds").EnumerateArray()).GetGuid());
+            Assert.Equal("unknown", result.RootElement.GetProperty("launchState").GetString());
+            Assert.Equal("identity_unverified", result.RootElement.GetProperty("failure").GetProperty("code").GetString());
+            Assert.Equal("unknown", result.RootElement.GetProperty("failure").GetProperty("launchState").GetString());
+            Assert.Empty(result.RootElement.GetProperty("launches").EnumerateArray());
+        }
+
+        using var selected = StartHelper(harness, null, null,
+            ["diagnose", "--data-root", _directory, "--request", "lost-correlation", "--attempt", completed.ToString(), "--output-mode", "json"]);
+        var selectedOutput = await selected.StandardOutput.ReadToEndAsync();
+        await selected.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, selected.ExitCode);
+        using var original = JsonDocument.Parse(selectedOutput);
+        Assert.Equal("finished", original.RootElement.GetProperty("launchState").GetString());
+        Assert.Equal(JsonValueKind.Null, original.RootElement.GetProperty("failure").ValueKind);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DiagnosisWithUnreadableLaunchHistoryDoesNotClaimNothingRan(bool committed)
+    {
+        await using var harness = new CliHarness(_directory);
+        var attemptId = Guid.NewGuid();
+        new SecretsDiagnostics(_directory).TryAppend(new(DateTimeOffset.UtcNow, "failure", Guid.NewGuid(),
+            Environment.ProcessId, "test", SecretsConsentAvailability.Locked, 1,
+            "damaged-history", attemptId, SecretsFailure.ConsentUnavailable));
+        if (committed)
+            harness.Audit.Append(new(attemptId, SecretsAuditEventKind.LaunchCommitted, DateTimeOffset.UtcNow,
+                "damaged-history", "codex", "joydex", [], new string('a', 64),
+                ClientRegistrationId: Guid.NewGuid(), ClientGeneration: 1));
+        File.WriteAllText(SecretsPaths.GetAuditPath(_directory), "corrupt\n");
+        using var process = StartHelper(harness, null, null,
+            ["diagnose", "--data-root", _directory, "--request", "damaged-history", "--output-mode", "json"]);
+        var output = await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(0, process.ExitCode);
+        using var result = JsonDocument.Parse(output);
+        Assert.True(result.RootElement.GetProperty("incomplete").GetBoolean());
+        Assert.Equal(committed ? "unconfirmed" : "unknown", result.RootElement.GetProperty("launchState").GetString());
     }
 
     private static void Approve(CliHarness harness, SecretsPendingRequest pending) =>

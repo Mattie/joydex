@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Joydex.Secrets;
 
 namespace Joydex.Tests;
@@ -173,6 +175,36 @@ public sealed class SecretsDetachedTaskTests : IDisposable
         using var parent = Process.GetProcessById(info[5].ToInt32());
         Assert.Equal("explorer", parent.ProcessName, ignoreCase: true);
         Assert.Equal("stopped", (await SecretsDetachedTask.ControlAsync(_root, task.TaskId, true)).State);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ModifyOnlyTaskDirectoryCanBeHardenedAndLaunched(bool explicitlyOwned)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var user = identity.User!;
+        var secrets = SecretsPaths.GetSecretsRoot(_root);
+        Directory.CreateDirectory(secrets);
+        var acl = new DirectorySecurity();
+        if (explicitlyOwned) acl.SetOwner(user);
+        acl.SetAccessRuleProtection(true, false);
+        acl.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.Modify,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None, AccessControlType.Allow));
+        new DirectoryInfo(secrets).SetAccessControl(acl);
+
+        var task = await Launch("Start-Sleep -Seconds 120");
+        Assert.Equal("running", task.State);
+        Assert.Equal("stopped", (await SecretsDetachedTask.ControlAsync(_root, task.TaskId, true)).State);
+        var applied = new DirectoryInfo(Path.GetDirectoryName(task.StandardOutputPath)!).GetAccessControl();
+        Assert.Equal(user, applied.GetOwner(typeof(SecurityIdentifier)));
+        Assert.True(applied.AreAccessRulesProtected);
+        var rule = Assert.Single(applied.GetAccessRules(true, true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>());
+        Assert.Equal(user, rule.IdentityReference);
+        Assert.Equal(AccessControlType.Allow, rule.AccessControlType);
+        Assert.Equal(FileSystemRights.FullControl, rule.FileSystemRights);
     }
 
     [System.Runtime.InteropServices.DllImport("ntdll.dll")]

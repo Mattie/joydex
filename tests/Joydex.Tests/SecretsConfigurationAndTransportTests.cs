@@ -12,6 +12,100 @@ public sealed class SecretsConfigurationAndTransportTests : IDisposable
     public SecretsConfigurationAndTransportTests() => Directory.CreateDirectory(_directory);
 
     [Fact]
+    public async Task MalformedReplayCannotClaimAnActiveExecutionNeverStarted()
+    {
+        var envPath = Path.Combine(_directory, ".env");
+        File.WriteAllText(envPath, "TOKEN=synthetic-protocol-secret\n");
+        new SecretsConfigurationStore(SecretsPaths.GetConfigurationPath(_directory)).UpsertEnvSource(
+            null, "Test", envPath, new Dictionary<string, string> { ["TOKEN"] = "TOKEN" });
+        LocalSecretsRequester.EnsureReady(_directory, "codex", "Codex", "joydex", _directory);
+        var credential = new NamedClientCredentialStore(SecretsPaths.GetCredentialDirectory(_directory)).Load("codex");
+        var runtime = new SecretsBrokerRuntime(_directory);
+        var response = runtime.Submit(new("active-request", "codex", "joydex", "Test",
+            Operation: new(Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                ["/d", "/c", $"{Path.Combine(Environment.SystemDirectory, "PING.EXE")} 127.0.0.1 -n 30 >nul"],
+                _directory, new Dictionary<string, string> { ["TOKEN"] = "TOKEN" }, [], SecretOutputDisclosure.None)), credential);
+        var pending = Assert.Single(runtime.PendingRequests());
+        var approved = runtime.Decide(response.AttemptId, pending.DisplayChallenge, SecretsConsentChoice.Yes, true);
+        using var executionLifetime = new CancellationTokenSource();
+        using var serverLifetime = new CancellationTokenSource();
+        var server = new SecretsBrokerPipeServer(SecretsBrokerEndpoint.Create(_directory), runtime).RunAsync(serverLifetime.Token);
+        var execution = runtime.RunAsync("codex", credential, "joydex", approved.RequestId,
+            approved.Reservation!, new Dictionary<string, string>(), executionLifetime.Token);
+        try
+        {
+            var audit = new SecretsAuditJournal(SecretsPaths.GetAuditPath(_directory));
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (!audit.ReadAll().Any(record => record.Kind == SecretsAuditEventKind.LaunchStarted))
+                await Task.Delay(25, deadline.Token);
+            var reply = await new SecretsBrokerPipeClient(_directory).SendAsync(new(
+                SecretsBrokerCommandKind.Run, "codex", "joydex", RequestId: approved.RequestId,
+                Reservation: approved.Reservation, CallerEnvironment: null), TimeSpan.FromSeconds(5), CancellationToken.None);
+            Assert.Equal("unconfirmed", reply.Failure!.LaunchState);
+            Assert.Equal(SecretsRequestStatus.LaunchUnconfirmed, reply.Status);
+            Assert.Equal(SecretsRequestStatus.Allowed, runtime.GetStatus("codex", credential, "joydex", approved.RequestId).Status);
+            Assert.Equal("unconfirmed", new SecretsDiagnostics(_directory).Read().Records.Last(record => record.Kind == "failure").Failure!.LaunchState);
+        }
+        finally
+        {
+            executionLifetime.Cancel();
+            try { await execution; } catch (OperationCanceledException) { }
+            serverLifetime.Cancel();
+            await server;
+            CryptographicOperations.ZeroMemory(credential);
+        }
+    }
+
+    [Fact]
+    public async Task ReenrolledRequesterReplayCannotClaimItsOldExecutionNeverStarted()
+    {
+        var envPath = Path.Combine(_directory, ".env");
+        File.WriteAllText(envPath, "TOKEN=synthetic-reenrollment-secret\n");
+        new SecretsConfigurationStore(SecretsPaths.GetConfigurationPath(_directory)).UpsertEnvSource(
+            null, "Test", envPath, new Dictionary<string, string> { ["TOKEN"] = "TOKEN" });
+        LocalSecretsRequester.EnsureReady(_directory, "codex", "Codex", "joydex", _directory);
+        var credential = new NamedClientCredentialStore(SecretsPaths.GetCredentialDirectory(_directory)).Load("codex");
+        var runtime = new SecretsBrokerRuntime(_directory);
+        using var lifetime = new CancellationTokenSource();
+        Task? server = null;
+        try
+        {
+            var response = runtime.Submit(new("old-execution", "codex", "joydex", "Test",
+                Operation: new(Path.Combine(Environment.SystemDirectory, "cmd.exe"), ["/d", "/c", "exit /b 0"],
+                    _directory, new Dictionary<string, string> { ["TOKEN"] = "TOKEN" }, [], SecretOutputDisclosure.None)), credential);
+            var shown = Assert.Single(runtime.PendingRequests());
+            var approved = runtime.Decide(response.AttemptId, shown.DisplayChallenge, SecretsConsentChoice.Yes, true);
+            Assert.Equal(0, (await runtime.RunAsync("codex", credential, "joydex", approved.RequestId,
+                approved.Reservation!, new Dictionary<string, string>(), CancellationToken.None)).ExitCode);
+            var registry = new NamedClientRegistry(SecretsPaths.GetClientsPath(_directory));
+            registry.Revoke("codex");
+            using var replacement = registry.Enroll("codex", "Replacement",
+                [SecretsProjectIdentityFactory.Create("joydex", _directory)], [SecretDeliveryMode.ExecInject]);
+            server = new SecretsBrokerPipeServer(SecretsBrokerEndpoint.Create(_directory), runtime).RunAsync(lifetime.Token);
+
+            var reply = await new SecretsBrokerPipeClient(_directory).SendAsync(new(
+                SecretsBrokerCommandKind.Run, "codex", "joydex", approved.RequestId,
+                Reservation: approved.Reservation, CallerEnvironment: new Dictionary<string, string>()),
+                TimeSpan.FromSeconds(5), CancellationToken.None);
+
+            Assert.Equal(SecretsRequestStatus.IdentityUnverified, reply.Status);
+            Assert.Null(reply.AttemptId);
+            Assert.Equal("unknown", reply.Failure!.LaunchState);
+            var failure = new SecretsDiagnostics(_directory).Read().Records.Last(record => record.Kind == "failure");
+            Assert.Null(failure.AttemptId);
+            Assert.Equal("unknown", failure.Failure!.LaunchState);
+            Assert.Single(new SecretsAuditJournal(SecretsPaths.GetAuditPath(_directory)).ReadAll(),
+                record => record.Kind == SecretsAuditEventKind.LaunchStarted);
+        }
+        finally
+        {
+            lifetime.Cancel();
+            if (server is not null) await server;
+            CryptographicOperations.ZeroMemory(credential);
+        }
+    }
+
+    [Fact]
     public void ConfigurationPreservesUnchangedAliasIdentityAndVersionsBehaviorChanges()
     {
         var envPath = Path.Combine(_directory, ".env");
@@ -349,7 +443,9 @@ public sealed class SecretsConfigurationAndTransportTests : IDisposable
                 TimeSpan.FromSeconds(5),
                 CancellationToken.None);
             Assert.Equal(SecretsRequestStatus.Revoked, staleRun.Status);
-            Assert.Equal("The Secrets request is no longer authorized.", staleRun.Error);
+            Assert.Equal("configuration_changed", staleRun.Failure!.Code);
+            Assert.Equal(staleRequest.RequestId, staleRun.RequestId);
+            Assert.Equal(staleRequest.AttemptId, staleRun.AttemptId);
             Assert.Equal(
                 SecretsRequestStatus.Revoked,
                 runtime.GetStatus(clientId, credential, projectReference, staleRequest.RequestId!).Status);
@@ -375,9 +471,6 @@ public sealed class SecretsConfigurationAndTransportTests : IDisposable
                 TimeSpan.FromSeconds(5),
                 CancellationToken.None);
             Assert.Equal(SecretsRequestStatus.Pending, lockedRequest.Status);
-            runtime.SetSessionLocked(true);
-            Assert.Empty(runtime.PendingRequests());
-            runtime.SetSessionLocked(false);
             var lockedShown = Assert.Single(runtime.PendingRequests());
             var lockedApproved = runtime.Decide(
                 lockedShown.AttemptId,
@@ -395,9 +488,9 @@ public sealed class SecretsConfigurationAndTransportTests : IDisposable
                     CallerEnvironment: new Dictionary<string, string>()),
                 TimeSpan.FromSeconds(5),
                 CancellationToken.None);
-            Assert.Equal(SecretsRequestStatus.Revoked, lockedRun.Status);
+            Assert.Equal(SecretsRequestStatus.Completed, lockedRun.Status);
             Assert.Equal(
-                SecretsRequestStatus.Revoked,
+                SecretsRequestStatus.Completed,
                 runtime.GetStatus(clientId, credential, projectReference, lockedRequest.RequestId!).Status);
             runtime.SetSessionLocked(false);
 

@@ -233,7 +233,7 @@ public sealed class SecretsExecOperationTests : IDisposable
         Directory.Move(working, moved);
         Directory.CreateDirectory(working);
 
-        var exception = Assert.Throws<InvalidOperationException>(() =>
+        var exception = Assert.Throws<SecretsRequestException>(() =>
             ExecOperationCanonicalizer.AcquireCurrentFiles(operation));
 
         Assert.Contains("working directory changed", exception.Message, StringComparison.Ordinal);

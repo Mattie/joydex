@@ -31,6 +31,9 @@ public static class SecretsPaths
     public static string GetAuditPath(string dataRoot) =>
         Path.Combine(GetSecretsRoot(dataRoot), "audit.jsonl");
 
+    public static string GetDiagnosticsPath(string dataRoot) =>
+        Path.Combine(GetSecretsRoot(dataRoot), "diagnostics.jsonl");
+
     public static string GetOperatingModePath(string dataRoot) =>
         Path.Combine(GetSecretsRoot(dataRoot), "operating-mode.json");
 
@@ -102,9 +105,12 @@ public sealed class SecretsBrokerRuntime
     private readonly Dictionary<long, BrokerGeneration> _generations = [];
     private readonly Dictionary<RequestRoute, BrokerGeneration> _routes = [];
     private long _currentEpoch;
-    private bool _sessionLocked;
+    private SecretsConsentAvailability _consentAvailability;
+    private readonly SecretsDiagnostics _diagnostics;
+    private readonly Guid _brokerInstance = Guid.NewGuid();
+    private readonly int _sessionId = System.Diagnostics.Process.GetCurrentProcess().SessionId;
 
-    public SecretsBrokerRuntime(string dataRoot)
+    public SecretsBrokerRuntime(string dataRoot, SecretsConsentAvailability initialConsentAvailability = SecretsConsentAvailability.Available)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
         _configuration = new SecretsConfigurationStore(SecretsPaths.GetConfigurationPath(dataRoot));
@@ -113,16 +119,52 @@ public sealed class SecretsBrokerRuntime
         _audit = new SecretsAuditJournal(SecretsPaths.GetAuditPath(dataRoot));
         _operatingMode = new SecretsOperatingModeStore(SecretsPaths.GetOperatingModePath(dataRoot));
         _audit.PruneActivity(DateTimeOffset.UtcNow.AddDays(-30));
+        _diagnostics = new SecretsDiagnostics(dataRoot);
+        _consentAvailability = initialConsentAvailability;
+        RecordDiagnostic("broker_started");
     }
 
     public bool SessionLocked
     {
-        get { lock (_gate) return _sessionLocked; }
+        get { lock (_gate) return _consentAvailability != SecretsConsentAvailability.Available; }
     }
 
-    public void SetSessionLocked(bool locked)
+    public SecretsConsentAvailability ConsentAvailability
     {
-        lock (_gate) _sessionLocked = locked;
+        get { lock (_gate) return _consentAvailability; }
+    }
+
+    public void SetSessionLocked(bool locked) => SetConsentAvailability(
+        locked ? SecretsConsentAvailability.Locked : SecretsConsentAvailability.Available);
+
+    /// <summary>Changes presentation availability without invalidating accepted approvals or running work.</summary>
+    public void SetConsentAvailability(SecretsConsentAvailability availability)
+    {
+        if (!Enum.IsDefined(availability)) throw new ArgumentOutOfRangeException(nameof(availability));
+        lock (_gate)
+        {
+            if (_consentAvailability == availability) return;
+            _consentAvailability = availability;
+            RecordDiagnostic("consent_state_changed");
+            if (availability == SecretsConsentAvailability.Available) return;
+            foreach (var generation in _generations.Values)
+            {
+                var pending = generation.Core.PendingRequests().Where(request => request.DetachedReason is null).ToArray();
+                generation.Core.FailPendingConsent();
+                foreach (var request in pending)
+                    RecordDiagnostic("failure", request.RequestId, request.AttemptId, SecretsFailure.ConsentUnavailable);
+            }
+        }
+    }
+
+    internal void RecordDiagnostic(string kind, string? requestId = null, Guid? attemptId = null,
+        SecretsFailure? failure = null, Exception? exception = null)
+    {
+        _diagnostics.TryAppend(new(DateTimeOffset.UtcNow, kind, _brokerInstance, Environment.ProcessId,
+            System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(
+                typeof(SecretsBrokerRuntime).Assembly)?.InformationalVersion ?? "unknown",
+            _consentAvailability, _sessionId, requestId, attemptId, failure, exception?.GetType().Name,
+            exception is System.ComponentModel.Win32Exception native ? native.NativeErrorCode : exception?.HResult));
     }
 
     public SecretsCatalogResult ListCatalog(
@@ -203,7 +245,7 @@ public sealed class SecretsBrokerRuntime
                 submission.ProjectReference,
                 operation,
                 submission.Reason ?? string.Empty,
-                usesSavedRecipe ? operation.OperationGeneration : 1), credential);
+                usesSavedRecipe ? operation.OperationGeneration : 1), credential, _consentAvailability);
             if (response.Status is not SecretsRequestStatus.IdentityUnverified
                 and not SecretsRequestStatus.InvalidRequest
                 and not SecretsRequestStatus.ProviderUnavailable)
@@ -212,6 +254,8 @@ public sealed class SecretsBrokerRuntime
             }
         }
         PruneRoutes();
+        if (response.Failure is { } failure)
+            RecordDiagnostic("failure", response.RequestId, response.AttemptId, failure);
         return response;
     }
 
@@ -351,55 +395,74 @@ public sealed class SecretsBrokerRuntime
             var route = CreateRoute(authentication, requestId);
             if (!_routes.TryGetValue(route, out generation!))
             {
-                throw new InvalidOperationException("The request is no longer available in this broker session.");
+                throw new SecretsRequestException(new("request_unavailable", "reservation",
+                    "The request is no longer available in this broker session.", LaunchState: "unknown"));
             }
         }
         void VerifyProviderAccess()
         {
             lock (_gate)
             {
-                if (_sessionLocked)
+                var epoch = _configuration.Read().Epoch;
+                if (epoch != generation.Configuration.Epoch)
                 {
-                    throw new InvalidOperationException(
-                        "Secrets is unavailable while the Windows session is locked.");
-                }
-                if (_configuration.Read().Epoch != generation.Configuration.Epoch)
-                {
-                    throw new InvalidOperationException(
-                        "The Secrets configuration changed after this request was authorized.");
+                    throw new SecretsRequestException(new("configuration_changed", "authorization",
+                        "The Secrets configuration changed after this request was authorized.",
+                        ExpectedConfigurationEpoch: generation.Configuration.Epoch, CurrentConfigurationEpoch: epoch));
                 }
             }
         }
-        return await generation.Core.RunAsync(
-            clientId,
-            credential,
-            projectReference,
-            requestId,
-            reservation,
-            callerEnvironment,
-            cancellationToken,
-            VerifyProviderAccess,
-            commit =>
-            {
-                lock (_gate)
+        try
+        {
+            return await generation.Core.RunAsync(
+                clientId,
+                credential,
+                projectReference,
+                requestId,
+                reservation,
+                callerEnvironment,
+                cancellationToken,
+                VerifyProviderAccess,
+                commit =>
                 {
-                    if (_sessionLocked)
+                    lock (_gate)
                     {
-                        throw new InvalidOperationException(
-                            "Secrets is unavailable while the Windows session is locked.");
-                    }
-                    _configuration.WithSnapshotLock(snapshot =>
-                    {
-                        if (snapshot.Epoch != generation.Configuration.Epoch)
+                        _configuration.WithSnapshotLock(snapshot =>
                         {
-                            throw new InvalidOperationException(
-                                "The Secrets configuration changed after this request was authorized.");
-                        }
-                        commit();
-                        return true;
-                    });
-                }
-            }, streams).ConfigureAwait(false);
+                            if (snapshot.Epoch != generation.Configuration.Epoch)
+                            {
+                                throw new SecretsRequestException(new("configuration_changed", "authorization",
+                                    "The Secrets configuration changed after this request was authorized.",
+                                    ExpectedConfigurationEpoch: generation.Configuration.Epoch, CurrentConfigurationEpoch: snapshot.Epoch));
+                            }
+                            commit();
+                            return true;
+                        });
+                    }
+                }, streams).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            var failure = SecretsFailure.FromException(exception);
+            var response = generation.Core.RecordExecutionFailure(clientId, credential.Span, projectReference, requestId, failure);
+            failure = response?.Failure ?? failure;
+            RecordDiagnostic("failure", requestId, response?.AttemptId, failure, exception);
+            if (exception is OperationCanceledException) throw;
+            throw new SecretsRequestException(failure) { DiagnosticRecorded = true };
+        }
+    }
+
+    /// <summary>Reads committed execution evidence without changing the request or its authorization.</summary>
+    internal string? GetRecordedLaunchState(Guid attemptId)
+    {
+        var launch = _audit.FindCommittedRequests().SingleOrDefault(record => record.AttemptId == attemptId);
+        return launch?.Outcome switch
+        {
+            SecretsCommittedOutcome.LaunchUnconfirmed => "unconfirmed",
+            SecretsCommittedOutcome.Completed or SecretsCommittedOutcome.Terminated => "finished",
+            SecretsCommittedOutcome.FailedBeforeLaunch => "not_started",
+            _ => null,
+        };
     }
 
     public IReadOnlyList<SecretsPendingRequest> PendingRequests()
@@ -408,7 +471,7 @@ public sealed class SecretsBrokerRuntime
         BrokerGeneration[] generations;
         lock (_gate)
         {
-            if (_sessionLocked) return [];
+            if (_consentAvailability != SecretsConsentAvailability.Available) return [];
             try { _ = CurrentGenerationLocked(); }
             catch (InvalidOperationException)
             {
@@ -436,14 +499,15 @@ public sealed class SecretsBrokerRuntime
         BrokerGeneration[] generations;
         lock (_gate)
         {
-            if (_sessionLocked)
+            if (_consentAvailability != SecretsConsentAvailability.Available)
             {
                 return new(
-                    SecretsRequestStatus.Revoked,
+                    SecretsRequestStatus.ConsentUnavailable,
                     "locked-request",
                     attemptId,
                     null,
-                    DateTimeOffset.UtcNow);
+                    DateTimeOffset.UtcNow,
+                    SecretsFailure.ConsentUnavailable);
             }
             try { _ = CurrentGenerationLocked(); }
             catch (InvalidOperationException)
@@ -454,20 +518,11 @@ public sealed class SecretsBrokerRuntime
                 }
             }
             generations = _generations.Values.ToArray();
+            var generation = generations.SingleOrDefault(candidate =>
+                candidate.Core.PendingRequests().Any(request => request.AttemptId == attemptId));
+            return generation?.Core.Decide(attemptId, displayChallenge, choice, requireOperation)
+                ?? new(SecretsRequestStatus.Expired, "expired-request", attemptId, null, DateTimeOffset.UtcNow);
         }
-        var generation = generations.SingleOrDefault(candidate =>
-            candidate.Core.PendingRequests().Any(request => request.AttemptId == attemptId));
-        return generation?.Core.Decide(
-                attemptId,
-                displayChallenge,
-                choice,
-                requireOperation)
-            ?? new(
-                SecretsRequestStatus.Expired,
-                "expired-request",
-                attemptId,
-                null,
-                DateTimeOffset.UtcNow);
     }
 
     private BrokerGeneration CurrentGeneration()
