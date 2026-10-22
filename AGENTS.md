@@ -4,6 +4,16 @@ Follow this file when working in the repository. A contributor may also have
 personal agent guidance outside the checkout; treat it as supplemental and do
 not make the public project depend on it.
 
+## Public documentation privacy
+
+Read `docs/PUBLIC_DOCUMENTATION.md` before publishing documentation, commit
+messages or PR text. Keep personal names used as operator identities, machine
+paths, live process/request IDs and per-run evidence in ignored local notes.
+Publish portable procedures, technical results and remaining acceptance gaps.
+Preserve required license attribution. Review the complete staged diff manually
+and run `python -I scripts/check_public_docs.py --staged` before committing.
+Do not copy local agent guidance, configuration or evidence into public files.
+
 ## Concepts and architectural decisions
 
 Before changing domain language or architecture, review the applicable `CONCEPTS.md` and the ADRs in `docs/adr/`. These files may live at the repository root or at the root of the relevant project, app, or service. Keep them current when concepts are resolved or durable architectural decisions are made.
