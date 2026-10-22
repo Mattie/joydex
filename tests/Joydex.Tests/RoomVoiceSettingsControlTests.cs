@@ -121,6 +121,68 @@ public sealed class RoomVoiceSettingsControlTests
         });
     }
 
+    [Theory]
+    [InlineData(90, 530, 400)]
+    [InlineData(90, 870, 1100)]
+    [InlineData(1200, 530, 400)]
+    [InlineData(1200, 870, 1100)]
+    public void LayoutKeepsSectionContentsInsideTheirGroupsAfterWidthChanges(int initialWidth, int width, int height)
+    {
+        RunOnSta(() =>
+        {
+            using var control = CreateLayoutControl();
+            control.Size = new Size(initialWidth, 400);
+            control.CreateControl();
+            control.Size = new Size(width, height);
+            control.PerformLayout();
+
+            foreach (var group in control.Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<GroupBox>())
+            {
+                var content = Assert.Single(group.Controls.OfType<TableLayoutPanel>());
+                Assert.True(group.DisplayRectangle.Contains(content.Bounds),
+                    $"{group.Text} content {content.Bounds} exceeds its display area {group.DisplayRectangle}.");
+            }
+
+            var advanced = FindAdvancedGroup(control);
+            var lastField = advanced.Controls.OfType<TableLayoutPanel>().Single()
+                .Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<TextBox>().Last();
+            control.ScrollControlIntoView(lastField);
+            var location = control.PointToClient(lastField.PointToScreen(Point.Empty));
+            Assert.InRange(location.Y, 0, control.ClientSize.Height - lastField.Height);
+        });
+    }
+
+    [Fact]
+    public void SectionMeasurementUsesProposedWidthBeforeTheParentArrangesIt()
+    {
+        RunOnSta(() =>
+        {
+            using var control = CreateLayoutControl();
+            var advanced = FindAdvancedGroup(control);
+            advanced.Parent!.Controls.Remove(advanced);
+            using (advanced)
+            {
+                advanced.Width = 260;
+                var narrow = advanced.GetPreferredSize(new Size(300, 0));
+                var wide = advanced.GetPreferredSize(new Size(800, 0));
+
+                Assert.True(wide.Height < narrow.Height,
+                    $"Proposed width did not reflow wrapped section content: narrow {narrow}, wide {wide}.");
+                Assert.Equal(260, advanced.Width);
+
+                foreach (var (width, preferred) in new[] { (300, narrow), (800, wide) })
+                {
+                    advanced.Size = new Size(width, preferred.Height);
+                    advanced.CreateControl();
+                    advanced.PerformLayout();
+                    var content = Assert.Single(advanced.Controls.OfType<TableLayoutPanel>());
+                    Assert.True(advanced.DisplayRectangle.Contains(content.Bounds),
+                        $"Measured section at width {width} clips its content: {content.Bounds} in {advanced.DisplayRectangle}.");
+                }
+            }
+        });
+    }
+
     private static RoomVoiceSettingsControl CreateLayoutControl() => new(
         VoicePePreferences.Default with { SessionMode = VoicePeSessionMode.JoydexOwner },
         _ => Task.FromResult(true),
