@@ -4,6 +4,25 @@ Follow this file when working in the repository. A contributor may also have
 personal agent guidance outside the checkout; treat it as supplemental and do
 not make the public project depend on it.
 
+## Code review and merge approval
+
+- Never merge a pull request until GitHub code reviews for its current head have
+  finished and all findings are resolved. Pending, running, failed or stalled
+  reviews block merging; wait and report their status.
+- Subagent reviews are welcome as additional review. They are not a substitute
+  for GitHub code reviews. Passing CI, a small change or a desire to finish the
+  task does not waive the review requirement.
+- Leave merges to the human by default. An agent may merge only after asking
+  immediately before the merge and receiving explicit approval for that specific
+  pull request and reviewed head. Earlier instructions to implement, finish,
+  integrate, sanitize, publish or open a PR do not supply that approval.
+- Before requesting merge approval, verify the current head, completed GitHub
+  reviews, resolved findings and CI results; provide the PR link and that status.
+  If the head changes or new findings appear, recheck the gates and obtain fresh
+  approval before merging.
+- Apply the same gates to auto-merge and direct integration into the default
+  branch. Do not use another integration path to bypass them.
+
 ## Public documentation privacy
 
 Read `docs/PUBLIC_DOCUMENTATION.md` before publishing documentation, commit
