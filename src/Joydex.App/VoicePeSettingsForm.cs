@@ -1576,10 +1576,11 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
             // GroupBox's default docking layout measures at its current width. The
             // parent table needs the height at the proposed width before arranging us.
+            // Use the same minimal-height constraint as Dock.Top's actual layout.
             var insets = SizeFromClientSize(Size.Empty) + Padding.Size + new Size(0, Font.Height);
             var contentSize = Controls[0].GetPreferredSize(new Size(
                 proposedSize.Width > 0 ? Math.Max(1, proposedSize.Width - insets.Width) : 0,
-                proposedSize.Height > 0 ? Math.Max(1, proposedSize.Height - insets.Height) : 0));
+                1));
             return contentSize + insets;
         }
     }

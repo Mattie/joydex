@@ -122,15 +122,22 @@ public sealed class RoomVoiceSettingsControlTests
     }
 
     [Theory]
-    [InlineData(90, 530, 400)]
-    [InlineData(90, 870, 1100)]
-    [InlineData(1200, 530, 400)]
-    [InlineData(1200, 870, 1100)]
-    public void LayoutKeepsSectionContentsInsideTheirGroupsAfterWidthChanges(int initialWidth, int width, int height)
+    [InlineData(90, 530, 400, 0)]
+    [InlineData(90, 870, 1100, 0)]
+    [InlineData(1200, 530, 400, 0)]
+    [InlineData(1200, 870, 1100, 0)]
+    [InlineData(90, 530, 400, 14)]
+    [InlineData(1200, 870, 1100, 14)]
+    public void LayoutKeepsSectionContentsInsideTheirGroupsAfterWidthChanges(int initialWidth, int width, int height, float fontSize)
     {
         RunOnSta(() =>
         {
+            using var font = fontSize > 0 ? new Font("Segoe UI", fontSize) : null;
             using var control = CreateLayoutControl();
+            if (font is not null)
+            {
+                control.Font = font;
+            }
             control.Size = new Size(initialWidth, 400);
             control.CreateControl();
             control.Size = new Size(width, height);
@@ -139,8 +146,8 @@ public sealed class RoomVoiceSettingsControlTests
             foreach (var group in control.Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<GroupBox>())
             {
                 var content = Assert.Single(group.Controls.OfType<TableLayoutPanel>());
-                Assert.True(group.DisplayRectangle.Contains(content.Bounds),
-                    $"{group.Text} content {content.Bounds} exceeds its display area {group.DisplayRectangle}.");
+                var contentFits = group.DisplayRectangle.Contains(content.Bounds);
+                Assert.True(contentFits, contentFits ? null : DescribeSectionLayout(group));
             }
 
             var advanced = FindAdvancedGroup(control);
@@ -181,6 +188,26 @@ public sealed class RoomVoiceSettingsControlTests
                 }
             }
         });
+    }
+
+    private static string DescribeSectionLayout(GroupBox group)
+    {
+        static string Describe(Control control, int depth)
+        {
+            var sizes = $"{new string(' ', depth * 2)}{control.GetType().Name} {control.Name}: "
+                + $"bounds={control.Bounds}, font={control.Font.Name}/{control.Font.SizeInPoints}, "
+                + $"preferred0={control.GetPreferredSize(new Size(control.Width, 0))}, "
+                + $"preferred1={control.GetPreferredSize(new Size(control.Width, 1))}";
+            if (control is TableLayoutPanel table)
+            {
+                sizes += $", columns=[{string.Join(",", table.GetColumnWidths())}], rows=[{string.Join(",", table.GetRowHeights())}]";
+            }
+            return depth >= 3 ? sizes : sizes + Environment.NewLine
+                + string.Join(Environment.NewLine, control.Controls.Cast<Control>().Select(child => Describe(child, depth + 1)));
+        }
+
+        return $"{group.Text} content exceeds its display area {group.DisplayRectangle}." + Environment.NewLine
+            + Describe(group, 0);
     }
 
     private static RoomVoiceSettingsControl CreateLayoutControl() => new(
