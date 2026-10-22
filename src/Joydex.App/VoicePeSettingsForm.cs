@@ -256,6 +256,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         {
             AutoSize = true,
             ColumnCount = 1,
+            ColumnStyles = { new ColumnStyle(SizeType.Percent, 100) },
             Dock = DockStyle.Top,
         };
         workspaceLayout.Controls.Add(workspaceFields, 0, 0);
@@ -344,6 +345,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         {
             AutoSize = true,
             ColumnCount = 1,
+            ColumnStyles = { new ColumnStyle(SizeType.Percent, 100) },
             Dock = DockStyle.Top,
             Padding = new Padding(8),
         };
@@ -434,6 +436,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         {
             AutoSize = true,
             ColumnCount = 1,
+            ColumnStyles = { new ColumnStyle(SizeType.Percent, 100) },
             Dock = DockStyle.Top,
         };
         tuningLayout.Controls.Add(tuningFields, 0, 0);
@@ -446,22 +449,16 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             MaximumSize = new Size(680, 0),
             Text = "Full duplex requires Joydex Audio Barge In. Joydex verifies that switch when Room Voice connects.",
         }, 0, 3);
-        var tuningGroup = new GroupBox
-        {
-            AutoSize = true,
-            Dock = DockStyle.Top,
-            Padding = new Padding(8),
-            Text = "Device and wake",
-        };
         var deviceAndWake = new TableLayoutPanel
         {
             AutoSize = true,
             ColumnCount = 1,
+            ColumnStyles = { new ColumnStyle(SizeType.Percent, 100) },
             Dock = DockStyle.Top,
         };
         deviceAndWake.Controls.Add(deviceFields, 0, 0);
         deviceAndWake.Controls.Add(tuningLayout, 0, 1);
-        tuningGroup.Controls.Add(deviceAndWake);
+        var tuningGroup = CreateGroup("Device and wake", deviceAndWake);
 
         var diagnosticsCommands = new FlowLayoutPanel
         {
@@ -490,6 +487,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         {
             AutoSize = true,
             ColumnCount = 1,
+            ColumnStyles = { new ColumnStyle(SizeType.Percent, 100) },
             Dock = DockStyle.Top,
             Padding = new Padding(8),
         };
@@ -530,6 +528,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
             ColumnCount = 1,
             Dock = DockStyle.Top,
         };
+        advancedLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         advancedLayout.Controls.Add(advancedFields, 0, 0);
         advancedLayout.Controls.Add(advancedCommands, 0, 1);
         advancedLayout.Controls.Add(new Label
@@ -1555,7 +1554,7 @@ internal sealed class RoomVoiceSettingsControl : UserControl
 
     private static GroupBox CreateGroup(string title, Control content)
     {
-        var group = new GroupBox
+        var group = new SectionGroupBox
         {
             AutoSize = true,
             Dock = DockStyle.Top,
@@ -1564,6 +1563,26 @@ internal sealed class RoomVoiceSettingsControl : UserControl
         };
         group.Controls.Add(content);
         return group;
+    }
+
+    private sealed class SectionGroupBox : GroupBox
+    {
+        public override Size GetPreferredSize(Size proposedSize)
+        {
+            if (Controls.Count != 1)
+            {
+                return base.GetPreferredSize(proposedSize);
+            }
+
+            // GroupBox's default docking layout measures at its current width. The
+            // parent table needs the height at the proposed width before arranging us.
+            // Use the same minimal-height constraint as Dock.Top's actual layout.
+            var insets = SizeFromClientSize(Size.Empty) + Padding.Size + new Size(0, Font.Height);
+            var contentSize = Controls[0].GetPreferredSize(new Size(
+                proposedSize.Width > 0 ? Math.Max(1, proposedSize.Width - insets.Width) : 0,
+                1));
+            return contentSize + insets;
+        }
     }
 
     private static void AddField(TableLayoutPanel fields, int row, string label, Control control)
