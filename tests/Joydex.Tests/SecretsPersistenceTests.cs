@@ -231,8 +231,10 @@ public sealed class SecretsPersistenceTests : IDisposable
         }
     }
 
-    [Fact]
-    public void OwnedCredentialPathsCanBeHardenedWithoutExistingWriteOwnerPermission()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CredentialPathsCanBeHardenedWithoutExistingWriteOwnerPermission(bool explicitlyOwned)
     {
         if (!OperatingSystem.IsWindows()) return;
         using var identity = WindowsIdentity.GetCurrent();
@@ -240,6 +242,9 @@ public sealed class SecretsPersistenceTests : IDisposable
         var directory = Path.Combine(_directory, "modify-only-credentials");
         Directory.CreateDirectory(directory);
         var directorySecurity = new DirectorySecurity();
+        // Elevated Windows tokens can default to Administrators ownership. Cover
+        // that default as well as the current-user ownership used on a workstation.
+        if (explicitlyOwned) directorySecurity.SetOwner(user);
         directorySecurity.SetAccessRuleProtection(true, false);
         directorySecurity.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.Modify,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
@@ -253,6 +258,9 @@ public sealed class SecretsPersistenceTests : IDisposable
             store.Save("codex", credential);
             var path = Path.Combine(directory, "codex.cred");
             var fileSecurity = new FileSecurity();
+            // Reproduce the default owner of a newly created file even though Save
+            // has already hardened this one to individual ownership.
+            fileSecurity.SetOwner(explicitlyOwned ? user : identity.Owner!);
             fileSecurity.SetAccessRuleProtection(true, false);
             fileSecurity.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.Modify,
                 AccessControlType.Allow));

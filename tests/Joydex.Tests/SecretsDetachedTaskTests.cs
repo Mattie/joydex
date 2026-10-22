@@ -177,14 +177,17 @@ public sealed class SecretsDetachedTaskTests : IDisposable
         Assert.Equal("stopped", (await SecretsDetachedTask.ControlAsync(_root, task.TaskId, true)).State);
     }
 
-    [Fact]
-    public async Task OwnedModifyOnlyTaskDirectoryCanBeHardenedAndLaunched()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ModifyOnlyTaskDirectoryCanBeHardenedAndLaunched(bool explicitlyOwned)
     {
         using var identity = WindowsIdentity.GetCurrent();
         var user = identity.User!;
         var secrets = SecretsPaths.GetSecretsRoot(_root);
         Directory.CreateDirectory(secrets);
         var acl = new DirectorySecurity();
+        if (explicitlyOwned) acl.SetOwner(user);
         acl.SetAccessRuleProtection(true, false);
         acl.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.Modify,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,

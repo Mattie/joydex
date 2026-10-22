@@ -146,11 +146,8 @@ public sealed class NamedClientCredentialStore
         var user = CurrentUser();
         var directory = new DirectoryInfo(path);
         var security = new DirectorySecurity();
-        // An owner can replace the DACL without WRITE_OWNER. Avoid requesting that
-        // extra permission when this account already owns a newly created path.
-        if (!Equals(directory.GetAccessControl(AccessControlSections.Owner)
-                .GetOwner(typeof(SecurityIdentifier)), user))
-            security.SetOwner(user);
+        var alreadyOwned = Equals(directory.GetAccessControl(AccessControlSections.Owner)
+            .GetOwner(typeof(SecurityIdentifier)), user);
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
         security.AddAccessRule(new FileSystemAccessRule(
             user,
@@ -159,6 +156,15 @@ public sealed class NamedClientCredentialStore
             PropagationFlags.None,
             AccessControlType.Allow));
         directory.SetAccessControl(security);
+        // Owners can replace the DACL without WRITE_OWNER. An elevated account may
+        // default to a group owner; apply the private DACL first so its FullControl
+        // rule permits the subsequent owner change. Never combine these writes.
+        if (!alreadyOwned)
+        {
+            var owner = new DirectorySecurity();
+            owner.SetOwner(user);
+            directory.SetAccessControl(owner);
+        }
         var applied = directory.GetAccessControl();
         if (!Equals(applied.GetOwner(typeof(SecurityIdentifier)), user)
             || !applied.AreAccessRulesProtected || !HasOnlyCurrentUserRules(applied, user))
@@ -172,12 +178,17 @@ public sealed class NamedClientCredentialStore
         var user = CurrentUser();
         var file = new FileInfo(path);
         var security = new FileSecurity();
-        if (!Equals(file.GetAccessControl(AccessControlSections.Owner)
-                .GetOwner(typeof(SecurityIdentifier)), user))
-            security.SetOwner(user);
+        var alreadyOwned = Equals(file.GetAccessControl(AccessControlSections.Owner)
+            .GetOwner(typeof(SecurityIdentifier)), user);
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
         security.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
         file.SetAccessControl(security);
+        if (!alreadyOwned)
+        {
+            var owner = new FileSecurity();
+            owner.SetOwner(user);
+            file.SetAccessControl(owner);
+        }
         var applied = file.GetAccessControl();
         if (!Equals(applied.GetOwner(typeof(SecurityIdentifier)), user)
             || !applied.AreAccessRulesProtected || !HasOnlyCurrentUserRules(applied, user))

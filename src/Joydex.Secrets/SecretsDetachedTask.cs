@@ -298,15 +298,20 @@ public static class SecretsDetachedTask
         var user = WindowsIdentity.GetCurrent().User ?? throw new UnauthorizedAccessException("No user SID.");
         var info = new DirectoryInfo(directory);
         var acl = new DirectorySecurity();
-        // Preserve an already-correct owner so an owned Modify-only folder
-        // can be secured using the owner's DACL rights without WRITE_OWNER.
-        if (!Equals(info.GetAccessControl(AccessControlSections.Owner)
-                .GetOwner(typeof(SecurityIdentifier)), user))
-            acl.SetOwner(user);
+        var alreadyOwned = Equals(info.GetAccessControl(AccessControlSections.Owner)
+            .GetOwner(typeof(SecurityIdentifier)), user);
         acl.SetAccessRuleProtection(true, false);
         acl.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
         info.SetAccessControl(acl);
+        // DACL replacement needs no WRITE_OWNER. Apply it separately before taking
+        // individual ownership of a path created with an elevated token's group owner.
+        if (!alreadyOwned)
+        {
+            var owner = new DirectorySecurity();
+            owner.SetOwner(user);
+            info.SetAccessControl(owner);
+        }
         var applied = info.GetAccessControl();
         var rules = applied.GetAccessRules(true, true, typeof(SecurityIdentifier))
             .Cast<FileSystemAccessRule>().ToArray();
