@@ -14,7 +14,7 @@ Use `joydex-secrets exec` when a command needs a configured secret. Name the env
 - Put the executable and every argument after `--`. Use a shell only when the command itself requires one.
 - Keep the reason short and factual. It is shown to the user but does not broaden approval scope.
 - Let the default approval timeout cancel the command. Use `run-without-secrets` only when the work remains useful without Joydex-supplied credentials. Use `leave-pending` only when the command should stop while the user may still set a rule for later requests.
-- Stop after a denied, expired, revoked, identity-unverified, provider-unavailable, queue-full, detached, or launch-unconfirmed result. Do not retry in a loop, switch identities, edit approval rules, or weaken the command to obtain approval.
+- Stop after a denied, expired, revoked, consent-unavailable, identity-unverified, provider-unavailable, queue-full, detached, or launch-unconfirmed result. Do not retry in a loop, switch identities, edit approval rules, or weaken the command to obtain approval.
 - Never open or read `.env`, inspect the credential store, echo environment values, put secret values in messages or files, or bypass the broker.
 
 ## Help the user configure a credential
@@ -114,6 +114,22 @@ The normal approval timeout is 90 seconds and cancels safely. Override it from 1
 
 Attached execution is the default for ordinary commands. Its entire process tree stops when the caller disconnects, Joydex exits, or the execution timeout expires. Use `--execution-timeout SECONDS` (1–3600) to shorten its one-hour limit.
 
+Windows lock or disconnect prevents fresh approval prompts while the broker remains running. Matching saved grants, accepted unexpired one-use approvals, and an active auto-allow window still work; other authorization checks still apply. A command needing fresh consent fails promptly with `consentUnavailable` and wrapper exit code **16**, rather than taking an approval-timeout fallback. A pending executable request also ends when presentation becomes unavailable. Unlocking cannot revive it. Stop and report the result; a later user-requested attempt uses a new request ID. Sign-out may terminate the broker and does not guarantee execution survival.
+
+## Diagnose a failed request
+
+Use the request ID reported on stderr or in the JSON reply. Reuse `$helper` and `$dataRoot` from the validated profile above so diagnosis reads the same store as the failed command:
+
+```powershell
+& $helper diagnose --data-root $dataRoot --request 'REQUEST_ID' --output-mode json
+```
+
+If the ID is unavailable, use `--last-failure` instead of `--request 'REQUEST_ID'`. The latest failure may belong to another request; confirm its correlation before attributing it to this task. Diagnosis is read-only, works with Joydex closed, does not enroll a requester, and never fetches secret values. Older packages may not support `diagnose`; report that limitation instead of searching credential files.
+
+Request IDs can be reused by different clients. If diagnosis reports `ambiguous`, select the attempt ID from the original failure with `--request 'REQUEST_ID' --attempt 'ATTEMPT_GUID'`. Do not choose an arbitrary attempt from the candidates. `--last-failure` selects its recorded attempt automatically.
+
+Report the safe reason code, failing stage, request/attempt IDs, and `launchState`. Missing or incomplete evidence remains unknown. `unconfirmed` or `unknown` does not establish whether a command ran, so do not automatically retry. For detached execution also check `status --task` using the original task ID. Diagnosis exit code zero means the query completed; it does not mean the original command succeeded. A child may itself return 16, so interpret the wrapper's status and stderr rather than its exit code alone.
+
 ## Long-running tasks
 
 Use `exec --detach` only for a long-running server or job the user has authorized. It asks for separate approval: existing attached approvals do not authorize detached execution. The toast explains that the task survives caller and Joydex exits.
@@ -146,6 +162,7 @@ These describe broker failures and opt-in JSON results. A normally completed pas
 | `agentDetached` | The helper stopped waiting. The old command cannot later receive secrets or run through this request. |
 | `expired` | Joydex's two-minute review window ended before the request was resolved. Nothing ran and no secret was delivered. |
 | `revoked` | Approval or requester access is no longer valid, or an execution timeout stopped the child. |
+| `consentUnavailable` | Fresh approval cannot be presented in this Windows session. The request ended; saved approvals remain valid. Wrapper exit code 16. |
 | `identityUnverified` | Joydex could not validate the helper's protected local identity and current project folder. |
 | `providerUnavailable` | A requested public name or its configured source is unavailable. |
 | `queueFull` | Joydex has too many requests awaiting review. |

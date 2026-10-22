@@ -271,7 +271,7 @@ public sealed class ExecOperationFileLease : IDisposable
         ArgumentNullException.ThrowIfNull(operation);
         if (!Directory.Exists(operation.WorkingDirectory))
         {
-            throw new InvalidOperationException("The approved working directory is unavailable.");
+            throw new SecretsRequestException(new("operation_changed", "operation_validation", "The approved working directory is unavailable."));
         }
 
         var streams = new List<FileStream>();
@@ -289,8 +289,8 @@ public sealed class ExecOperationFileLease : IDisposable
                     operation.WorkingDirectoryIdentity,
                     StringComparison.Ordinal))
             {
-                throw new InvalidOperationException(
-                    "The approved working directory changed before launch.");
+                throw new SecretsRequestException(new("operation_changed", "operation_validation",
+                    "The approved working directory changed before launch."));
             }
 
             foreach (var fingerprint in operation.Fingerprints)
@@ -310,7 +310,7 @@ public sealed class ExecOperationFileLease : IDisposable
                 var actual = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
                 if (!string.Equals(actual, fingerprint.Value, StringComparison.Ordinal))
                 {
-                    throw new InvalidOperationException("An approved executable input changed before launch.");
+                    throw new SecretsRequestException(new("operation_changed", "operation_validation", "An approved executable input changed before launch."));
                 }
             }
             ExecOperationCanonicalizer.RejectReparsePoints(

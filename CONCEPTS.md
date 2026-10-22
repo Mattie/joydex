@@ -368,6 +368,14 @@ Explorer-launched helper owns the job independently of caller and broker. Detach
 no timeout unless requested, no reboot recovery, and direct status/stop control by task ID.
 Lifetime is part of both exact-operation and client approval scope.
 
+**Secrets Consent Availability**:
+Whether the current Windows session can show a fresh local approval prompt. Locked, disconnected,
+logged-off and unknown sessions cannot present consent, but this state does not invalidate a
+matching saved grant, an accepted unexpired one-use approval, or an active auto-allow window.
+A new request needing consent fails promptly, and unlocking does not revive it. This describes
+presentation while the broker remains running, not process survival after Windows sign-out.
+_Avoid_: Broker locked, approval revoked, credential expired
+
 **Detached Task Commit**:
 The one-use handoff boundary after the helper has prepared its job and validated executable
 files, and the broker has rechecked authorization and durably consumed the launch. Before

@@ -9,6 +9,7 @@ internal sealed class SecretsSettingsControl : UserControl
     private readonly string _configurationPath;
     private readonly string _operatingModePath;
     private readonly string _metricsPath;
+    private readonly SecretsDiagnostics _diagnostics;
     private readonly bool _allowChanges;
     private readonly ModernDataGridView _decisions = CreateGrid("SecretsRememberedDecisions");
     private readonly ModernDataGridView _sources = CreateGrid("SecretsSources");
@@ -72,6 +73,7 @@ internal sealed class SecretsSettingsControl : UserControl
         _configurationPath = SecretsPaths.GetConfigurationPath(dataRoot);
         _operatingModePath = SecretsPaths.GetOperatingModePath(dataRoot);
         _metricsPath = SecretsPaths.GetMetricsPath(dataRoot);
+        _diagnostics = new SecretsDiagnostics(dataRoot);
         _allowChanges = allowChanges;
 
         AutoScroll = true;
@@ -287,6 +289,8 @@ internal sealed class SecretsSettingsControl : UserControl
         AddColumn(_activity, "Project", 100);
         AddColumn(_activity, "Event", 120);
         AddColumn(_activity, "Result", 100);
+        AddColumn(_activity, "Reason", 280);
+        AddColumn(_activity, "Request", 160);
     }
 
     private void Reload()
@@ -323,6 +327,8 @@ internal sealed class SecretsSettingsControl : UserControl
         try
         {
             var audit = new SecretsAuditJournal(_auditPath).ReadAll();
+            var failures = _diagnostics.Read().Records.Where(record => record.AttemptId is not null && record.Failure is not null)
+                .GroupBy(record => record.AttemptId!.Value).ToDictionary(group => group.Key, group => group.Last().Failure!);
             var policy = new SecretsPolicyStore(_policyPath).Read(now);
             var metadata = audit
                 .Where(record => record.RuleId is not null)
@@ -368,7 +374,10 @@ internal sealed class SecretsSettingsControl : UserControl
                     record.ClientReference,
                     record.ProjectReference,
                     Humanize(record.Kind),
-                    string.IsNullOrWhiteSpace(record.Outcome) ? "—" : record.Outcome);
+                    string.IsNullOrWhiteSpace(record.Outcome) ? "—" : record.Outcome,
+                    failures.TryGetValue(record.AttemptId, out var failure) && record.Kind == SecretsAuditEventKind.RequestOutcome
+                        ? $"{failure.Code}: {failure.Message}" : "—",
+                    record.RequestId);
             }
 
             _summary.Text = policy.Rules.Count == 0
@@ -508,6 +517,7 @@ internal sealed class SecretsSettingsControl : UserControl
         try
         {
             new SecretsAuditJournal(_auditPath).ClearActivity();
+            _diagnostics.Clear();
             Reload();
         }
         catch (Exception exception)

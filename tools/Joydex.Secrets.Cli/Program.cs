@@ -20,6 +20,7 @@ internal static class Program
         try
         {
             var parsed = Arguments.Parse(args);
+            if (parsed.Command == "diagnose") return Diagnose(parsed);
             var client = new SecretsBrokerPipeClient(parsed.DataRoot);
             return parsed.Command switch
             {
@@ -234,6 +235,89 @@ internal static class Program
             await streams.DrainAsync();
         WriteExecReply(reply, passthrough);
         return reply.Execution is { } execution ? execution.ExitCode : ExitCode(reply.Status);
+    }
+
+    private static int Diagnose(Arguments args)
+    {
+        var requestId = args.Optional("request");
+        var last = args.Optional("last-failure") is not null;
+        if ((requestId is null) == !last) throw new ArgumentException("Diagnose requires exactly one of --request ID or --last-failure.");
+        var outputMode = args.Optional("output-mode") ?? "text";
+        if (outputMode is not ("text" or "json")) throw new ArgumentException("Diagnose --output-mode must be text or json.");
+        Guid? attemptId = null;
+        if (args.Optional("attempt") is { } attempt)
+        {
+            if (last || !Guid.TryParse(attempt, out var parsedAttempt) || parsedAttempt == Guid.Empty)
+                throw new ArgumentException("--attempt requires --request and a nonempty attempt GUID.");
+            attemptId = parsedAttempt;
+        }
+        var snapshot = new SecretsDiagnostics(args.DataRoot).Read();
+        if (last)
+        {
+            var latest = snapshot.Records.LastOrDefault(record => record.Kind == "failure" && record.RequestId is not null);
+            requestId = latest?.RequestId;
+            attemptId = latest?.AttemptId is { } latestAttempt && latestAttempt != Guid.Empty ? latestAttempt : null;
+        }
+        var diagnostics = snapshot.Records.Where(record => requestId is not null && record.RequestId == requestId).ToArray();
+        var journal = new SecretsAuditJournal(SecretsPaths.GetAuditPath(args.DataRoot));
+        IReadOnlyList<SecretsAuditRecord> audit = [];
+        IReadOnlyList<SecretsCommittedRequest> launches = [];
+        var incomplete = snapshot.Incomplete;
+        var launchHistoryIncomplete = false;
+        try
+        {
+            audit = journal.ReadAll().Where(record => requestId is not null && record.RequestId == requestId).ToArray();
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or TimeoutException)
+        { incomplete = launchHistoryIncomplete = true; }
+        // Activity can be damaged or cleared independently of the authoritative operation ledger.
+        try
+        {
+            launches = journal.FindCommittedRequests().Where(record => requestId is not null && record.RequestId == requestId).ToArray();
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException or TimeoutException)
+        { incomplete = launchHistoryIncomplete = true; }
+        var candidateAttemptIds = diagnostics.Where(record => record.AttemptId is not null).Select(record => record.AttemptId!.Value)
+            .Concat(audit.Select(record => record.AttemptId)).Concat(launches.Select(record => record.AttemptId))
+            .Where(candidate => candidate != Guid.Empty).Distinct().ToArray();
+        // A failure without an attempt must not inherit the sole older attempt for this ID.
+        // Empty GUIDs may exist in evidence written before this correlation check was added.
+        var uncorrelated = attemptId is null && diagnostics.Any(record => record.Kind == "failure"
+            && (record.AttemptId is null || record.AttemptId == Guid.Empty));
+        if (attemptId is null && !uncorrelated && candidateAttemptIds.Length == 1) attemptId = candidateAttemptIds[0];
+        var ambiguous = attemptId is null && candidateAttemptIds.Length > 1;
+        diagnostics = diagnostics.Where(record => uncorrelated
+            ? record.AttemptId is null || record.AttemptId == Guid.Empty
+            : !ambiguous && record.AttemptId == attemptId).ToArray();
+        audit = audit.Where(record => !ambiguous && !uncorrelated && record.AttemptId == attemptId).ToArray();
+        launches = launches.Where(record => !ambiguous && !uncorrelated && record.AttemptId == attemptId).ToArray();
+        var failure = diagnostics.LastOrDefault(record => record.Failure is not null)?.Failure;
+        if (uncorrelated && failure is not null) failure = failure with { LaunchState = "unknown" };
+        var launchState = ambiguous || uncorrelated ? "unknown"
+            : launches.Any(record => record.OutcomeUnconfirmed) ? "unconfirmed"
+            : launches.Count > 0 ? launches.All(record => record.Outcome == SecretsCommittedOutcome.FailedBeforeLaunch) ? "not_started" : "finished"
+            : audit.Any(record => record.Kind == SecretsAuditEventKind.LaunchCommitted) ? "unconfirmed"
+            : launchHistoryIncomplete ? "unknown"
+            : failure?.LaunchState ?? "unknown";
+        if (outputMode == "json")
+            Console.WriteLine(JsonSerializer.Serialize(new { requestId, attemptId, ambiguous, uncorrelated, candidateAttemptIds,
+                failure, launchState, incomplete, diagnostics, audit, launches }, JsonOptions));
+        else
+        {
+            Console.WriteLine($"Request: {requestId ?? "unknown"}");
+            Console.WriteLine($"Attempt: {attemptId?.ToString() ?? "unknown"}");
+            if (uncorrelated) Console.WriteLine("The failure has no correlated attempt. Execution remains unknown; use the original --attempt GUID if known.");
+            if (ambiguous) Console.WriteLine("Several attempts share this request ID. Select --attempt GUID: " + string.Join(", ", candidateAttemptIds));
+            Console.WriteLine($"Reason: {failure?.Code ?? "unknown"}; execution: {launchState}");
+            if (failure is not null) Console.WriteLine(failure.Message);
+            foreach (var record in diagnostics)
+                Console.WriteLine($"{record.Timestamp:O} {record.Kind}: {record.Failure?.Code ?? record.ConsentAvailability.ToString()} (broker {record.BrokerInstance})");
+            foreach (var record in audit)
+                Console.WriteLine($"{record.Timestamp:O} {record.Kind}: {record.Outcome ?? "—"}");
+            if (incomplete) Console.WriteLine("Some diagnostic evidence is unreadable or incomplete.");
+            if (failure is null) Console.WriteLine("The original failure reason was not recorded; no cause can be inferred from this history.");
+        }
+        return 0;
     }
 
     private static async Task<int> CatalogAsync(SecretsBrokerPipeClient client, Arguments args)
@@ -609,7 +693,14 @@ internal static class Program
         }
         if (!passthrough) { Write(reply); return; }
         if (reply.Status != SecretsRequestStatus.Completed)
+        {
             Console.Error.WriteLine("joydex-secrets: " + (reply.Error ?? $"Command was not launched ({reply.Status})."));
+            if (reply.Failure is { } failure)
+                Console.Error.WriteLine($"Reason: {failure.Code}; stage: {failure.Stage}; execution: {failure.LaunchState}");
+            if (reply.RequestId is { } requestId)
+                Console.Error.WriteLine($"Request: {requestId}. Inspect with joydex-secrets diagnose --request {requestId}"
+                    + (reply.AttemptId is { } attemptId && attemptId != Guid.Empty ? $" --attempt {attemptId}." : "."));
+        }
     }
 
     private static void Write(SecretsBrokerReply reply) =>
@@ -623,6 +714,7 @@ internal static class Program
         SecretsRequestStatus.Denied or SecretsRequestStatus.Expired or SecretsRequestStatus.Revoked => 11,
         SecretsRequestStatus.ProviderUnavailable => 13,
         SecretsRequestStatus.IdentityUnverified => 14,
+        SecretsRequestStatus.ConsentUnavailable => 16,
         _ => 15,
     };
 
@@ -642,7 +734,7 @@ internal static class Program
         return options;
     }
 
-    private const string Usage = "Usage: joydex-secrets exec [--detach] --client ID --project REF --reason TEXT --secret ENV_NAME [--secret ENV_NAME] [--approval-timeout SECONDS] [--on-approval-timeout cancel|run-without-secrets|leave-pending] [--execution-timeout SECONDS] [--output-mode passthrough|json] -- PROGRAM [ARG ...]\nDetached control: joydex-secrets <status|stop> --task TASK_ID [--data-root PATH]\nDetached execution rejects --output-mode and alternative approval-timeout actions.\nAdvanced: joydex-secrets <aliases|request|wait|cancel|run> --client ID --project REF [options]\nAdvanced run: add --output-mode passthrough when the approved operation declares outputDisclosure: passthrough; otherwise omit it for JSON results.";
+    private const string Usage = "Usage: joydex-secrets exec [--detach] --client ID --project REF --reason TEXT --secret ENV_NAME [--secret ENV_NAME] [--approval-timeout SECONDS] [--on-approval-timeout cancel|run-without-secrets|leave-pending] [--execution-timeout SECONDS] [--output-mode passthrough|json] -- PROGRAM [ARG ...]\nDetached control: joydex-secrets <status|stop> --task TASK_ID [--data-root PATH]\nDetached execution rejects --output-mode and alternative approval-timeout actions.\nDiagnostics: joydex-secrets diagnose (--request ID [--attempt GUID] | --last-failure) [--data-root PATH] [--output-mode text|json]\nAdvanced: joydex-secrets <aliases|request|wait|cancel|run> --client ID --project REF [options]\nAdvanced run: add --output-mode passthrough when the approved operation declares outputDisclosure: passthrough; otherwise omit it for JSON results.";
 
     private enum ApprovalTimeoutAction
     {
@@ -707,6 +799,11 @@ internal static class Program
             for (var index = 1; index < optionsEnd; index += 2)
             {
                 var option = args[index];
+                if (option == "--last-failure" && command == "diagnose")
+                {
+                    if (!options.TryAdd("last-failure", ["true"])) throw new ArgumentException("--last-failure may be supplied once.");
+                    index--; continue;
+                }
                 if (option == "--detach" && command == "exec")
                 {
                     if (!options.TryAdd("detach", ["true"])) throw new ArgumentException("--detach may be supplied once.");
@@ -751,6 +848,7 @@ internal static class Program
                 "cancel" => ["client", "project", "request"],
                 "run" => ["client", "project", "request", "reservation", "output-mode"],
                 "status" or "stop" => ["task"],
+                "diagnose" => ["request", "attempt", "last-failure", "output-mode"],
                 _ => throw new ArgumentException(Usage),
             };
             var unknown = options.Keys.FirstOrDefault(name => !allowed.Contains(name, StringComparer.Ordinal));

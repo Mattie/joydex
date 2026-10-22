@@ -144,8 +144,13 @@ public sealed class NamedClientCredentialStore
     private static void EnsurePrivateDirectory(string path)
     {
         var user = CurrentUser();
+        var directory = new DirectoryInfo(path);
         var security = new DirectorySecurity();
-        security.SetOwner(user);
+        // An owner can replace the DACL without WRITE_OWNER. Avoid requesting that
+        // extra permission when this account already owns a newly created path.
+        if (!Equals(directory.GetAccessControl(AccessControlSections.Owner)
+                .GetOwner(typeof(SecurityIdentifier)), user))
+            security.SetOwner(user);
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
         security.AddAccessRule(new FileSystemAccessRule(
             user,
@@ -153,9 +158,10 @@ public sealed class NamedClientCredentialStore
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
             PropagationFlags.None,
             AccessControlType.Allow));
-        new DirectoryInfo(path).SetAccessControl(security);
-        var applied = new DirectoryInfo(path).GetAccessControl();
-        if (!applied.AreAccessRulesProtected || !HasOnlyCurrentUserRules(applied, user))
+        directory.SetAccessControl(security);
+        var applied = directory.GetAccessControl();
+        if (!Equals(applied.GetOwner(typeof(SecurityIdentifier)), user)
+            || !applied.AreAccessRulesProtected || !HasOnlyCurrentUserRules(applied, user))
         {
             throw new UnauthorizedAccessException("The credential directory ACL could not be verified.");
         }
@@ -164,13 +170,17 @@ public sealed class NamedClientCredentialStore
     private static void EnsurePrivateFile(string path)
     {
         var user = CurrentUser();
+        var file = new FileInfo(path);
         var security = new FileSecurity();
-        security.SetOwner(user);
+        if (!Equals(file.GetAccessControl(AccessControlSections.Owner)
+                .GetOwner(typeof(SecurityIdentifier)), user))
+            security.SetOwner(user);
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
         security.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
-        new FileInfo(path).SetAccessControl(security);
-        var applied = new FileInfo(path).GetAccessControl();
-        if (!applied.AreAccessRulesProtected || !HasOnlyCurrentUserRules(applied, user))
+        file.SetAccessControl(security);
+        var applied = file.GetAccessControl();
+        if (!Equals(applied.GetOwner(typeof(SecurityIdentifier)), user)
+            || !applied.AreAccessRulesProtected || !HasOnlyCurrentUserRules(applied, user))
         {
             throw new UnauthorizedAccessException("The credential file ACL could not be verified.");
         }

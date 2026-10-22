@@ -49,7 +49,7 @@ internal static class SecretsFileLock
         return action();
     }
 
-    public static IDisposable Acquire(string path)
+    public static IDisposable Acquire(string path, TimeSpan? waitTimeout = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var normalized = Path.GetFullPath(path).ToUpperInvariant();
@@ -60,7 +60,7 @@ internal static class SecretsFileLock
         {
             try
             {
-                acquired = mutex.WaitOne(Timeout);
+                acquired = mutex.WaitOne(waitTimeout ?? Timeout);
             }
             catch (AbandonedMutexException)
             {

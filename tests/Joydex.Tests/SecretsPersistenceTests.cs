@@ -1,4 +1,6 @@
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using Joydex.Secrets;
 
 namespace Joydex.Tests;
@@ -226,6 +228,53 @@ public sealed class SecretsPersistenceTests : IDisposable
         finally
         {
             System.Security.Cryptography.CryptographicOperations.ZeroMemory(credential);
+        }
+    }
+
+    [Fact]
+    public void OwnedCredentialPathsCanBeHardenedWithoutExistingWriteOwnerPermission()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var identity = WindowsIdentity.GetCurrent();
+        var user = identity.User!;
+        var directory = Path.Combine(_directory, "modify-only-credentials");
+        Directory.CreateDirectory(directory);
+        var directorySecurity = new DirectorySecurity();
+        directorySecurity.SetAccessRuleProtection(true, false);
+        directorySecurity.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.Modify,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None, AccessControlType.Allow));
+        new DirectoryInfo(directory).SetAccessControl(directorySecurity);
+
+        var store = new NamedClientCredentialStore(directory);
+        var credential = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            store.Save("codex", credential);
+            var path = Path.Combine(directory, "codex.cred");
+            var fileSecurity = new FileSecurity();
+            fileSecurity.SetAccessRuleProtection(true, false);
+            fileSecurity.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.Modify,
+                AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(fileSecurity);
+            var loaded = store.Load("codex");
+            try { Assert.Equal(credential, loaded); }
+            finally { CryptographicOperations.ZeroMemory(loaded); }
+
+            AssertPrivate(new DirectoryInfo(directory).GetAccessControl());
+            AssertPrivate(new FileInfo(path).GetAccessControl());
+        }
+        finally { CryptographicOperations.ZeroMemory(credential); }
+
+        void AssertPrivate(FileSystemSecurity security)
+        {
+            Assert.Equal(user, security.GetOwner(typeof(SecurityIdentifier)));
+            Assert.True(security.AreAccessRulesProtected);
+            var rule = Assert.Single(security.GetAccessRules(true, true, typeof(SecurityIdentifier))
+                .Cast<FileSystemAccessRule>());
+            Assert.Equal(user, rule.IdentityReference);
+            Assert.Equal(AccessControlType.Allow, rule.AccessControlType);
+            Assert.Equal(FileSystemRights.FullControl, rule.FileSystemRights);
         }
     }
 

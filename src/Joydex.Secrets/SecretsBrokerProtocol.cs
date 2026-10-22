@@ -45,7 +45,9 @@ public sealed record SecretsBrokerReply(
     IReadOnlyList<SecretsRecipeMetadata>? Recipes = null,
     SecretsExecResult? Execution = null,
     string? Error = null,
-    bool? SecretsInjected = null);
+    bool? SecretsInjected = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    SecretsFailure? Failure = null);
 
 /// <summary>Serves authenticated Secrets commands over a current-user, local named pipe.</summary>
 public sealed class SecretsBrokerPipeServer
@@ -149,6 +151,7 @@ public sealed class SecretsBrokerPipeServer
         await using (pipe.ConfigureAwait(false))
         {
             byte[]? credential = null;
+            SecretsBrokerCommand? command = null;
             try
             {
                 VerifyClientSession(pipe, _sessionId);
@@ -172,7 +175,6 @@ public sealed class SecretsBrokerPipeServer
                 await pipe.ReadExactlyAsync(credential, frameToken).ConfigureAwait(false);
                 var payload = new byte[payloadLength];
                 await pipe.ReadExactlyAsync(payload, frameToken).ConfigureAwait(false);
-                SecretsBrokerCommand command;
                 try
                 {
                     command = JsonSerializer.Deserialize<SecretsBrokerCommand>(payload, JsonOptions)
@@ -208,15 +210,37 @@ public sealed class SecretsBrokerPipeServer
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                var reply = new SecretsBrokerReply(
-                    exception is UnauthorizedAccessException
-                        ? SecretsRequestStatus.IdentityUnverified
-                        : exception is SecretsProviderUnavailableException
-                            ? SecretsRequestStatus.ProviderUnavailable
-                            : exception is InvalidDataException or JsonException or ArgumentException or IOException
-                                ? SecretsRequestStatus.InvalidRequest
-                                : SecretsRequestStatus.Revoked,
-                    Error: SafeError(exception));
+                var failure = SecretsFailure.FromException(exception);
+                Guid? attemptId = null;
+                if (command?.RequestId is { } requestId && credential is not null)
+                {
+                    try
+                    {
+                        var response = _runtime.GetStatus(command.ClientId, credential, command.ProjectReference, requestId);
+                        attemptId = response.AttemptId == Guid.Empty ? null : response.AttemptId;
+                        var launchState = attemptId is { } knownAttempt
+                            ? _runtime.GetRecordedLaunchState(knownAttempt) : null;
+                        if (launchState is not null) failure = failure with { LaunchState = launchState };
+                        else if (response.Status is SecretsRequestStatus.Allowed or SecretsRequestStatus.Completed or SecretsRequestStatus.LaunchUnconfirmed)
+                            failure = failure with { LaunchState = "unknown" };
+                    }
+                    catch (Exception lookup) when (lookup is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException)
+                    { failure = failure with { LaunchState = "unknown" }; }
+                }
+                // A missing route or changed requester can hide an earlier execution.
+                // Rejecting this run does not establish that the original command never ran.
+                if (command?.Kind == SecretsBrokerCommandKind.Run && attemptId is null)
+                    failure = failure with { LaunchState = "unknown" };
+                if (exception is not SecretsRequestException { DiagnosticRecorded: true })
+                    _runtime.RecordDiagnostic("failure", command?.RequestId, attemptId, failure, exception);
+                var status = failure.LaunchState == "unconfirmed" ? SecretsRequestStatus.LaunchUnconfirmed
+                    : failure.Code == "consent_unavailable" ? SecretsRequestStatus.ConsentUnavailable
+                    : failure.Code == "identity_unverified" ? SecretsRequestStatus.IdentityUnverified
+                    : failure.Code == "provider_unavailable" ? SecretsRequestStatus.ProviderUnavailable
+                    : failure.Code == "invalid_request" ? SecretsRequestStatus.InvalidRequest
+                    : SecretsRequestStatus.Revoked;
+                var reply = new SecretsBrokerReply(status, command?.RequestId, attemptId,
+                    Error: failure.Message, Failure: failure);
                 try
                 {
                     using var replyTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -382,7 +406,9 @@ public sealed class SecretsBrokerPipeServer
         response.RequestId,
         response.AttemptId,
         response.Reservation,
-        response.ExpiresAt);
+        response.ExpiresAt,
+        Error: response.Failure?.Message,
+        Failure: response.Failure);
 
     internal static SecretsBrokerReply TimeoutReply(
         SecretsRequestStatus status,
@@ -413,14 +439,6 @@ public sealed class SecretsBrokerPipeServer
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
         CryptographicOperations.ZeroMemory(payload);
     }
-
-    private static string SafeError(Exception exception) => exception switch
-    {
-        UnauthorizedAccessException => "The local requester could not be authenticated.",
-        SecretsProviderUnavailableException => "The configured secret provider is unavailable.",
-        InvalidDataException or JsonException or ArgumentException or IOException => "The Secrets request is invalid.",
-        _ => "The Secrets request is no longer authorized.",
-    };
 
     private static void VerifyClientSession(NamedPipeServerStream pipe, int expectedSessionId)
     {

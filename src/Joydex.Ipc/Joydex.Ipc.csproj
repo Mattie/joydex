@@ -7,6 +7,8 @@
 
   <ItemGroup>
     <PackageReference Include="StreamJsonRpc" Version="2.25.29" />
+    <!-- Keep StreamJsonRpc's transitive MessagePack dependency on the patched 2.5 line. -->
+    <PackageReference Include="MessagePack" Version="2.5.303" />
     <PackageReference Include="System.IO.Pipelines" Version="9.0.1" />
   </ItemGroup>
 

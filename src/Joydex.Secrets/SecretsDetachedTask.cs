@@ -296,10 +296,25 @@ public static class SecretsDetachedTask
         Directory.CreateDirectory(directory);
         ExecOperationCanonicalizer.RejectReparsePoints(directory, "task directory", true);
         var user = WindowsIdentity.GetCurrent().User ?? throw new UnauthorizedAccessException("No user SID.");
-        var acl = new DirectorySecurity(); acl.SetOwner(user); acl.SetAccessRuleProtection(true, false);
+        var info = new DirectoryInfo(directory);
+        var acl = new DirectorySecurity();
+        // Preserve an already-correct owner so an owned Modify-only folder
+        // can be secured using the owner's DACL rights without WRITE_OWNER.
+        if (!Equals(info.GetAccessControl(AccessControlSections.Owner)
+                .GetOwner(typeof(SecurityIdentifier)), user))
+            acl.SetOwner(user);
+        acl.SetAccessRuleProtection(true, false);
         acl.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
-        new DirectoryInfo(directory).SetAccessControl(acl);
+        info.SetAccessControl(acl);
+        var applied = info.GetAccessControl();
+        var rules = applied.GetAccessRules(true, true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>().ToArray();
+        if (!Equals(applied.GetOwner(typeof(SecurityIdentifier)), user)
+            || !applied.AreAccessRulesProtected || rules.Length == 0
+            || rules.Any(rule => !Equals(rule.IdentityReference, user)
+                || rule.AccessControlType != AccessControlType.Allow))
+            throw new UnauthorizedAccessException("The task directory ACL could not be verified.");
     }
     private static Process Peer(PipeStream pipe, bool server)
     {
