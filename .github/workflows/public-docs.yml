@@ -1,0 +1,21 @@
+name: Public documentation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Check committed public documentation
+        run: python -I scripts/check_public_docs.py --ref HEAD
+      - name: Exercise staged-content and commit-hook protections
+        run: python -I tests/public_docs_privacy_test.py

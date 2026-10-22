@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+if [ -n "${JOYDEX_DOCS_PYTHON:-}" ]; then
+    exec "$JOYDEX_DOCS_PYTHON" -I scripts/check_public_docs.py --staged
+elif [ -x .tools/esphome-venv/Scripts/python.exe ]; then
+    exec .tools/esphome-venv/Scripts/python.exe -I scripts/check_public_docs.py --staged
+elif command -v python3 >/dev/null 2>&1; then
+    exec python3 -I scripts/check_public_docs.py --staged
+elif command -v python >/dev/null 2>&1; then
+    exec python -I scripts/check_public_docs.py --staged
+fi
+echo 'Python 3 is required for the staged documentation check. Set JOYDEX_DOCS_PYTHON to its executable.' >&2
+exit 1

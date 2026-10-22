@@ -42,7 +42,7 @@ Our existing adapters and native Windows/.NET facilities cover much of the engin
 | Lane | Paths/sources checked | Finding / limitation |
 |---|---|---|
 | Repository | AGENTS, CONCEPTS, ADRs 0001–0004; App/Core/Windows/Virpil/WirelessPanel/DesktopBridgeHost; related tests | Concrete coupling, reusable adapters and preserved protocols identified from current working tree |
-| Local skills | Configured C:/Users/matti/.agents/skills and C:/Users/matti/.codex/skills catalogs/SKILL.md search | No existing skill supplies a complete Discord/Desktop or secrets consent implementation |
+| Local skills | Contributor-provided skill catalogs | No existing skill supplies a complete Discord/Desktop or secrets consent implementation |
 | Native/current stack | Generic Host, WinForms threading, pipes/ACLs, DPAPI, plugin guide, StreamJsonRpc | Supports chosen engine/UI/IPC direction; implementation package/ACL behavior still requires pinned-runtime tests |
 | Discord | Official Gateway, interactions, thread permissions and rate limits; Discord.Net, NetCord, DSharpPlus | Transport is reusable; policies/persistence remain Joydex work |
 | Desktop | Local broker + installed packaged adapter outside app.asar; official App Server docs; native relay prior art | Existing send path verified by code; external new-task creation and context bootstrap not exercised |

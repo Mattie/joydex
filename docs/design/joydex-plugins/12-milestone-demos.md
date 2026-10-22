@@ -678,33 +678,21 @@ The earlier Voice, Settings and broader release/rollback acceptance gaps remain 
 
 ### Physical device canary — startup and ordinary controls
 
-The user authorized the device canary and exited the repaired Pebble package through
-the tray. No Joydex processes or receiver listener remained before launch. All 121
-candidate hashes were verified again. Settings, panel preferences, startup entries and
-22 existing inbox records were backed up under
-`D:\Temp\joydex-device-canary-44ebb8a-backup-20260912-221220`.
+The attended device canary verified candidate hashes, stopped the previous instance,
+and preserved configuration and delivery history in a local rollback backup. App,
+RuntimeHost, Guardian and the applicable workers started from the same package;
+the loopback receiver reported ready. Existing preferences, startup registration
+and prior delivery records remained unchanged.
 
-Started `device-plugins-44ebb8a-win-x64`: App PID 52664, RuntimeHost 6296,
-Guardian 59176, VoiceWorker 61900, PebbleWorker 60112. These are observation-time
-identities, not reusable process authorization. Every Joydex process used the candidate
-directory; the receiver on loopback port 5187 reported ready. Static preferences,
-startup entries and all 22 prior delivery records remained unchanged.
+Ordinary controls and LEDs passed with Settings open. Disconnect/reconnect passed
+while the other controller remained usable. Capture accepted input from only the
+selected joystick, suppressed that button's ordinary action and preserved ordinary
+input from the other joystick.
 
-With Configure left open and Codex brought forward, the user tried familiar controls
-on both configured controllers and checked the LEDs, reporting “Yeah, looking good!”
-This passes the small ordinary-controls/LED check with settings open.
-
-After the requested unplug/reconnect check, the user reported “Looking good.” This
-passes the small disconnect/reconnect check while the other controller remains usable.
-The subsequent capture check accepted input from the selected joystick and ignored the
-other joystick. In a follow-up, the user confirmed that the captured button avoided its
-ordinary action while ordinary buttons on the other joystick continued working. This
-passes the small physical capture isolation check.
-
-The user also reported minor UI flakiness and considered it unrelated. No reproduction or
-cause was established. Shared held-key behavior, backend switching and crash recovery
-remain physical acceptance gaps. The device candidate remains running after the successful
-ordinary-controls, reconnect and capture isolation canaries.
+Minor UI instability was observed without an established reproduction or cause.
+Shared held-key behavior, backend switching and crash recovery remain physical
+acceptance gaps. Machine paths, live process identities and operator notes are
+kept in local evidence rather than this public validation summary.
 
 ## Milestone 7 — Secrets plugin
 
