@@ -8,6 +8,64 @@ public sealed class TaskAlertPoolTests
     private static readonly string AttentionKeyA = new('A', 64);
     private static readonly string AttentionKeyB = new('B', 64);
 
+    [Theory]
+    [InlineData(CodexLifecycleEvent.AsyncUserInputRequest)]
+    [InlineData(CodexLifecycleEvent.PermissionRequest)]
+    public void DismissalCannotHideAttentionAlreadyQueuedBeforeTheClick(CodexLifecycleEvent queuedKind)
+    {
+        var pool = new TaskAlertPool();
+        pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "session", "turn", Start, AttentionKeyA));
+        var selection = Assert.Single(pool.Assignments);
+        // The hook arrived before the click, but the coordinator has not reduced it yet.
+        var queued = new TaskAlertEvent(queuedKind, "session", "turn", Start.AddSeconds(1), AttentionKeyB);
+        Assert.True(pool.DismissQuestions(selection.Slot, selection.SessionId,
+            selection.PendingAsyncQuestions!, Start.AddSeconds(2)));
+        Assert.True(pool.Apply(queued));
+        Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
+    }
+
+    [Fact]
+    public void DismissedQuestionCompletesStoppedTaskAndStaysDismissedAfterRestore()
+    {
+        var pool = new TaskAlertPool();
+        pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "session", "turn", Start, AttentionKeyA));
+        pool.Apply(new(CodexLifecycleEvent.Stop, "session", "turn", Start.AddSeconds(1)));
+        pool.Advance(Start.AddSeconds(3));
+        var selection = Assert.Single(pool.Assignments);
+        Assert.Equal(TaskAlertState.Approval, selection.State);
+        Assert.Equal([AttentionKeyA], selection.PendingAsyncQuestions!);
+
+        Assert.True(pool.DismissQuestions(selection.Slot, selection.SessionId,
+            selection.PendingAsyncQuestions!, Start.AddSeconds(4)));
+        var restored = new TaskAlertPool();
+        restored.Restore(pool.CaptureState());
+        Assert.Equal(TaskAlertState.Completed, Assert.Single(restored.Assignments).State);
+        Assert.Null(Assert.Single(restored.Assignments).PendingAsyncQuestions);
+        restored.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "session", "next", Start.AddSeconds(5), AttentionKeyB));
+        Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
+    }
+
+    [Fact]
+    public void DismissingDisplayedQuestionsPreservesNewQuestionsPermissionsAndOtherTasks()
+    {
+        var pool = new TaskAlertPool();
+        pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "session", "turn", Start, AttentionKeyA));
+        var selection = Assert.Single(pool.Assignments);
+        pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "session", "turn", Start.AddSeconds(1), AttentionKeyB));
+        pool.Apply(new(CodexLifecycleEvent.PermissionRequest, "session", "turn", Start.AddSeconds(2), AttentionKeyA));
+        pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "other", "turn", Start.AddSeconds(3), AttentionKeyA));
+
+        Assert.False(pool.DismissQuestions(selection.Slot, "wrong-session", selection.PendingAsyncQuestions!, Start.AddSeconds(4)));
+        Assert.True(pool.DismissQuestions(selection.Slot, selection.SessionId, selection.PendingAsyncQuestions!, Start.AddSeconds(5)));
+        Assert.Equal([AttentionKeyB], pool.Assignments[0].PendingAsyncQuestions!);
+        Assert.Equal([AttentionKeyA], pool.Assignments[1].PendingAsyncQuestions!);
+        Assert.False(pool.DismissQuestions(selection.Slot, selection.SessionId, selection.PendingAsyncQuestions!, Start.AddSeconds(6)));
+        Assert.True(pool.DismissQuestions(selection.Slot, selection.SessionId, [AttentionKeyB], Start.AddSeconds(7)));
+        Assert.Equal(TaskAlertState.Approval, pool.Assignments[0].State); // The permission still needs a real response.
+        pool.Apply(new(CodexLifecycleEvent.ToolCompleted, "session", "turn", Start.AddSeconds(8), AttentionKeyA));
+        Assert.Equal(TaskAlertState.Running, pool.Assignments[0].State);
+    }
+
     [Fact]
     public void AllocatesLowestFreeSlotAndUpdatesExistingSession()
     {

@@ -312,6 +312,22 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         return snapshot is not null;
     }
 
+    /// <summary>Dismisses the selected questions under runtime authority and persists the result.</summary>
+    public bool DismissQuestions(int slot, string sessionId, IReadOnlyCollection<string> questionKeys)
+    {
+        TaskAlertSnapshot? snapshot = null;
+        lock (_sync)
+        {
+            if (_pool.DismissQuestions(slot, sessionId, questionKeys, DateTimeOffset.UtcNow))
+            {
+                TrySaveStateUnsafe();
+                snapshot = SnapshotUnsafe();
+            }
+        }
+        RaiseChanged(snapshot);
+        return snapshot is not null;
+    }
+
     public async ValueTask DisposeAsync()
     {
         _events.Writer.TryComplete();

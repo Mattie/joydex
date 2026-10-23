@@ -66,7 +66,8 @@ internal static class RuntimeCommandCanonicalizer
             endpoint,
             arguments.VoiceWakeTuning,
             continuationToken,
-            pluginId);
+            pluginId,
+            NormalizeTaskAlertQuestions(arguments.TaskAlertQuestions));
         return HasAny(normalized) ? normalized : null;
     }
 
@@ -87,11 +88,14 @@ internal static class RuntimeCommandCanonicalizer
                        && (arguments.VoiceEndpoint is null || names.Contains(nameof(arguments.VoiceEndpoint)))
                        && (arguments.VoiceWakeTuning is null || names.Contains(nameof(arguments.VoiceWakeTuning)))
                        && (arguments.ContinuationToken is null || names.Contains(nameof(arguments.ContinuationToken)))
-                       && (arguments.PluginId is null || names.Contains(nameof(arguments.PluginId))));
+                       && (arguments.PluginId is null || names.Contains(nameof(arguments.PluginId)))
+                       && (arguments.TaskAlertQuestions is null || names.Contains(nameof(arguments.TaskAlertQuestions))));
         }
 
         var valid = kind switch
         {
+            RuntimeCommandKind.DismissTaskAlertQuestions =>
+                arguments?.TaskAlertQuestions is not null && Only(nameof(arguments.TaskAlertQuestions)),
             RuntimeCommandKind.AdoptExternalSettings =>
                 HasAggregates(arguments) && Only(nameof(arguments.ExternalSettingsAggregates)),
             RuntimeCommandKind.ListVoiceProjects => Only(nameof(arguments.CodexAppServerPath)),
@@ -129,6 +133,21 @@ internal static class RuntimeCommandCanonicalizer
             _ => arguments is null,
         };
         return valid ? null : $"The {kind} command arguments are missing or contain unused fields.";
+    }
+
+    private static RuntimeTaskAlertQuestionDismissal? NormalizeTaskAlertQuestions(
+        RuntimeTaskAlertQuestionDismissal? questions)
+    {
+        if (questions is null) return null;
+        if (questions.Slot is < 1 or > 10 || string.IsNullOrWhiteSpace(questions.SessionId)
+            || questions.SessionId.Length > 512 || questions.QuestionKeys is not { Length: > 0 and <= 1024 }
+            || questions.QuestionKeys.Any(key => key is not { Length: 64 } || !key.All(Uri.IsHexDigit)))
+            throw new ArgumentException("The selected task question alerts are invalid.");
+        return questions with
+        {
+            QuestionKeys = questions.QuestionKeys.Select(key => key.ToUpperInvariant())
+                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
+        };
     }
 
     private static RuntimeTaskReference? NormalizeTask(RuntimeTaskReference? task)
@@ -224,5 +243,6 @@ internal static class RuntimeCommandCanonicalizer
         || arguments.VoiceEndpoint is not null
         || arguments.VoiceWakeTuning is not null
         || arguments.ContinuationToken is not null
-        || arguments.PluginId is not null;
+        || arguments.PluginId is not null
+        || arguments.TaskAlertQuestions is not null;
 }
