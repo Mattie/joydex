@@ -7,6 +7,7 @@ using System.Windows.Forms;
 
 namespace Joydex.Tests;
 
+[Collection(RoomVoiceLayoutCollection.Name)]
 public sealed class RoomVoiceSettingsControlTests
 {
     [Fact]
