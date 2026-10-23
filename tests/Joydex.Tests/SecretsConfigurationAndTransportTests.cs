@@ -140,7 +140,7 @@ public sealed class SecretsConfigurationAndTransportTests : IDisposable
     }
 
     [Fact]
-    public void ConfigurationKeepsMultipleSourcesWithUnambiguousPublicNames()
+    public void ConfigurationAllowsOverlappingAliasesInDistinctSourceNamespaces()
     {
         var firstPath = Path.Combine(_directory, "first.env");
         var secondPath = Path.Combine(_directory, "second.env");
@@ -165,13 +165,15 @@ public sealed class SecretsConfigurationAndTransportTests : IDisposable
         Assert.Equal(
             first.Sources[0].Aliases.Select(alias => (alias.Alias, alias.Key, alias.StableSecretId)),
             second.Sources[0].Aliases.Select(alias => (alias.Alias, alias.Key, alias.StableSecretId)));
-        var duplicate = Assert.Throws<InvalidOperationException>(() => store.UpsertEnvSource(
+        var overlapping = store.UpsertEnvSource(
             null,
             "Duplicate variable source",
             secondPath,
-            new Dictionary<string, string> { ["FIRST_TOKEN"] = "SECOND_TOKEN" }));
-        Assert.Contains("already provided", duplicate.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(2, store.Read().Sources.Count);
+            new Dictionary<string, string> { ["FIRST_TOKEN"] = "SECOND_TOKEN" });
+        Assert.Equal(3, overlapping.Sources.Count);
+        Assert.Throws<InvalidOperationException>(() => store.UpsertEnvSource(null, "FIRST SOURCE", firstPath,
+            new Dictionary<string, string> { ["THIRD_TOKEN"] = "FIRST_TOKEN" }));
+        Assert.Equal(3, store.Read().Sources.Count);
     }
 
     [Fact]

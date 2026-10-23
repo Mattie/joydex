@@ -454,7 +454,7 @@ public sealed class SecretsAuditJournal
             || string.IsNullOrWhiteSpace(record.ProjectReference)
             || record.ProjectReference.Length > 96
             || record.Aliases.Count > 64
-            || record.Aliases.Any(alias => string.IsNullOrWhiteSpace(alias) || alias.Length > 96)
+            || record.Aliases.Any(alias => !ExactEnvSecretProvider.IsValidReference(alias))
             || (record.OperationDigest is not null && record.OperationDigest.Length != 64)
             || (record.ProjectIdentityDigest is not null && (record.ProjectIdentityDigest.Length != 64
                 || record.ProjectIdentityDigest.Any(character => !char.IsAsciiHexDigit(character))))

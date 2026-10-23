@@ -4,7 +4,7 @@ Status: accepted, 2026-09-13; proposed 2026-09-08; refreshed and renumbered 2026
 
 Authorize secret use through a separate local broker using a stable same-user requester identity, canonical project/worktree and an immutable request operation. The helper provisions that protected local identity automatically on its first valid `exec` call; the user configures secret sources and responds to the consent toast, with no agent-registration step. **Allow once** is single-use, **Allow always** persists an allow until revoked, **Allow for 24 hours** persists an allow with a fixed 24-hour expiry, **Deny this time** denies one request, and **Deny forever** persists a deny until revoked. The toast defaults **Apply my decision to all future commands from this agent** to unchecked. Unchecked remembered decisions stay bound to the displayed operation. Checking it disables the two one-request choices and creates a client-scoped allow or deny for the same local requester, canonical project/worktree, exact secret set and delivery mode, without binding one operation. The same-user requester label provides stable cooperative attribution, not proof of a particular Codex task; enable verified task attribution only when origin is supplied by trusted host context rather than caller text.
 
-Make direct execution the ordinary agent workflow: one `joydex-secrets exec` call names same-named environment aliases, the exact executable and its argument vector, then requests, waits and runs. Keep operation-file and saved-recipe support as advanced automation plumbing and omit recipes from the main Secrets UI. The toast marks aliases that are new for the authenticated agent and project; changing the requested secret set changes the approval scope and asks again.
+Make direct execution the ordinary agent workflow: one `joydex-secrets exec` call names environment destinations and secret aliases, the exact executable and its argument vector, then requests, waits and runs. Keep operation-file and saved-recipe support as advanced automation plumbing and omit recipes from the main Secrets UI. The toast marks aliases that are new for the authenticated agent and project; changing the requested secret set changes the approval scope and asks again.
 
 Publish `%LOCALAPPDATA%\Joydex\profile.yaml` atomically whenever the normal tray starts. This value-free profile records the current data root and packaged helper path so agents can locate the matching `joydex-secrets.exe` without process inspection. Demo and settings-only processes do not replace it. Treat the file as a discovery pointer rather than proof that the broker is running; use one file instead of maintaining a duplicate registry locator.
 
@@ -19,6 +19,18 @@ Updated 2026-09-15: Default `exec` to byte passthrough for stdin, stdout and std
 Updated 2026-09-23: Direct execution retains the requester's current directory and environment. The helper sends its environment to the broker only in the authenticated run command after approval; the broker overlays approved secret values before launch and never records the inherited values in audit or activity. The operation digest marks this changed launch policy, so earlier exact-operation approvals do not carry over. Client-scoped rules continue to apply to future commands in their existing agent, project, and secret scope. Remembered approvals do not bind individual inherited environment values. The detached run-without-secrets fallback inherits the same caller environment and omits only broker injection.
 
 See the [secrets design](../design/joydex-plugins/07-secrets.md).
+
+Updated 2026-10-23: Treat each configured source's unique name as its namespace and retain its
+existing source ID as the stable selector. `sources` discovers IDs, namespace names, aliases and
+availability without values or paths. `exec --source NAME_OR_ID --secret ENV_NAME[=ALIAS]` selects
+a source and maps aliases to child variables; `<source-id>/ALIAS` references support commands
+using several sources. Omitted source selection is accepted only for an unambiguous alias.
+Unknown, removed or unavailable sources never fall through to another source. Resolve references
+in the broker before authorization and bind scopes to qualified source identity, stable secret ID
+and mapping generation. Approval details show the namespace, source ID, alias and destination.
+Existing unqualified calls remain valid where unique, but source-qualified approval identities
+require fresh consent from legacy grants. This replaces the proposed consent-time source picker;
+source selection is part of the submitted operation, not a control that mutates pending consent.
 
 Updated 2026-10-07: Windows session state controls whether fresh local consent can be presented,
 not whether an existing approval can be redeemed. Valid remembered grants, accepted unexpired

@@ -547,13 +547,12 @@ public sealed class SecretsBrokerRuntime
             throw new InvalidOperationException("No dotenv source is configured.");
         }
         var provider = new ExactEnvSecretProvider(sources.Select(source =>
-            new ExactEnvSecretSource(source.FilePath, source.Aliases)));
-        var identities = sources.SelectMany(source => source.Aliases)
-            .Select(alias => new SecretsAliasIdentity(
-                alias.Alias,
+            new ExactEnvSecretSource(source.FilePath, source.Aliases, source.SourceId, source.DisplayName)));
+        var identities = sources.SelectMany(source => source.Aliases.Select(alias => new SecretsAliasIdentity(
+                source.SourceId.ToString("N") + "/" + alias.Alias,
                 "env",
                 alias.StableSecretId,
-                alias.MappingGeneration))
+                alias.MappingGeneration)))
             .ToArray();
         var created = new BrokerGeneration(
             snapshot,

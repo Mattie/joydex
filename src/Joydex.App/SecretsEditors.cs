@@ -4,13 +4,20 @@ namespace Joydex.App;
 
 internal sealed class SecretsEnvSourceEditorDialog : Form
 {
-    private readonly TextBox _displayName = new();
+    private readonly TextBox _displayName = new() { Name = "SecretsSourceNamespace" };
     private readonly TextBox _filePath = new();
     private readonly TextBox _aliases = EditorLayout.Multiline(150);
     private readonly Button _importNames = new() { AutoSize = true, Text = "Import variable names" };
-
-    public SecretsEnvSourceEditorDialog(SecretsEnvSource? current)
+    private readonly Action<SecretsEnvSourceEditorDialog> _saveSource;
+    private readonly Label _saveError = new()
     {
+        AutoSize = true, Dock = DockStyle.Fill, ForeColor = Color.Firebrick,
+        Name = "SecretsSourceSaveError", Margin = new Padding(18, 4, 18, 4), Visible = false,
+    };
+
+    public SecretsEnvSourceEditorDialog(SecretsEnvSource? current, Action<SecretsEnvSourceEditorDialog> saveSource)
+    {
+        _saveSource = saveSource ?? throw new ArgumentNullException(nameof(saveSource));
         Text = current is null ? "Add secret source" : "Edit secret source";
         _displayName.Text = current?.DisplayName ?? ".env";
         _filePath.Text = current?.FilePath ?? string.Empty;
@@ -38,20 +45,22 @@ internal sealed class SecretsEnvSourceEditorDialog : Form
         names.Controls.Add(_importNames, 0, 1);
 
         var fields = EditorLayout.Create(150,
-            ("Source name", _displayName, "A name for this source in Joydex."),
+            ("Namespace", _displayName, "Agents select this source with --source followed by this name or its source ID."),
             (".env file", EditorLayout.PathPicker(_filePath, PickFile), "The Secrets broker reads this exact file when it lists aliases or starts an approved command."),
-            ("Variables", names, "One imported name per line. Use public-name=ENV_NAME only when you want a different public name."));
+            ("Variables", names, "One name per line. Names may overlap across namespaces. Use public-name=ENV_NAME for an alias."));
         fields.AutoScroll = true;
         var layout = new TableLayoutPanel
         {
             ColumnCount = 1,
             Dock = DockStyle.Fill,
-            RowCount = 2,
+            RowCount = 3,
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(fields, 0, 0);
-        layout.Controls.Add(EditorLayout.Buttons(this, Save), 0, 1);
+        layout.Controls.Add(_saveError, 0, 1);
+        layout.Controls.Add(EditorLayout.Buttons(this, Save), 0, 2);
         Controls.Add(layout);
         EditorLayout.ConfigureDialog(this);
         ClientSize = new Size(760, 650);
@@ -131,8 +140,10 @@ internal sealed class SecretsEnvSourceEditorDialog : Form
         return parsed;
     }
 
-    private void Save()
+    internal void Save()
     {
+        _saveError.Text = string.Empty;
+        _saveError.Visible = false;
         try
         {
             if (DisplayName.Length is < 1 or > 96) throw new ArgumentException("Enter a source name.");
@@ -141,11 +152,14 @@ internal sealed class SecretsEnvSourceEditorDialog : Form
             {
                 throw new ArgumentException("Import at least one variable name from the .env file.");
             }
+            // Keep the draft open until the configuration store confirms the write.
+            _saveSource(this);
             DialogResult = DialogResult.OK;
         }
-        catch (ArgumentException exception)
+        catch (Exception exception)
         {
-            EditorLayout.Invalid(this, exception.Message);
+            _saveError.Text = "The source was not saved. " + exception.Message;
+            _saveError.Visible = true;
         }
     }
 }

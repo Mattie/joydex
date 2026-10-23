@@ -25,7 +25,8 @@ public sealed record ExecOperationProposal(
     long OperationGeneration = 1,
     SecretsExecutionLifetime Lifetime = SecretsExecutionLifetime.Attached,
     int? DetachedTimeoutSeconds = null,
-    string? TaskId = null);
+    string? TaskId = null,
+    string? Source = null);
 
 /// <summary>A validated operation frozen to exact paths, arguments, mappings and content hashes.</summary>
 public sealed record ResolvedExecOperation(
@@ -56,6 +57,7 @@ public static class ExecOperationCanonicalizer
         if (proposal.Arguments.Count > 128
             || proposal.Arguments.Any(argument => argument.Length > 4096 || argument.IndexOf('\0') >= 0)
             || proposal.SecretEnvironment.Count is < 1 or > 64
+            || proposal.Source is not null
             || proposal.FingerprintInputs.Count > 64
             || !Enum.IsDefined(proposal.OutputDisclosure)
             || !Enum.IsDefined(proposal.Lifetime)
