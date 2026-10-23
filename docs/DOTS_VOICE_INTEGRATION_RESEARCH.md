@@ -6,8 +6,11 @@ app release `26.1007.21434` and Codex runtime `0.162.0-alpha.17.2`. Review updat
 
 Voice PE wake can start a native voice call with a saved dot. The device supplies microphone
 and speaker audio through Joydex's existing hidden WebRTC media host and Sendspin transport.
-There is no browser window or virtual Windows audio-device requirement. The route is experimental
-and rejects an unvalidated Codex runtime upgrade.
+There is no browser window or virtual Windows audio-device requirement. The route is experimental.
+Updated 2026-10-20: unfamiliar runtime builds warn and attempt the existing protocol; executable
+version or hash changes alone no longer prevent a call. Authentication, saved identity, backend
+routing, response validation and uncertain-allocation guards still apply. The baseline above is
+historical validation evidence, not a claim of physical acceptance on every later build.
 
 Setup offers **Codex task voice (legacy)** and **Dot voice (experimental)**. Both targets remain
 saved when switching engines. Existing profiles keep their selected engine during migration;
@@ -85,16 +88,17 @@ The shipped standard-library Python 3.11+ worker uses isolated mode, bounded res
 disabled redirects. It defaults to Codex's bundled Python; setup permits an absolute executable
 override. No credentials, profile IDs or conversation IDs are repository defaults.
 
-The adapter pins both verified executable hashes:
+The adapter retains these tested executable hashes as a diagnostic baseline:
 
 | File | SHA-256 |
 |---|---|
 | `codex.exe` | `D13914CED6C7AF174D8D638DB938284231227312104B06A25E9608C632A7DAEC` |
 | `codex-code-mode-host.exe` | `BABAF50818BCE44CEBAFFF9BCE1F517E441BCCBD6468EEF9B3029B51470209E4` |
 
-Archive inspection is development-only. Runtime code never reads `app.asar`. Server behavior
-can still change independently of the installed client, so response validation and bounded
-cleanup remain necessary.
+Hash mismatches produce a warning and continue with normal protocol checks; the Python worker
+does not enforce a second hash allowlist. Archive inspection is development-only. Runtime code
+never reads `app.asar`. Server behavior can still change independently of the installed client,
+so response validation and bounded cleanup remain necessary.
 
 ## Implemented lifecycle
 

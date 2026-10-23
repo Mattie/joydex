@@ -69,14 +69,15 @@ public sealed class DotVoicePreferencesTests
     }
 
     [Fact]
-    public async Task UnvalidatedBinaryIsRejectedBeforeAnyProcessStarts()
+    public async Task UnfamiliarRuntimeProducesACompatibilityWarning()
     {
         var path = Path.GetTempFileName();
         try
         {
-            await File.WriteAllTextAsync(path, "not the validated binary");
-            await Assert.ThrowsAsync<InvalidOperationException>(() => DotVoiceSession.RequireHashAsync(
-                path, DotVoiceSession.ValidatedCodexSha256, CancellationToken.None));
+            await File.WriteAllTextAsync(path, "a newly updated runtime");
+            var warnings = new List<string>();
+            await DotVoiceSession.WarnIfUnfamiliarRuntimeAsync(path, path, warnings.Add, CancellationToken.None);
+            Assert.Contains("trying an unfamiliar Codex runtime", Assert.Single(warnings));
         }
         finally { File.Delete(path); }
     }
