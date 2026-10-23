@@ -7,6 +7,29 @@ namespace Joydex.RuntimeHost.Tests;
 public sealed class WindowsProductionRuntimeCommandsTests
 {
     [Fact]
+    public void QuestionDismissalNormalizesHashesAndRejectsMissingOrUnrelatedArguments()
+    {
+        var keys = new[] { new string('b', 64), new string('a', 64), new string('b', 64) };
+        var request = new RuntimeCommandRequest(Guid.NewGuid(), RuntimeCommandKind.DismissTaskAlertQuestions,
+            new RuntimeCommandArguments(TaskAlertQuestions: new(1, "session", keys)));
+        Assert.True(RuntimeCommandCanonicalizer.TryNormalize(request, out var normalized, out var error), error);
+        Assert.Equal([new string('A', 64), new string('B', 64)], normalized.Arguments!.TaskAlertQuestions!.QuestionKeys);
+        Assert.False(RuntimeCommandCanonicalizer.TryNormalize(request with { Arguments = null }, out _, out _));
+        Assert.False(RuntimeCommandCanonicalizer.TryNormalize(request with
+        {
+            Arguments = request.Arguments! with { Enabled = false },
+        }, out _, out _));
+        Assert.False(RuntimeCommandCanonicalizer.TryNormalize(request with
+        {
+            Arguments = new RuntimeCommandArguments(TaskAlertQuestions: new(1, "session", ["not-a-hash"])),
+        }, out _, out _));
+        Assert.False(RuntimeCommandCanonicalizer.TryNormalize(request with
+        {
+            Kind = RuntimeCommandKind.RemoveTaskAlertHooks,
+        }, out _, out _));
+    }
+
+    [Fact]
     public void RequestedLocalDesktopTaskCreatesDirectNavigationWithoutVoiceSettings()
     {
         var taskId = Guid.NewGuid();

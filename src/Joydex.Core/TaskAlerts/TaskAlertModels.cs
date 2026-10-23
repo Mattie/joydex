@@ -36,7 +36,8 @@ public sealed record TaskAlertAssignment(
     DateTimeOffset UpdatedAt,
     DateTimeOffset? CompleteAfter = null,
     string? WorkspaceKey = null,
-    string? Workspace = null);
+    string? Workspace = null,
+    string[]? PendingAsyncQuestions = null);
 
 /// <summary>
 /// Captures the task assignments and pending approval correlations that must

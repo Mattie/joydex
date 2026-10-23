@@ -46,6 +46,7 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
                 RuntimeCommandKind.InspectTaskAlertHooks => InspectTaskAlertHooksCommand(request),
                 RuntimeCommandKind.InstallTaskAlertHooks => ChangeTaskAlertHooks(request, install: true),
                 RuntimeCommandKind.RemoveTaskAlertHooks => ChangeTaskAlertHooks(request, install: false),
+                RuntimeCommandKind.DismissTaskAlertQuestions => DismissTaskAlertQuestions(request),
                 _ => Rejected(request, $"The {request.Kind} command is unavailable in the production adapter."),
             };
         }
@@ -407,6 +408,16 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
         Completed(
             request,
             payload: new RuntimeCommandPayload(TaskAlertHooks: InspectTaskAlertHooks()));
+
+    private RuntimeCommandResult DismissTaskAlertQuestions(RuntimeCommandRequest request)
+    {
+        lock (_stateGate)
+        {
+            if (_taskAlerts is null) return Rejected(request, "Task Alerts is unavailable.");
+            var changed = _taskAlerts.DismissQuestions(request.Arguments!.TaskAlertQuestions!);
+            return Completed(request, changed ? "Question alerts dismissed." : "Those question alerts are already gone.");
+        }
+    }
 
     private RuntimeCommandResult ChangeTaskAlertHooks(RuntimeCommandRequest request, bool install)
     {

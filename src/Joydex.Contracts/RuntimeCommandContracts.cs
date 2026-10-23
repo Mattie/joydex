@@ -43,7 +43,11 @@ public enum RuntimeCommandKind
     InspectPlugins,
     RestartPlugin,
     ReloadPluginConfiguration,
+    DismissTaskAlertQuestions,
 }
+
+/// <summary>The exact displayed question alerts to dismiss; later questions are unaffected.</summary>
+public sealed record RuntimeTaskAlertQuestionDismissal(int Slot, string SessionId, string[] QuestionKeys);
 
 /// <summary>
 /// Typed arguments for runtime commands. The host validates that fields required by the selected
@@ -59,7 +63,8 @@ public sealed record RuntimeCommandArguments(
     Uri? VoiceEndpoint = null,
     VoicePeWakeTuning? VoiceWakeTuning = null,
     string? ContinuationToken = null,
-    string? PluginId = null);
+    string? PluginId = null,
+    RuntimeTaskAlertQuestionDismissal? TaskAlertQuestions = null);
 
 public sealed record RuntimeCommandRequest(
     Guid OperationId,

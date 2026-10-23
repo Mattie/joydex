@@ -9,7 +9,11 @@ A question Codex has successfully sent through `request_user_input_async` and th
 resolved through its question-card reply. The agent may keep working, but the task still
 needs attention. Its task-alert LED remains in the attention state across tool completion, turn
 completion, unrelated prompts and Joydex restart. Each reply resolves only its original call and
-question index. Joydex stores hashes of those identifiers, never question or answer text.
+question index. If a question is obsolete or was handled in ordinary chat, the user can select
+the task in Task Alerts and choose **Dismiss questions**. This dismisses only the displayed
+question hashes; newer questions and blocking permissions remain pending. Dismissal changes
+Joydex's alert without answering or removing the question in Codex. Joydex stores hashes of
+those identifiers, never question or answer text.
 _Avoid_: Blocking tool call, completed question
 
 **Dedicated Voice Endpoint**:

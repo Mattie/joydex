@@ -128,6 +128,16 @@ public sealed class RuntimeIpcTransportTests : IDisposable
                 operationId,
                 CancellationToken.None)).State);
 
+        var questions = new RuntimeTaskAlertQuestionDismissal(2, "session", [new string('A', 64)]);
+        var dismissed = await connection.ExecuteCommandAsync(new RuntimeCommandRequest(
+            Guid.NewGuid(), RuntimeCommandKind.DismissTaskAlertQuestions,
+            new RuntimeCommandArguments(TaskAlertQuestions: questions)), CancellationToken.None);
+        Assert.Equal(RuntimeCommandStatus.Completed, dismissed.Status);
+        Assert.Equal(RuntimeCommandKind.DismissTaskAlertQuestions, implementation.LastCommand!.Kind);
+        Assert.Equal(questions.Slot, implementation.LastCommand.Arguments!.TaskAlertQuestions!.Slot);
+        Assert.Equal(questions.SessionId, implementation.LastCommand.Arguments.TaskAlertQuestions.SessionId);
+        Assert.Equal(questions.QuestionKeys, implementation.LastCommand.Arguments.TaskAlertQuestions.QuestionKeys);
+
         var globalEvent = new RuntimeEvent(
             implementation.Snapshot.EngineEpoch,
             Sequence: 41,
@@ -1163,16 +1173,21 @@ public sealed class RuntimeIpcTransportTests : IDisposable
                 RuntimeCaptureLookupStatus.Completed,
                 new RuntimeCaptureUpdate(_capture)));
 
+        public RuntimeCommandRequest? LastCommand { get; private set; }
+
         public Task<RuntimeCommandResult> ExecuteCommandAsync(
             RuntimeCommandRequest request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(new RuntimeCommandResult(
+            CancellationToken cancellationToken)
+        {
+            LastCommand = request;
+            return Task.FromResult(new RuntimeCommandResult(
                 request.OperationId,
                 request.Kind,
                 RuntimeCommandStatus.Completed,
                 Payload: ReturnSettingsInAllResults
                     ? new RuntimeCommandPayload(Settings: Snapshot.Settings)
                     : null));
+        }
 
         public Task<RuntimeCommandOperationResult> GetCommandOperationAsync(
             Guid operationId,

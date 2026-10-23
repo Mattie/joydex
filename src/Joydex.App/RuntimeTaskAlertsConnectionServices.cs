@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Joydex.Contracts;
 using Joydex.Core.TaskAlerts;
 using Joydex.Windows.TaskAlerts;
@@ -13,6 +14,7 @@ internal enum RuntimeTaskAlertsActionKind
     InspectHooks,
     InstallHooks,
     RemoveHooks,
+    DismissQuestions,
 }
 
 internal enum RuntimeTaskAlertsActionOutcome
@@ -248,6 +250,13 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
             cancellationToken);
     }
 
+    public Task<RuntimeTaskAlertsActionResult> DismissQuestionsAsync(
+        RuntimeTaskAlertQuestionDismissal questions, Guid operationId,
+        CancellationToken cancellationToken = default) =>
+        ExecuteCommandAsync(RuntimeTaskAlertsActionKind.DismissQuestions,
+            RuntimeCommandKind.DismissTaskAlertQuestions, operationId, cancellationToken,
+            new RuntimeCommandArguments(TaskAlertQuestions: questions));
+
     public Task<RuntimeTaskAlertsActionResult> InspectHooksAsync(
         Guid operationId,
         CancellationToken cancellationToken = default) =>
@@ -478,7 +487,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
         RuntimeTaskAlertsActionKind actionKind,
         RuntimeCommandKind commandKind,
         Guid operationId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RuntimeCommandArguments? arguments = null)
     {
         ValidateOperationId(operationId);
         Connection connection;
@@ -497,7 +507,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
             }
             if (_pendingCommands.TryGetValue(operationId, out pending!))
             {
-                if (pending.ActionKind != actionKind || pending.CommandKind != commandKind)
+                if (pending.ActionKind != actionKind || pending.CommandKind != commandKind
+                    || JsonSerializer.Serialize(pending.Arguments) != JsonSerializer.Serialize(arguments))
                 {
                     throw new InvalidOperationException("The operation ID belongs to a different hook command.");
                 }
@@ -511,7 +522,7 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
                         "A previous Task Alerts hook command must be reconciled before another is submitted.");
                 }
                 pending = new PendingCommandAction(operationId, actionKind, commandKind,
-                    connection.State.Current.Snapshot?.EngineEpoch);
+                    connection.State.Current.Snapshot?.EngineEpoch, arguments);
                 _pendingCommands.Add(operationId, pending);
             }
             BeginOperationLocked(operationId);
@@ -528,7 +539,7 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
 
             try
             {
-                var request = new RuntimeCommandRequest(operationId, commandKind);
+                var request = new RuntimeCommandRequest(operationId, commandKind, arguments);
                 var result = await connection.CommandRunner.ExecuteAsync(request, linked.Token)
                     .ConfigureAwait(false);
                 return FinishCommand(connection, pending, result);
@@ -672,6 +683,7 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
             _ => RuntimeTaskAlertsActionOutcome.Failed,
         };
         if (outcome == RuntimeTaskAlertsActionOutcome.Applied
+            && pending.ActionKind != RuntimeTaskAlertsActionKind.DismissQuestions
             && result.Payload?.TaskAlertHooks is not { } hooks)
         {
             return PublishCommandState(
@@ -1101,7 +1113,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
         Guid OperationId,
         RuntimeTaskAlertsActionKind ActionKind,
         RuntimeCommandKind CommandKind,
-        Guid? EngineEpoch);
+        Guid? EngineEpoch,
+        RuntimeCommandArguments? Arguments = null);
 }
 
 /// <summary>

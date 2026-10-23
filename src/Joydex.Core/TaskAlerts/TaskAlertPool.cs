@@ -18,6 +18,9 @@ public sealed class TaskAlertPool
 
     public IReadOnlyList<TaskAlertAssignment> Assignments => _assignments.Values
         .OrderBy(assignment => assignment.Slot)
+        .Select(assignment => HasAsyncQuestions(assignment.SessionId)
+            ? assignment with { PendingAsyncQuestions = _pendingAttention[assignment.SessionId].CaptureAsyncQuestions() }
+            : assignment)
         .ToArray();
 
     /// <summary>Captures the state needed to restore assignments after restart.</summary>
@@ -339,6 +342,29 @@ public sealed class TaskAlertPool
         return true;
     }
 
+    /// <summary>
+    /// Dismisses only the question hashes selected by the user. Newer questions and blocking
+    /// permissions remain pending; this changes the LED, not the questions or answers in Codex.
+    /// </summary>
+    public bool DismissQuestions(int slot, string sessionId, IReadOnlyCollection<string> questionKeys,
+        DateTimeOffset dismissedAt)
+    {
+        TaskAlertSlots.Validate(slot);
+        ArgumentNullException.ThrowIfNull(questionKeys);
+        if (dismissedAt == default) throw new ArgumentOutOfRangeException(nameof(dismissedAt));
+        if (!_assignments.TryGetValue(slot, out var existing)
+            || existing.SessionId != sessionId
+            || !_pendingAttention.TryGetValue(sessionId, out var pending)) return false;
+
+        var changed = false;
+        foreach (var key in questionKeys) changed |= pending.CompleteAsyncQuestion(key);
+        if (!changed) return false;
+        // Hooks already received by the runtime may still be queued. A UI action must not
+        // advance their ordering watermark and make a real, earlier hook look out of order.
+        UpdateAfterAsyncQuestions(existing, pending, dismissedAt, updateEventTimestamp: false);
+        return true;
+    }
+
     public bool SetEnabled(bool enabled)
     {
         if (Enabled == enabled)
@@ -426,17 +452,23 @@ public sealed class TaskAlertPool
             return false;
         }
 
-        if (!pending.Any) _pendingAttention.Remove(taskEvent.SessionId);
+        UpdateAfterAsyncQuestions(existing, pending, taskEvent.ReceivedAt);
+        return true;
+    }
+
+    private void UpdateAfterAsyncQuestions(TaskAlertAssignment existing, PendingAttention pending,
+        DateTimeOffset receivedAt, bool updateEventTimestamp = true)
+    {
+        if (!pending.Any) _pendingAttention.Remove(existing.SessionId);
         var state = pending.Any ? TaskAlertState.Approval
-            : existing.CompleteAfter is { } stoppedAt && stoppedAt <= taskEvent.ReceivedAt
+            : existing.CompleteAfter is { } stoppedAt && stoppedAt <= receivedAt
                 ? TaskAlertState.Completed : TaskAlertState.Running;
         _assignments[existing.Slot] = existing with
         {
             State = state,
-            UpdatedAt = taskEvent.ReceivedAt,
+            UpdatedAt = updateEventTimestamp ? receivedAt : existing.UpdatedAt,
             CompleteAfter = state == TaskAlertState.Completed ? null : existing.CompleteAfter,
         };
-        return true;
     }
 
     private bool HasAsyncQuestions(string sessionId) =>

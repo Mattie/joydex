@@ -10,6 +10,25 @@ namespace Joydex.Tests;
 public sealed class RuntimeTaskAlertsConnectionServicesTests
 {
     [Fact]
+    public async Task QuestionDismissalSendsExactSelectionWithoutRequiringHookStatus()
+    {
+        var runner = new FakeCommandRunner
+        {
+            ExecuteHandler = (request, _) => Task.FromResult(new RuntimeCommandResult(
+                request.OperationId, request.Kind, RuntimeCommandStatus.Completed)),
+        };
+        using var services = new RuntimeTaskAlertsConnectionServices(new ImmediateSynchronizationContext());
+        services.BeginConnection(1, new FakeSettingsWriter(), runner,
+            State(Snapshot(Settings(Preferences()), Alerts())));
+        var selection = new RuntimeTaskAlertQuestionDismissal(2, "session", [new string('A', 64)]);
+        var result = await services.DismissQuestionsAsync(selection, Guid.NewGuid());
+        Assert.True(result.Succeeded);
+        var sent = Assert.Single(runner.ExecuteRequests);
+        Assert.Equal(RuntimeCommandKind.DismissTaskAlertQuestions, sent.Kind);
+        Assert.Equal(selection, sent.Arguments!.TaskAlertQuestions);
+    }
+
+    [Fact]
     public void ProjectsRuntimeStateAndUsesCompleteDesiredSuppressions()
     {
         var firstRule = new TaskAlertSuppressionRule(
