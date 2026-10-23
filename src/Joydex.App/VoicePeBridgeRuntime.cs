@@ -661,7 +661,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
                 throw new InvalidOperationException("Turn on Joydex Audio Barge In on the Voice PE before starting dot calls.");
         }
         // Check compatibility, cached login and the saved identity without allocating a call.
-        await using (var preflight = await DotVoiceSession.CreateAsync(preferences, cancellationToken).ConfigureAwait(false)) { }
+        await using (var preflight = await DotVoiceSession.CreateAsync(preferences, cancellationToken, log).ConfigureAwait(false)) { }
         VoiceMediaStaHost? mediaSta = null;
         VoiceRuntimeAsyncGate? publicationGate = null;
         VoicePeControlAdapter? adapter = null;
@@ -750,7 +750,7 @@ internal sealed class VoicePeBridgeRuntime : IAsyncDisposable
             });
             await adapter.ConfirmSessionEndedAsync(cancellationToken).ConfigureAwait(false);
             adapter.Start();
-            log($"Native dot route is armed for {label}; Codex runtime is version pinned.");
+            log($"Native dot route is armed for {label}.");
             return new VoicePeBridgeRuntime(adapter, coordinator, mediaSta, publicationGate, null, null,
                 conversation, log, VoicePeSessionMode.NativeDot,
                 ObserveFirstCompletionAsync(ownershipCompletion.Task, mediaSta.Completion));

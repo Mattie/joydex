@@ -1,6 +1,5 @@
 """Exercise the native protocol without network access, login or a real dot call."""
 import base64
-import hashlib
 import importlib.util
 import io
 import json
@@ -49,10 +48,8 @@ class DotSignalingTests(unittest.TestCase):
         output = io.StringIO()
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "codex.exe"
-            binary.write_bytes(b"")
-            # The production hash gate still executes, using this test-only expected fixture hash.
-            with patch.object(SIGNALING, "CODEX_SHA256", hashlib.sha256(b"").hexdigest().upper()), \
-                 patch.object(SIGNALING.subprocess, "Popen", return_value=Process()), \
+            binary.write_bytes(b"unfamiliar updated runtime")
+            with patch.object(SIGNALING.subprocess, "Popen", return_value=Process()), \
                  patch.object(SIGNALING.urllib.request, "build_opener", return_value=Opener()), \
                  patch.object(SIGNALING.sys, "stdin", io.StringIO("".join(json.dumps({"id": index, **command}) + "\n" for index, command in enumerate(commands, 1)))), \
                  patch.object(SIGNALING.sys, "stdout", output):
@@ -62,6 +59,11 @@ class DotSignalingTests(unittest.TestCase):
     @staticmethod
     def profile():
         return Response(200, json.dumps({"id": TARGET["dotId"], "display_name": "Example dot"}).encode())
+
+    def test_unfamiliar_binary_reaches_saved_identity_verification(self):
+        results, requests = self.exercise([{"op": "verify", **TARGET}], [self.profile()])
+        self.assertEqual(TARGET["dotId"], results[0]["result"]["dotId"])
+        self.assertEqual(["GET"], [request.method for request in requests])
 
     def test_saved_thread_is_checked_and_call_is_created_attached_stopped_once(self):
         results, requests = self.exercise([

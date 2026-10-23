@@ -1,10 +1,9 @@
-"""Version-pinned native dot signaling. Credentials and HTTP bodies stay in memory.
+"""Native dot signaling with runtime response checks. Credentials and HTTP bodies stay in memory.
 
 One worker owns one call. Stdio exposes only target metadata, SDP and stop status.
 There are no retries for create, attach or stop, and no task or conversation writes.
 """
 import base64
-import hashlib
 import http.client
 import json
 import os
@@ -18,7 +17,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-CODEX_SHA256 = "D13914CED6C7AF174D8D638DB938284231227312104B06A25E9608C632A7DAEC"
 MAX_BYTES = 256 * 1024
 
 
@@ -48,9 +46,6 @@ class MeasuredHttpsHandler(urllib.request.HTTPSHandler):
 
 def run(binary):
     """Authenticate through our owned App Server and serve bounded call commands."""
-    with open(binary, "rb") as source:
-        if hashlib.file_digest(source, "sha256").hexdigest().upper() != CODEX_SHA256:
-            raise RuntimeError("UnvalidatedCodexVersion")
     environment = os.environ.copy()
     environment.pop("OPENAI_API_KEY", None)
     process = subprocess.Popen(
