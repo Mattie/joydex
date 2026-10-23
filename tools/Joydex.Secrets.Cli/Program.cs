@@ -24,7 +24,7 @@ internal static class Program
             var client = new SecretsBrokerPipeClient(parsed.DataRoot);
             return parsed.Command switch
             {
-                "aliases" or "catalog" => await CatalogAsync(client, parsed),
+                "sources" or "aliases" or "catalog" => await CatalogAsync(client, parsed),
                 "exec" => await ExecAsync(client, parsed),
                 "request" => await RequestAsync(client, parsed),
                 "wait" => await WaitAsync(client, parsed),
@@ -67,12 +67,17 @@ internal static class Program
         var secrets = args.Many("secret");
         if (secrets.Count is < 1 or > 64)
         {
-            throw new ArgumentException("Exec requires between 1 and 64 --secret ENV_NAME options.");
+            throw new ArgumentException("Exec requires between 1 and 64 --secret ENV_NAME[=ALIAS] options.");
         }
-        if (secrets.Distinct(StringComparer.OrdinalIgnoreCase).Count() != secrets.Count
-            || secrets.Any(secret => !IsEnvironmentName(secret)))
+        var secretEnvironment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var secret in secrets)
         {
-            throw new ArgumentException("Each --secret must be a unique environment variable name.");
+            var split = secret.IndexOf('=');
+            var destination = split < 0 ? secret : secret[..split];
+            var alias = split < 0 ? secret : secret[(split + 1)..];
+            if (!IsEnvironmentName(destination) || !ExactEnvSecretProvider.IsValidReference(alias)
+                || !secretEnvironment.TryAdd(destination, alias))
+                throw new ArgumentException("Each --secret must have a unique destination environment variable and a valid alias: ENV_NAME[=ALIAS].");
         }
         if (args.CommandTokens.Count == 0)
         {
@@ -93,11 +98,11 @@ internal static class Program
             ResolveExecutable(args.CommandTokens[0], workingDirectory),
             args.CommandTokens.Skip(1).ToArray(),
             workingDirectory,
-            secrets.ToDictionary(secret => secret, secret => secret, StringComparer.OrdinalIgnoreCase),
+            secretEnvironment,
             [],
             detached ? SecretOutputDisclosure.None : passthrough ? SecretOutputDisclosure.Passthrough : SecretOutputDisclosure.Summary,
             Lifetime: detached ? SecretsExecutionLifetime.Detached : SecretsExecutionLifetime.Attached,
-            DetachedTimeoutSeconds: detachedTimeout, TaskId: taskId);
+            DetachedTimeoutSeconds: detachedTimeout, TaskId: taskId, Source: args.Optional("source"));
         EnsureLocalRequester(args, clientId, projectReference);
         var reply = await SendAsync(client, new(
             SecretsBrokerCommandKind.Request,
@@ -329,7 +334,15 @@ internal static class Program
             SecretsBrokerCommandKind.Catalog,
             clientId,
             projectReference));
-        Write(reply);
+        if (args.Command == "sources")
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                reply.Status,
+                Sources = reply.Aliases?.GroupBy(alias => new { alias.SourceId, alias.SourceName })
+                    .Select(group => new { group.Key.SourceId, Namespace = group.Key.SourceName, Aliases = group.ToArray() }).ToArray(),
+                reply.Failure,
+            }, JsonOptions));
+        else Write(reply);
         return ExitCode(reply.Status);
     }
 
@@ -734,7 +747,7 @@ internal static class Program
         return options;
     }
 
-    private const string Usage = "Usage: joydex-secrets exec [--detach] --client ID --project REF --reason TEXT --secret ENV_NAME [--secret ENV_NAME] [--approval-timeout SECONDS] [--on-approval-timeout cancel|run-without-secrets|leave-pending] [--execution-timeout SECONDS] [--output-mode passthrough|json] -- PROGRAM [ARG ...]\nDetached control: joydex-secrets <status|stop> --task TASK_ID [--data-root PATH]\nDetached execution rejects --output-mode and alternative approval-timeout actions.\nDiagnostics: joydex-secrets diagnose (--request ID [--attempt GUID] | --last-failure) [--data-root PATH] [--output-mode text|json]\nAdvanced: joydex-secrets <aliases|request|wait|cancel|run> --client ID --project REF [options]\nAdvanced run: add --output-mode passthrough when the approved operation declares outputDisclosure: passthrough; otherwise omit it for JSON results.";
+    private const string Usage = "Usage: joydex-secrets exec [--detach] --client ID --project REF --reason TEXT [--source NAME_OR_ID] --secret ENV_NAME[=ALIAS] [--secret ENV_NAME[=ALIAS]] [--approval-timeout SECONDS] [--on-approval-timeout cancel|run-without-secrets|leave-pending] [--execution-timeout SECONDS] [--output-mode passthrough|json] -- PROGRAM [ARG ...]\nDetached control: joydex-secrets <status|stop> --task TASK_ID [--data-root PATH]\nDetached execution rejects --output-mode and alternative approval-timeout actions.\nDiagnostics: joydex-secrets diagnose (--request ID [--attempt GUID] | --last-failure) [--data-root PATH] [--output-mode text|json]\nDiscovery: joydex-secrets <sources|aliases> --client ID --project REF (names, IDs and availability only)\nAdvanced: joydex-secrets <request|wait|cancel|run> --client ID --project REF [options]\nAdvanced run: add --output-mode passthrough when the approved operation declares outputDisclosure: passthrough; otherwise omit it for JSON results.";
 
     private enum ApprovalTimeoutAction
     {
@@ -831,7 +844,7 @@ internal static class Program
             options.Remove("data-root");
             var allowed = command switch
             {
-                "aliases" or "catalog" => new[] { "client", "project" },
+                "sources" or "aliases" or "catalog" => new[] { "client", "project" },
                 "exec" => [
                     "detach",
                     "client",
@@ -839,6 +852,7 @@ internal static class Program
                     "request",
                     "reason",
                     "secret",
+                    "source",
                     "approval-timeout",
                     "on-approval-timeout",
                     "execution-timeout",

@@ -145,6 +145,41 @@ public sealed class ExactEnvSecretProviderTests : IDisposable
         Assert.Equal(64, values.ProviderGeneration.Length);
     }
 
+    [Fact]
+    public void NamespacedAliasesRequireSelectionAndKeepAvailabilitySeparate()
+    {
+        var personal = Guid.NewGuid();
+        var project = Guid.NewGuid();
+        var first = Path.Combine(_directory, "personal.env");
+        var second = Path.Combine(_directory, "project.env");
+        File.WriteAllText(first, "GH_TOKEN=synthetic-personal\n");
+        File.WriteAllText(second, "GH_TOKEN=synthetic-project\n");
+        var provider = new ExactEnvSecretProvider([
+            new(first, [new("GH_TOKEN", "GH_TOKEN", "personal-token", 1)], personal, "Personal"),
+            new(second, [new("GH_TOKEN", "GH_TOKEN", "project-token", 1)], project, "Project"),
+        ]);
+
+        Assert.Throws<KeyNotFoundException>(() => provider.ResolveReference("GH_TOKEN"));
+        Assert.Equal($"{project:N}/GH_TOKEN", provider.ResolveReference("GH_TOKEN", "project"));
+        Assert.Equal($"{personal:N}/GH_TOKEN", provider.ResolveReference("GH_TOKEN", personal.ToString()));
+        Assert.Equal($"{project:N}/GH_TOKEN", provider.ResolveReference(project.ToString("N").ToUpperInvariant() + "/GH_TOKEN"));
+        Assert.Equal($"{project:N}/GH_TOKEN", provider.ResolveReference(project + "/GH_TOKEN"));
+        Assert.Throws<KeyNotFoundException>(() => provider.ResolveReference("GH_TOKEN", "missing"));
+        Assert.Throws<KeyNotFoundException>(() => provider.ResolveReference($"{project:N}/GH_TOKEN", "Personal"));
+        using var values = provider.Fetch([$"{project:N}/GH_TOKEN", $"{personal:N}/GH_TOKEN"]);
+        Assert.Equal("synthetic-project", values.GetValue($"{project:N}/GH_TOKEN"));
+        Assert.Equal("synthetic-personal", values.GetValue($"{personal:N}/GH_TOKEN"));
+
+        File.Delete(second);
+        var metadata = provider.ListAliases();
+        Assert.True(metadata.Single(alias => alias.SourceId == personal).Available);
+        Assert.False(metadata.Single(alias => alias.SourceId == project).Available);
+        Assert.Throws<KeyNotFoundException>(() => provider.ResolveReference("GH_TOKEN"));
+        Assert.Throws<InvalidDataException>(() => provider.Fetch([$"{project:N}/GH_TOKEN"]));
+        Assert.DoesNotContain("synthetic-", System.Text.Json.JsonSerializer.Serialize(metadata));
+        Assert.DoesNotContain(_directory, System.Text.Json.JsonSerializer.Serialize(metadata));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);

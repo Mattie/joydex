@@ -144,7 +144,7 @@ public sealed class SecretsConfigurationStore
         ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         ArgumentNullException.ThrowIfNull(aliasKeys);
-        if (displayName.Length > 96 || aliasKeys.Count is < 1 or > 256)
+        if (displayName.Length > 96 || displayName.Any(char.IsControl) || aliasKeys.Count is < 1 or > 256)
         {
             throw new ArgumentException("The dotenv source metadata exceeds its allowed size.");
         }
@@ -318,6 +318,7 @@ public sealed class SecretsConfigurationStore
             if (source.SourceId == Guid.Empty
                 || source.Generation < 1
                 || source.DisplayName.Length is < 1 or > 96
+                || source.DisplayName.Any(char.IsControl)
                 || !Path.IsPathFullyQualified(source.FilePath)
                 || source.Aliases.Count is < 1 or > 256
                 || source.Aliases.Select(alias => alias.Alias)
@@ -368,7 +369,7 @@ public sealed class SecretsConfigurationStore
                 || parameter.Value.Any(value => value.Length > 512 || value.Contains('\0')))
             || draft.SecretEnvironment.Count is < 1 or > 64
             || draft.SecretEnvironment.Any(mapping =>
-                !ValidEnvironmentName(mapping.Key) || !ValidAlias(mapping.Value))
+                !ValidEnvironmentName(mapping.Key) || !ExactEnvSecretProvider.IsValidReference(mapping.Value))
             || draft.SecretEnvironment.Keys.Distinct(StringComparer.OrdinalIgnoreCase).Count()
                 != draft.SecretEnvironment.Count
             || draft.FingerprintInputs.Count > 64
@@ -399,13 +400,8 @@ public sealed class SecretsConfigurationStore
         var duplicateName = sources
             .GroupBy(source => source.DisplayName, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault(group => group.Count() > 1)?.Key;
-        var aliases = sources.SelectMany(source => source.Aliases.Select(alias => new
-        {
-            alias.Alias,
-            source.DisplayName,
-        })).ToArray();
-        var duplicateAlias = aliases
-            .GroupBy(alias => alias.Alias, StringComparer.Ordinal)
+        var aliasCount = sources.Sum(source => source.Aliases.Count);
+        var duplicateSourceId = sources.GroupBy(source => source.SourceId)
             .FirstOrDefault(group => group.Count() > 1);
         var duplicateIdentity = sources.SelectMany(source => source.Aliases)
             .GroupBy(alias => alias.StableSecretId, StringComparer.Ordinal)
@@ -415,7 +411,7 @@ public sealed class SecretsConfigurationStore
         {
             message = $"Joydex supports up to {MaximumSources} secret sources.";
         }
-        else if (aliases.Length > MaximumAliases)
+        else if (aliasCount > MaximumAliases)
         {
             message = $"Joydex supports up to {MaximumAliases} variables across all secret sources.";
         }
@@ -423,10 +419,9 @@ public sealed class SecretsConfigurationStore
         {
             message = $"A secret source named '{duplicateName}' already exists.";
         }
-        else if (duplicateAlias is not null)
+        else if (duplicateSourceId is not null)
         {
-            message = $"Variable '{duplicateAlias.Key}' is already provided by another secret source. "
-                + "Give one of them a different public name until source selection is available in approval popups.";
+            message = "The Secrets configuration repeats a source identity.";
         }
         else if (duplicateIdentity is not null)
         {

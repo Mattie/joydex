@@ -300,7 +300,12 @@ internal sealed class SecretsConsentToast : Form
         details.Controls.Add(detailsHeading, 0, 0);
         details.SetColumnSpan(detailsHeading, 2);
         AddDetail(details, 1, "Who", request.ClientLabel);
-        AddDetail(details, 2, "What", string.Join(", ", request.EnvironmentVariables), monospace: true);
+        AddDetail(details, 2, "What", request.SecretBindings is { Count: > 0 }
+            ? string.Join(Environment.NewLine, request.SecretBindings.Select(binding =>
+                binding.SourceName is null ? $"{binding.EnvironmentVariable} ← {binding.Alias}"
+                    : $"{binding.EnvironmentVariable} ← {binding.SourceName} / {binding.Alias}"
+                        + Environment.NewLine + $"Source {binding.SourceId:N}"))
+            : string.Join(", ", request.EnvironmentVariables), monospace: true);
         AddDetail(details, 3, "Env", "Other caller variables are inherited."
             + (request.Lifetime == SecretsExecutionLifetime.Detached
                 ? Environment.NewLine + "Detached: survives caller and Joydex exits. "

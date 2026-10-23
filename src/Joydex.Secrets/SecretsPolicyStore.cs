@@ -174,7 +174,7 @@ public sealed class SecretsPolicyStore
             && rule.ClientLabel.Length <= 96
             && IsIdentifier(rule.ProjectReference, 96)
             && rule.Aliases is { Count: >= 1 and <= 64 }
-            && rule.Aliases.All(alias => IsIdentifier(alias, 96))
+            && rule.Aliases.All(ExactEnvSecretProvider.IsValidReference)
             && rule.Aliases.Distinct(StringComparer.Ordinal).Count() == rule.Aliases.Count;
         if (rule.RuleId == Guid.Empty
             || !Enum.IsDefined(rule.ScopeKind)

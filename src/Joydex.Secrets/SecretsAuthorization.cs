@@ -254,7 +254,7 @@ public static class SecretsScopeFactory
 
     private static void ValidateAlias(SecretsAliasIdentity alias)
     {
-        if (!IsIdentifier(alias.Alias, 96)
+        if (!ExactEnvSecretProvider.IsValidReference(alias.Alias)
             || !IsIdentifier(alias.ProviderId, 96)
             || !IsIdentifier(alias.SecretId, 160)
             || alias.MappingGeneration < 1)
