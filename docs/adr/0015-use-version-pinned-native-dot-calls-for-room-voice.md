@@ -1,9 +1,14 @@
-# Use version-pinned native dot calls for Room Voice
+# Use native dot calls with runtime compatibility checks for Room Voice
 
 Voice PE wake can call a saved native dot directly because a Codex task does not carry a dot's
 identity or conversation. The opt-in Native Dot route reuses our existing hidden WebRTC and
-Sendspin media, bypasses Codex task ownership, and pins the tested Codex executable and code-mode
-host hashes for cached-login access. Archive inspection is development-only; runtime never reads
+Sendspin media and bypasses Codex task ownership. Updated 2026-10-20:
+an unfamiliar Codex executable or code-mode host produces a diagnostic warning and still attempts
+cached-login access and native voice setup. Tested hashes are a compatibility baseline, not an
+allowlist. A Desktop update alone must not disable working voice. The selected runtime must remain
+structurally complete; actual authentication, account/target identity, allowed backend routing,
+protocol response and allocation-cleanup checks determine whether a call can proceed.
+Archive inspection is development-only; runtime never reads
 `app.asar`.
 
 Room Voice keeps an explicit voice-engine choice between Codex task voice and native dot voice.
@@ -21,5 +26,5 @@ room-audio draining and closure may run alongside remote stop. Both must finish 
 The Codex route retains its existing ordering. An uncertain allocation or stop faults the generation;
 it must not silently admit another call. A durable allocation marker remains until stop is
 acknowledged, so process death and automatic worker recovery cannot erase that uncertainty.
-Server changes still require runtime response validation
-despite the client version pin.
+Server changes still require runtime response validation. There is no speculative fallback to
+another account, dot, backend or call protocol, and no automatic mutation retry.

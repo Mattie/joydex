@@ -9,8 +9,8 @@ namespace Joydex.Windows.Voice;
 /// <summary>Owns native dot signaling while the existing media session owns WebRTC.</summary>
 public sealed class DotVoiceSession : IAsyncDisposable
 {
-    public const string ValidatedCodexSha256 = "D13914CED6C7AF174D8D638DB938284231227312104B06A25E9608C632A7DAEC";
-    public const string ValidatedCodeModeHostSha256 = "BABAF50818BCE44CEBAFFF9BCE1F517E441BCCBD6468EEF9B3029B51470209E4";
+    private const string BaselineCodexSha256 = "D13914CED6C7AF174D8D638DB938284231227312104B06A25E9608C632A7DAEC";
+    private const string BaselineCodeModeHostSha256 = "BABAF50818BCE44CEBAFFF9BCE1F517E441BCCBD6468EEF9B3029B51470209E4";
     private readonly Process _process;
     private readonly Action<string>? _log;
     private readonly SemaphoreSlim _commands = new(1, 1);
@@ -197,8 +197,7 @@ public sealed class DotVoiceSession : IAsyncDisposable
     {
         var runtime = await CodexAppServerRuntimeResolver.ResolveAsync(
             preferences.CodexAppServerPath, cancellationToken).ConfigureAwait(false);
-        await RequireHashAsync(runtime.ExecutablePath, ValidatedCodexSha256, cancellationToken).ConfigureAwait(false);
-        await RequireHashAsync(runtime.CodeModeHostPath, ValidatedCodeModeHostSha256, cancellationToken).ConfigureAwait(false);
+        await WarnIfUnfamiliarRuntimeAsync(runtime.ExecutablePath, runtime.CodeModeHostPath, log, cancellationToken).ConfigureAwait(false);
         var python = ResolvePython(preferences.DotPythonExecutable);
         var script = Path.Combine(AppContext.BaseDirectory, "Assets", "Voice", "dot-signaling.py");
         if (!File.Exists(script)) throw new FileNotFoundException("The native dot signaling asset is missing.", script);
@@ -228,12 +227,25 @@ public sealed class DotVoiceSession : IAsyncDisposable
         return path;
     }
 
-    internal static async Task RequireHashAsync(string path, string expected, CancellationToken cancellationToken)
+    /// <summary>Reports a changed runtime without preventing the normal protocol and identity checks.</summary>
+    internal static async Task WarnIfUnfamiliarRuntimeAsync(string executablePath, string codeModeHostPath,
+        Action<string>? log, CancellationToken cancellationToken)
     {
-        await using var stream = File.OpenRead(path);
-        var actual = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
-        if (!string.Equals(actual, expected, StringComparison.Ordinal))
-            throw new InvalidOperationException("Native dot calling is pinned to Codex 0.162.0-alpha.17.2; this runtime needs revalidation.");
+        cancellationToken.ThrowIfCancellationRequested();
+        if (log is null) return;
+        try
+        {
+            await using var executable = File.OpenRead(executablePath);
+            await using var host = File.OpenRead(codeModeHostPath);
+            var executableHash = Convert.ToHexString(await SHA256.HashDataAsync(executable, cancellationToken).ConfigureAwait(false));
+            var hostHash = Convert.ToHexString(await SHA256.HashDataAsync(host, cancellationToken).ConfigureAwait(false));
+            if (executableHash == BaselineCodexSha256 && hostHash == BaselineCodeModeHostSha256) return;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Fingerprints are diagnostics, not permission to attempt the selected runtime.
+        }
+        log("Native dot voice is trying an unfamiliar Codex runtime; sign-in, target identity and call responses will be checked.");
     }
 
     public async ValueTask DisposeAsync()
