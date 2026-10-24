@@ -12,6 +12,142 @@ public sealed class TaskAlertPipeServerTests
 {
     private static readonly TimeSpan AsyncTimeout = TimeSpan.FromSeconds(10);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeliversAlertsAfterAnInterruptedAcceptAndClosesTheFailedPipe(bool loggingFails)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-pipe-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "preferences.json"));
+            var pipeName = $"Joydex.Tests.{Guid.NewGuid():N}";
+            var attempts = 0;
+            Microsoft.Win32.SafeHandles.SafePipeHandle? failedHandle = null;
+            var logs = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            await using var server = new TaskAlertPipeServer(coordinator, message =>
+            {
+                logs.Enqueue(message);
+                if (loggingFails) throw new IOException("Diagnostic sink fixture.");
+            }, pipeName)
+            {
+                WaitForConnectionAsync = (pipe, cancellationToken) =>
+                {
+                    if (Interlocked.Increment(ref attempts) == 1)
+                    {
+                        failedHandle = pipe.SafePipeHandle;
+                        throw new IOException("Interrupted accept fixture.");
+                    }
+                    return pipe.WaitForConnectionAsync(cancellationToken);
+                },
+            };
+            server.Start();
+
+            await SendAsync(pipeName, 1);
+            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.Count == 1, AsyncTimeout);
+
+            Assert.Equal("session-1", Assert.Single(coordinator.GetSnapshot().Assignments).SessionId);
+            Assert.True(failedHandle!.IsClosed);
+            Assert.False(server.Completion.IsCompleted);
+            Assert.Contains(logs, line => line.Contains("retrying", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(logs, line => line.Contains("resumed", StringComparison.OrdinalIgnoreCase));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ShutdownCompletesDuringAcceptRecovery()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-pipe-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "preferences.json"));
+            var failed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var attempts = 0;
+            var server = new TaskAlertPipeServer(coordinator, _ => failed.TrySetResult(), $"Joydex.Tests.{Guid.NewGuid():N}")
+            {
+                WaitForConnectionAsync = (_, _) =>
+                {
+                    Interlocked.Increment(ref attempts);
+                    throw new IOException("Interrupted accept fixture.");
+                },
+            };
+            server.Start();
+            try { await failed.Task.WaitAsync(AsyncTimeout); }
+            finally { await server.DisposeAsync().AsTask().WaitAsync(AsyncTimeout); }
+
+            Assert.True(attempts >= 1);
+            Assert.True(server.Completion.IsCompletedSuccessfully);
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnexpectedAcceptFailureFaultsTheStableCompletionTask(bool loggingFails)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-pipe-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "preferences.json"));
+            var failure = new InvalidOperationException("Unexpected accept fixture.");
+            await using var server = new TaskAlertPipeServer(coordinator, _ =>
+            {
+                if (loggingFails) throw new IOException("Diagnostic sink fixture.");
+            }, $"Joydex.Tests.{Guid.NewGuid():N}")
+            {
+                WaitForConnectionAsync = (_, _) => throw failure,
+            };
+            var completion = server.Completion;
+            server.Start();
+
+            Assert.Same(completion, server.Completion);
+            Assert.Same(failure, await Assert.ThrowsAsync<InvalidOperationException>(
+                () => completion.WaitAsync(AsyncTimeout)));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public async Task FatalAcceptFailureStillAllowsShutdownToCloseAnUnfinishedClient()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-pipe-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "preferences.json"));
+            var pipeName = $"Joydex.Tests.{Guid.NewGuid():N}";
+            var handles = new List<Microsoft.Win32.SafeHandles.SafePipeHandle>();
+            var server = new TaskAlertPipeServer(coordinator, _ => { }, pipeName)
+            {
+                WaitForConnectionAsync = (pipe, cancellationToken) =>
+                {
+                    handles.Add(pipe.SafePipeHandle);
+                    return handles.Count == 1
+                        ? pipe.WaitForConnectionAsync(cancellationToken)
+                        : Task.FromException(new InvalidOperationException("Unexpected accept fixture."));
+                },
+            };
+            server.Start();
+            await using var unfinishedClient = new NamedPipeClientStream(".", pipeName, PipeDirection.Out, PipeOptions.Asynchronous);
+            try
+            {
+                using var timeout = new CancellationTokenSource(AsyncTimeout);
+                await unfinishedClient.ConnectAsync(timeout.Token);
+                await Assert.ThrowsAsync<InvalidOperationException>(() => server.Completion.WaitAsync(AsyncTimeout));
+            }
+            finally { await server.DisposeAsync().AsTask().WaitAsync(AsyncTimeout); }
+
+            Assert.Equal(2, handles.Count);
+            Assert.All(handles, handle => Assert.True(handle.IsClosed));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
     [Fact]
     public async Task CompiledRelayDeliversWholeQuestionAndAnswerBatches()
     {
