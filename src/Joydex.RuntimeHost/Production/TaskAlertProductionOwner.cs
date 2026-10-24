@@ -44,6 +44,9 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
 
     internal TaskAlertSnapshot Snapshot => _coordinator.GetSnapshot();
 
+    internal bool DismissQuestions(RuntimeTaskAlertQuestionDismissal selection) =>
+        _coordinator.DismissQuestions(selection.Slot, selection.SessionId, selection.QuestionKeys);
+
     public static TaskAlertProductionOwner Start(
         WindowsProductionRuntimeOwnerFactory factory,
         ProductionWindowsStaHost windowsSta,

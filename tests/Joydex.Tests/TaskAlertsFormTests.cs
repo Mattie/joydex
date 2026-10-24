@@ -7,6 +7,48 @@ namespace Joydex.Tests;
 public sealed class TaskAlertsFormTests
 {
     [Fact]
+    public async Task DismissButtonClearsSelectedQuestionAndPersistsWithoutIgnoringTheTask()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"joydex-question-dismiss-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var originalContext = SynchronizationContext.Current;
+        TaskAlertCoordinator? coordinator = null;
+        try
+        {
+            var statePath = Path.Combine(directory, "task-alert-state.json");
+            var now = DateTimeOffset.UtcNow;
+            var pool = new TaskAlertPool();
+            pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "session", "turn", now, new string('A', 64)));
+            TaskAlertStateStore.Save(statePath, pool.CaptureState());
+            coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
+            using var form = new TaskAlertsForm(coordinator,
+                new CodexHookManager(Path.Combine(directory, "hooks.json")),
+                Path.Combine(directory, "Joydex.HookRelay.exe"), Path.Combine(directory, "profile.json"),
+                _ => Task.CompletedTask);
+            form.SetSnapshotForDocumentation(coordinator.GetSnapshot());
+            var button = FindControl<RoundedButton>(form, "Dismiss selected task question alerts");
+            Assert.False(button.Enabled);
+            var grid = FindControl<DataGridView>(form, "Current task-alert assignments");
+            grid.Rows[0].Selected = true;
+            grid.CurrentCell = grid.Rows[0].Cells[0];
+            Assert.True(button.Enabled);
+            typeof(Control).GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(button, [EventArgs.Empty]);
+            Assert.Equal(TaskAlertState.Running, Assert.Single(coordinator.GetSnapshot().Assignments).State);
+            Assert.False(button.Enabled);
+            Assert.Empty(Assert.Single(TaskAlertStateStore.Load(statePath).Assignments).PendingAsyncQuestions!);
+            Assert.Empty(coordinator.GetSnapshot().Suppressions!);
+        }
+        finally
+        {
+            // An unshown WinForms control can install a context without a running message loop.
+            SynchronizationContext.SetSynchronizationContext(originalContext);
+            if (coordinator is not null) await coordinator.DisposeAsync();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public void LedSettingsEditorShowsFiveCompleteThrottleBanks()
     {
         using var form = new TaskAlertLedSettingsForm(TaskAlertLedOptions.CreateDefault());

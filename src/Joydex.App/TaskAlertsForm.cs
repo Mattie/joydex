@@ -18,6 +18,7 @@ internal sealed class TaskAlertsForm : ThemedForm
     private readonly Func<bool, Guid, Task> _setEnabled;
     private readonly Func<TaskAlertLedOptions, Guid, Task> _setLedOutput;
     private readonly Func<TaskAlertSuppressionScope, string, Guid, Task<bool>> _addSuppression;
+    private readonly Func<RuntimeTaskAlertQuestionDismissal, Guid, Task> _dismissQuestions;
     private readonly CheckBox _enabled;
     private readonly Label _bank;
     private readonly Label _dropped;
@@ -28,6 +29,7 @@ internal sealed class TaskAlertsForm : ThemedForm
     private readonly ModernDataGridView _events;
     private readonly Label _selectedSource;
     private readonly RoundedButton _ignoreSelected;
+    private readonly RoundedButton _dismissSelectedQuestions;
     private readonly RoundedButton _ignoredSources;
     private readonly Label _hookStatus;
     private readonly Label _ledOutput;
@@ -42,6 +44,8 @@ internal sealed class TaskAlertsForm : ThemedForm
     private bool _snapshotUpdateScheduled;
     private bool _eventStreamSelected;
     private bool _updating;
+    private bool _dismissingQuestions;
+    private IReadOnlyList<TaskAlertAssignment> _displayedAssignments = [];
     private bool _keepInitialSelectionForDocumentation;
     private int _recoveringPendingOperations;
     private ContextMenuStrip? _ignoreMenu;
@@ -82,6 +86,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         _setEnabled = services.SetEnabled;
         _setLedOutput = services.SetLedOutput;
         _addSuppression = services.AddSuppression;
+        _dismissQuestions = services.DismissQuestions;
 
         Text = "Joydex Task Alerts";
         StartPosition = FormStartPosition.CenterScreen;
@@ -352,12 +357,13 @@ internal sealed class TaskAlertsForm : ThemedForm
             AccessibleName = "Selected task alert actions",
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            ColumnCount = 3,
+            ColumnCount = 4,
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 10),
             RowCount = 1,
         };
         actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         actionBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _selectedSource = new Label
@@ -380,6 +386,15 @@ internal sealed class TaskAlertsForm : ThemedForm
             Text = "Ignore selected ▾",
         };
         _ignoreSelected.Click += (_, _) => ShowIgnoreMenu();
+        _dismissSelectedQuestions = new RoundedButton
+        {
+            AccessibleName = "Dismiss selected task question alerts",
+            AccessibleDescription = "Clears the displayed question alerts without answering them or ignoring future alerts.",
+            Enabled = false,
+            Margin = new Padding(0, 0, 8, 0),
+            Text = "Dismiss questions",
+        };
+        _dismissSelectedQuestions.Click += OnDismissQuestions;
         _ignoredSources = new RoundedButton
         {
             AccessibleName = "Manage ignored Codex task status sources",
@@ -387,8 +402,9 @@ internal sealed class TaskAlertsForm : ThemedForm
         };
         _ignoredSources.Click += (_, _) => ShowIgnoredSources();
         actionBar.Controls.Add(_selectedSource, 0, 0);
-        actionBar.Controls.Add(_ignoreSelected, 1, 0);
-        actionBar.Controls.Add(_ignoredSources, 2, 0);
+        actionBar.Controls.Add(_dismissSelectedQuestions, 1, 0);
+        actionBar.Controls.Add(_ignoreSelected, 2, 0);
+        actionBar.Controls.Add(_ignoredSources, 3, 0);
         viewerLayout.Controls.Add(actionBar, 0, 1);
 
         var pageHost = new Panel
@@ -779,6 +795,7 @@ internal sealed class TaskAlertsForm : ThemedForm
 
             var assignmentSelection = GetSelectedTarget(_assignments);
             var eventSelection = GetSelectedTarget(_events);
+            _displayedAssignments = snapshot.Assignments;
             _assignments.Rows.Clear();
             foreach (var assignment in snapshot.Assignments)
             {
@@ -845,6 +862,9 @@ internal sealed class TaskAlertsForm : ThemedForm
     {
         var target = GetSelectedTarget();
         _ignoreSelected.Enabled = target is not null;
+        _dismissSelectedQuestions.Enabled = !_dismissingQuestions && target is not null
+            && _displayedAssignments.Any(assignment => assignment.SessionId == target.SessionId
+                && assignment.PendingAsyncQuestions is { Length: > 0 });
         if (target is null)
         {
             _selectedSource.Text = "Select a row to manage its signaling.";
@@ -931,6 +951,32 @@ internal sealed class TaskAlertsForm : ThemedForm
         _ignoreMenu.Items.Add(taskItem);
         _ignoreMenu.Items.Add(workspaceItem);
         _ignoreMenu.Show(_ignoreSelected, new Point(0, _ignoreSelected.Height));
+    }
+
+    private async void OnDismissQuestions(object? sender, EventArgs eventArgs)
+    {
+        var target = GetSelectedTarget();
+        var assignment = _displayedAssignments.FirstOrDefault(item => item.SessionId == target?.SessionId);
+        if (assignment?.PendingAsyncQuestions is not { Length: > 0 } keys) return;
+        // Capture the displayed hashes before awaiting: a later question must keep its alert.
+        var selection = new RuntimeTaskAlertQuestionDismissal(assignment.Slot, assignment.SessionId, keys.ToArray());
+        try
+        {
+            _dismissingQuestions = true;
+            _dismissSelectedQuestions.Enabled = false;
+            await _dismissQuestions(selection, Guid.NewGuid());
+            UpdateSnapshot(_getSnapshot());
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, exception.Message, "Could not dismiss question alerts",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _dismissingQuestions = false;
+            UpdateSuppressionActions();
+        }
     }
 
     private async void IgnoreSelectedTask(SuppressionTarget target)
@@ -1225,7 +1271,12 @@ internal sealed class TaskAlertsForm : ThemedForm
             coordinator.GetSnapshot,
             (enabled, _) => setEnabled(enabled),
             (options, _) => SetLegacyLedOutputAsync(coordinator, setLedOutput, options),
-            (scope, value, _) => Task.FromResult(coordinator.AddSuppression(scope, value)));
+            (scope, value, _) => Task.FromResult(coordinator.AddSuppression(scope, value)),
+            (selection, _) =>
+            {
+                coordinator.DismissQuestions(selection.Slot, selection.SessionId, selection.QuestionKeys);
+                return Task.CompletedTask;
+            });
     }
 
     private static FormServices CreateRuntimeServices(
@@ -1267,6 +1318,13 @@ internal sealed class TaskAlertsForm : ThemedForm
                     .ConfigureAwait(true);
                 EnsureSuccessful(result);
                 return result.Outcome != RuntimeTaskAlertsActionOutcome.NoChanges;
+            },
+            async (selection, operationId) =>
+            {
+                await RuntimeTaskAlertsRecoveryPolicy.ReconcileBeforeNewActionAsync(runtimeServices)
+                    .ConfigureAwait(true);
+                EnsureSuccessful(await runtimeServices.DismissQuestionsAsync(selection, operationId)
+                    .ConfigureAwait(true));
             });
     }
 
@@ -1300,7 +1358,8 @@ internal sealed class TaskAlertsForm : ThemedForm
         Func<TaskAlertSnapshot> GetSnapshot,
         Func<bool, Guid, Task> SetEnabled,
         Func<TaskAlertLedOptions, Guid, Task> SetLedOutput,
-        Func<TaskAlertSuppressionScope, string, Guid, Task<bool>> AddSuppression);
+        Func<TaskAlertSuppressionScope, string, Guid, Task<bool>> AddSuppression,
+        Func<RuntimeTaskAlertQuestionDismissal, Guid, Task> DismissQuestions);
 
     private sealed record SuppressionTarget(string SessionId, string? Workspace);
 }
