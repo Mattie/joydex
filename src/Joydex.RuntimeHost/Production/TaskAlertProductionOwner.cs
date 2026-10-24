@@ -33,7 +33,7 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
         _coordinator = coordinator;
         _pipe = pipe;
         _virpil = virpil;
-        _completion = Task.WhenAny(_ownedCompletion.Task, windowsSta.Completion).Unwrap();
+        _completion = Task.WhenAny(_ownedCompletion.Task, windowsSta.Completion, pipe.Completion).Unwrap();
     }
 
     public SettingsAggregateId Aggregate => SettingsAggregateId.TaskAlerts;

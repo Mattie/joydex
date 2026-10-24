@@ -15,7 +15,14 @@ public sealed class TaskAlertPipeServer(
     private readonly CancellationTokenSource _cancellation = new();
     private readonly HashSet<Task> _connections = [];
     private readonly object _connectionsLock = new();
+    private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task? _acceptTask;
+
+    /// <summary>Completes on shutdown or faults if the receiver cannot continue.</summary>
+    public Task Completion => _completion.Task;
+
+    internal Func<NamedPipeServerStream, CancellationToken, Task> WaitForConnectionAsync { get; init; }
+        = static (server, cancellationToken) => server.WaitForConnectionAsync(cancellationToken);
 
     public void Start()
     {
@@ -42,26 +49,37 @@ public sealed class TaskAlertPipeServer(
             connections = [.. _connections];
         }
 
-        await Task.WhenAll(connections).ConfigureAwait(false);
-        _cancellation.Dispose();
-        GC.SuppressFinalize(this);
+        try { await Task.WhenAll(connections).ConfigureAwait(false); }
+        finally
+        {
+            _cancellation.Dispose();
+            _completion.TrySetResult();
+            GC.SuppressFinalize(this);
+        }
     }
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
+        var recovering = false;
         while (!cancellationToken.IsCancellationRequested)
         {
-            var server = new NamedPipeServerStream(
-                pipeName,
-                PipeDirection.In,
-                NamedPipeServerStream.MaxAllowedServerInstances,
-                PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly,
-                inBufferSize: 4096,
-                outBufferSize: 0);
+            NamedPipeServerStream? server = null;
             try
             {
-                await server.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
+                server = new NamedPipeServerStream(
+                    pipeName,
+                    PipeDirection.In,
+                    NamedPipeServerStream.MaxAllowedServerInstances,
+                    PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly,
+                    inBufferSize: 4096,
+                    outBufferSize: 0);
+                await WaitForConnectionAsync(server, cancellationToken).ConfigureAwait(false);
+                if (recovering)
+                {
+                    WriteLog("Task-alert pipe receiver resumed accepting connections.");
+                    recovering = false;
+                }
                 var connection = ReadOneAsync(server, cancellationToken);
                 lock (_connectionsLock)
                 {
@@ -81,9 +99,23 @@ public sealed class TaskAlertPipeServer(
                     TaskScheduler.Default);
                 server = null!;
             }
+            catch (IOException exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                // A disconnected client can interrupt an accept. Replace that pipe,
+                // rather than permanently disabling all later lifecycle hooks.
+                if (!recovering)
+                {
+                    WriteLog($"Task-alert pipe receiver interrupted; retrying: {exception.Message}");
+                }
+                recovering = true;
+            }
             finally
             {
                 server?.Dispose();
+            }
+            if (recovering)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -97,10 +129,22 @@ public sealed class TaskAlertPipeServer(
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+        catch (IOException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
         catch (Exception exception)
         {
-            log($"Task-alert pipe receiver stopped: {exception.Message}");
+            WriteLog($"Task-alert pipe receiver stopped: {exception.Message}");
+            _completion.TrySetException(exception);
+            return;
         }
+        _completion.TrySetResult();
+    }
+
+    private void WriteLog(string message)
+    {
+        try { log(message); }
+        catch { /* A failed diagnostic sink must not stop receiver recovery or cleanup. */ }
     }
 
     private async Task ReadOneAsync(NamedPipeServerStream server, CancellationToken cancellationToken)
@@ -176,7 +220,7 @@ public sealed class TaskAlertPipeServer(
                 or InvalidDataException
                 or ArgumentOutOfRangeException)
             {
-                log($"Ignored invalid task-alert pipe message: {exception.Message}");
+                WriteLog($"Ignored invalid task-alert pipe message: {exception.Message}");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
