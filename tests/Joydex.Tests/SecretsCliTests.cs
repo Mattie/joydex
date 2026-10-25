@@ -48,6 +48,62 @@ public sealed class SecretsCliTests : IDisposable
     }
 
     [Theory]
+    [InlineData("sources")]
+    [InlineData("aliases")]
+    public async Task MaximumNamespacedAliasCatalogSurvivesTransportWithoutValuesOrPaths(string command)
+    {
+        await using var harness = new CliHarness(_directory);
+        var configurationPath = SecretsPaths.GetConfigurationPath(_directory);
+        var configuration = new SecretsConfigurationStore(configurationPath);
+        var initial = Assert.Single(configuration.Read().Sources);
+        var aliasesPerSource = SecretsConfigurationStore.MaximumAliases / SecretsConfigurationStore.MaximumSources;
+        for (var source = 0; source < SecretsConfigurationStore.MaximumSources; source++)
+        {
+            var aliases = Enumerable.Range(0, aliasesPerSource).ToDictionary(
+                index => new string('A', 93) + index.ToString("D3"), _ => "SYNTHETIC_TOKEN");
+            configuration.UpsertEnvSource(source == 0 ? initial.SourceId : null,
+                new string('\u754c', 93) + source.ToString("D3"), initial.FilePath, aliases);
+        }
+        // Exercise every alias metadata bound, including escaped stable IDs loaded from disk.
+        var snapshot = configuration.Read();
+        var sources = snapshot.Sources.Select((source, sourceIndex) => source with
+        {
+            Aliases = source.Aliases.Select((alias, index) => alias with
+            {
+                StableSecretId = new string('\u754c', 92) + (sourceIndex * aliasesPerSource + index).ToString("D4"),
+                MappingGeneration = long.MaxValue,
+            }).ToArray(),
+        }).ToArray();
+        File.WriteAllText(configurationPath, JsonSerializer.Serialize(new
+        {
+            SchemaVersion = SecretsConfigurationStore.CurrentSchemaVersion,
+            snapshot.Epoch,
+            Sources = sources,
+            snapshot.Recipes,
+        }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+
+        using var process = StartHelper(harness, null, _directory,
+            [command, "--data-root", _directory, "--client", "codex", "--project", "joydex"]);
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        var output = await outputTask;
+        Assert.Equal(string.Empty, await errorTask);
+        Assert.Equal(0, process.ExitCode);
+        using var document = JsonDocument.Parse(output);
+        var aliasesListed = command == "sources"
+            ? document.RootElement.GetProperty("sources").EnumerateArray()
+                .SelectMany(source => source.GetProperty("aliases").EnumerateArray()).ToArray()
+            : document.RootElement.GetProperty("aliases").EnumerateArray().ToArray();
+        Assert.Equal(SecretsConfigurationStore.MaximumAliases, aliasesListed.Length);
+        Assert.All(aliasesListed, alias => Assert.True(alias.GetProperty("available").GetBoolean()));
+        Assert.DoesNotContain("synthetic-value", output);
+        Assert.DoesNotContain(initial.FilePath, output);
+        Assert.DoesNotContain(JsonSerializer.Serialize(initial.FilePath), output);
+        Assert.Empty(harness.Runtime.PendingRequests());
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task ExecSelectsSourceAndMapsAliasToDestination(bool useSourceId)

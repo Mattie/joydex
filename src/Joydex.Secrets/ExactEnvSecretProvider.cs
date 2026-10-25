@@ -133,11 +133,14 @@ public sealed class ExactEnvSecretProvider
             alias = Guid.Parse(alias[..separator]).ToString("N") + alias[separator..];
         if (source is not null)
         {
-            var matches = Guid.TryParse(source, out var id)
-                ? _sources.Where(candidate => candidate.SourceId == id).ToArray()
-                : _sources.Where(candidate => string.Equals(candidate.SourceName, source, StringComparison.OrdinalIgnoreCase)).ToArray();
+            var isId = Guid.TryParse(source, out var id);
+            // A GUID-shaped namespace is still a name. If it also identifies another
+            // source, require a qualified alias rather than choosing a credential.
+            var matches = _sources.Where(candidate =>
+                string.Equals(candidate.SourceName, source, StringComparison.OrdinalIgnoreCase)
+                || (isId && candidate.SourceId == id)).ToArray();
             if (matches.Length != 1)
-                throw new KeyNotFoundException("The requested secret source is unavailable or ambiguous. Use sources to discover its ID.");
+                throw new KeyNotFoundException("The requested secret source is unavailable or ambiguous. Use a qualified alias from sources.");
             var binding = _aliases.Values.SingleOrDefault(binding => binding.Source == matches[0]
                 && (binding.Alias.Alias == alias || Reference(binding.Source, binding.Alias) == alias));
             return binding is null

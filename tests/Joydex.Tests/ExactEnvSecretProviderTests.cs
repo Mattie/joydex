@@ -180,6 +180,37 @@ public sealed class ExactEnvSecretProviderTests : IDisposable
         Assert.DoesNotContain(_directory, System.Text.Json.JsonSerializer.Serialize(metadata));
     }
 
+    [Theory]
+    [InlineData("N")]
+    [InlineData("D")]
+    public void GuidShapedNamespaceCanBeSelectedByNameOrItsOwnId(string format)
+    {
+        var sourceId = Guid.NewGuid();
+        var name = Guid.NewGuid().ToString(format);
+        var provider = new ExactEnvSecretProvider([
+            new(Write("TOKEN=synthetic-value\n"), [new("TOKEN", "TOKEN", "token", 1)], sourceId, name),
+        ]);
+
+        Assert.Equal($"{sourceId:N}/TOKEN", provider.ResolveReference("TOKEN", name));
+        Assert.Equal($"{sourceId:N}/TOKEN", provider.ResolveReference("TOKEN", sourceId.ToString(format)));
+    }
+
+    [Fact]
+    public void NamespaceMatchingAnotherSourceIdIsAmbiguousAndQualifiedReferencesRemainExact()
+    {
+        var firstId = Guid.NewGuid();
+        var secondId = Guid.NewGuid();
+        var provider = new ExactEnvSecretProvider([
+            new(Write("TOKEN=synthetic-value\n"), [new("TOKEN", "TOKEN", "first", 1)], firstId, secondId.ToString("N")),
+            new(Path.Combine(_directory, "other.env"), [new("TOKEN", "TOKEN", "second", 1)], secondId, "Other"),
+        ]);
+
+        var exception = Assert.Throws<KeyNotFoundException>(() => provider.ResolveReference("TOKEN", secondId.ToString("N")));
+        Assert.Contains("ambiguous", exception.Message);
+        Assert.Equal($"{firstId:N}/TOKEN", provider.ResolveReference($"{firstId:N}/TOKEN"));
+        Assert.Equal($"{secondId:N}/TOKEN", provider.ResolveReference($"{secondId:N}/TOKEN"));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);

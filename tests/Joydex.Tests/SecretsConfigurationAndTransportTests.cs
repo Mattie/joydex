@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.IO.Pipes;
 using System.Security.Cryptography;
 using Joydex.Secrets;
 
@@ -10,6 +12,52 @@ public sealed class SecretsConfigurationAndTransportTests : IDisposable
         "joydex-secrets-runtime-" + Guid.NewGuid().ToString("N"));
 
     public SecretsConfigurationAndTransportTests() => Directory.CreateDirectory(_directory);
+
+    [Theory]
+    [InlineData(SecretsBrokerCommandKind.Catalog, 2 * 1024 * 1024 + 1)]
+    [InlineData(SecretsBrokerCommandKind.Poll, 512 * 1024 + 1)]
+    public async Task ClientRejectsReplyFramesBeyondTheCommandSpecificLimit(SecretsBrokerCommandKind kind, int replyLength)
+    {
+        LocalSecretsRequester.EnsureReady(_directory, "codex", "Codex", "test", _directory);
+        await using var pipe = new NamedPipeServerStream(SecretsBrokerEndpoint.Create(_directory).PipeName,
+            PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        async Task ReplyWithInvalidLengthAsync()
+        {
+            await pipe.WaitForConnectionAsync(deadline.Token);
+            var requestHeader = new byte[12];
+            await pipe.ReadExactlyAsync(requestHeader, deadline.Token);
+            var requestBody = new byte[BinaryPrimitives.ReadInt32LittleEndian(requestHeader.AsSpan(4, 4))
+                + BinaryPrimitives.ReadInt32LittleEndian(requestHeader.AsSpan(8, 4))];
+            try { await pipe.ReadExactlyAsync(requestBody, deadline.Token); }
+            finally { CryptographicOperations.ZeroMemory(requestBody); }
+            var replyHeader = new byte[4];
+            BinaryPrimitives.WriteInt32LittleEndian(replyHeader, replyLength);
+            await pipe.WriteAsync(replyHeader, deadline.Token);
+            await pipe.FlushAsync(deadline.Token);
+        }
+
+        var server = ReplyWithInvalidLengthAsync();
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() => new SecretsBrokerPipeClient(_directory).SendAsync(
+            new(kind, "codex", "test"), TimeSpan.FromSeconds(5), deadline.Token));
+        Assert.Contains("bounds", exception.Message);
+        await server;
+    }
+
+    [Fact]
+    public async Task LargerCatalogReplyAllowanceDoesNotIncreaseCommandFrameLimit()
+    {
+        LocalSecretsRequester.EnsureReady(_directory, "codex", "Codex", "test", _directory);
+        await using var pipe = new NamedPipeServerStream(SecretsBrokerEndpoint.Create(_directory).PipeName,
+            PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var connected = pipe.WaitForConnectionAsync(deadline.Token);
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() => new SecretsBrokerPipeClient(_directory).SendAsync(
+            new(SecretsBrokerCommandKind.Catalog, "codex", "test", Reason: new string('A', 512 * 1024)),
+            TimeSpan.FromSeconds(5), deadline.Token));
+        Assert.Contains("command exceeds", exception.Message);
+        await connected;
+    }
 
     [Fact]
     public async Task MalformedReplayCannotClaimAnActiveExecutionNeverStarted()
