@@ -49,10 +49,21 @@ public sealed record SecretsBrokerReply(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     SecretsFailure? Failure = null);
 
+/// <summary>Shares frame bounds between the broker and its packaged client.</summary>
+internal static class SecretsBrokerProtocolLimits
+{
+    internal const int MaximumCommandBytes = 512 * 1024;
+
+    // The expanded catalog can contain 1,024 aliases with escaped 96-character
+    // namespaces and stable IDs. Other responses retain their existing bound.
+    internal static int MaximumReplyBytes(SecretsBrokerCommandKind kind) =>
+        kind == SecretsBrokerCommandKind.Catalog ? 2 * 1024 * 1024 : MaximumCommandBytes;
+}
+
 /// <summary>Serves authenticated Secrets commands over a current-user, local named pipe.</summary>
 public sealed class SecretsBrokerPipeServer
 {
-    private const int MaximumPayloadBytes = 512 * 1024;
+    private const int MaximumPayloadBytes = SecretsBrokerProtocolLimits.MaximumCommandBytes;
     private const int MaximumConcurrentClients = 32;
     private static readonly TimeSpan FrameTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MaximumRunDuration = TimeSpan.FromHours(1);
@@ -203,7 +214,7 @@ public sealed class SecretsBrokerPipeServer
                 }
                 using var replyTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 replyTimeout.CancelAfter(FrameTimeout);
-                await WriteReplyAsync(pipe, reply, replyTimeout.Token).ConfigureAwait(false);
+                await WriteReplyAsync(pipe, reply, command.Kind, replyTimeout.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
@@ -245,7 +256,7 @@ public sealed class SecretsBrokerPipeServer
                 {
                     using var replyTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     replyTimeout.CancelAfter(FrameTimeout);
-                    await WriteReplyAsync(pipe, reply, replyTimeout.Token).ConfigureAwait(false);
+                    await WriteReplyAsync(pipe, reply, command?.Kind ?? SecretsBrokerCommandKind.Poll, replyTimeout.Token).ConfigureAwait(false);
                 }
                 catch (Exception writeException) when (writeException is IOException
                     or InvalidOperationException
@@ -425,10 +436,11 @@ public sealed class SecretsBrokerPipeServer
     private static async Task WriteReplyAsync(
         Stream stream,
         SecretsBrokerReply reply,
+        SecretsBrokerCommandKind kind,
         CancellationToken cancellationToken)
     {
         var payload = JsonSerializer.SerializeToUtf8Bytes(reply, JsonOptions);
-        if (payload.Length > MaximumPayloadBytes)
+        if (payload.Length > SecretsBrokerProtocolLimits.MaximumReplyBytes(kind))
         {
             throw new InvalidDataException("The Secrets response exceeds its protocol limit.");
         }
@@ -475,7 +487,7 @@ public sealed class SecretsBrokerPipeServer
 /// <summary>Authenticated client used by the local helper without exposing credential bytes to arguments.</summary>
 public sealed class SecretsBrokerPipeClient
 {
-    private const int MaximumPayloadBytes = 512 * 1024;
+    private const int MaximumPayloadBytes = SecretsBrokerProtocolLimits.MaximumCommandBytes;
     private static readonly byte[] Magic = "JDS1"u8.ToArray();
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private readonly SecretsBrokerEndpoint _endpoint;
@@ -531,7 +543,7 @@ public sealed class SecretsBrokerPipeClient
             var replyHeader = new byte[4];
             await pipe.ReadExactlyAsync(replyHeader, transactionToken).ConfigureAwait(false);
             var replyLength = BinaryPrimitives.ReadInt32LittleEndian(replyHeader);
-            if (replyLength is < 1 or > MaximumPayloadBytes)
+            if (replyLength < 1 || replyLength > SecretsBrokerProtocolLimits.MaximumReplyBytes(command.Kind))
             {
                 throw new InvalidDataException("The Secrets response has invalid bounds.");
             }

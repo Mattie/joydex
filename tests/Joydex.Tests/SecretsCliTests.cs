@@ -16,6 +16,165 @@ public sealed class SecretsCliTests : IDisposable
     public SecretsCliTests() => Directory.CreateDirectory(_directory);
 
     [Fact]
+    public async Task SourcesDiscoversNamespacesAndAliasesWithoutValuesOrPaths()
+    {
+        await using var harness = new CliHarness(_directory);
+        var otherPath = Path.Combine(_directory, "other.env");
+        File.WriteAllText(otherPath, "SYNTHETIC_TOKEN=synthetic-other\n");
+        var sources = new SecretsConfigurationStore(SecretsPaths.GetConfigurationPath(_directory)).UpsertEnvSource(
+            null, "Other source", otherPath, new Dictionary<string, string> { ["SYNTHETIC_TOKEN"] = "SYNTHETIC_TOKEN" }).Sources;
+        using var process = StartHelper(harness, null, _directory,
+            ["sources", "--data-root", _directory, "--client", "codex", "--project", "joydex"]);
+        var output = await process.StandardOutput.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await process.WaitForExitAsync();
+
+        Assert.Equal(0, process.ExitCode);
+        using var document = JsonDocument.Parse(output);
+        var listed = document.RootElement.GetProperty("sources").EnumerateArray().ToArray();
+        Assert.Equal(2, listed.Length);
+        Assert.Equal(sources.Select(source => source.SourceId).Order(), listed.Select(source => source.GetProperty("sourceId").GetGuid()).Order());
+        Assert.All(listed, source =>
+        {
+            Assert.Contains(source.GetProperty("namespace").GetString(), new[] { "Test source", "Other source" });
+            var alias = Assert.Single(source.GetProperty("aliases").EnumerateArray());
+            Assert.Equal("SYNTHETIC_TOKEN", alias.GetProperty("alias").GetString());
+            Assert.Contains("/SYNTHETIC_TOKEN", alias.GetProperty("qualifiedAlias").GetString());
+        });
+        Assert.DoesNotContain("synthetic-value", output);
+        Assert.DoesNotContain("synthetic-other", output);
+        Assert.DoesNotContain(".env", output);
+        Assert.DoesNotContain(_directory, output);
+        Assert.Empty(harness.Runtime.PendingRequests());
+    }
+
+    [Theory]
+    [InlineData("sources")]
+    [InlineData("aliases")]
+    public async Task MaximumNamespacedAliasCatalogSurvivesTransportWithoutValuesOrPaths(string command)
+    {
+        await using var harness = new CliHarness(_directory);
+        var configurationPath = SecretsPaths.GetConfigurationPath(_directory);
+        var configuration = new SecretsConfigurationStore(configurationPath);
+        var initial = Assert.Single(configuration.Read().Sources);
+        var aliasesPerSource = SecretsConfigurationStore.MaximumAliases / SecretsConfigurationStore.MaximumSources;
+        for (var source = 0; source < SecretsConfigurationStore.MaximumSources; source++)
+        {
+            var aliases = Enumerable.Range(0, aliasesPerSource).ToDictionary(
+                index => new string('A', 93) + index.ToString("D3"), _ => "SYNTHETIC_TOKEN");
+            configuration.UpsertEnvSource(source == 0 ? initial.SourceId : null,
+                new string('\u754c', 93) + source.ToString("D3"), initial.FilePath, aliases);
+        }
+        // Exercise every alias metadata bound, including escaped stable IDs loaded from disk.
+        var snapshot = configuration.Read();
+        var sources = snapshot.Sources.Select((source, sourceIndex) => source with
+        {
+            Aliases = source.Aliases.Select((alias, index) => alias with
+            {
+                StableSecretId = new string('\u754c', 92) + (sourceIndex * aliasesPerSource + index).ToString("D4"),
+                MappingGeneration = long.MaxValue,
+            }).ToArray(),
+        }).ToArray();
+        File.WriteAllText(configurationPath, JsonSerializer.Serialize(new
+        {
+            SchemaVersion = SecretsConfigurationStore.CurrentSchemaVersion,
+            snapshot.Epoch,
+            Sources = sources,
+            snapshot.Recipes,
+        }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+
+        using var process = StartHelper(harness, null, _directory,
+            [command, "--data-root", _directory, "--client", "codex", "--project", "joydex"]);
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        var output = await outputTask;
+        Assert.Equal(string.Empty, await errorTask);
+        Assert.Equal(0, process.ExitCode);
+        using var document = JsonDocument.Parse(output);
+        var aliasesListed = command == "sources"
+            ? document.RootElement.GetProperty("sources").EnumerateArray()
+                .SelectMany(source => source.GetProperty("aliases").EnumerateArray()).ToArray()
+            : document.RootElement.GetProperty("aliases").EnumerateArray().ToArray();
+        Assert.Equal(SecretsConfigurationStore.MaximumAliases, aliasesListed.Length);
+        Assert.All(aliasesListed, alias => Assert.True(alias.GetProperty("available").GetBoolean()));
+        Assert.DoesNotContain("synthetic-value", output);
+        Assert.DoesNotContain(initial.FilePath, output);
+        Assert.DoesNotContain(JsonSerializer.Serialize(initial.FilePath), output);
+        Assert.Empty(harness.Runtime.PendingRequests());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExecSelectsSourceAndMapsAliasToDestination(bool useSourceId)
+    {
+        await using var harness = new CliHarness(_directory);
+        var otherPath = Path.Combine(_directory, "project.env");
+        File.WriteAllText(otherPath, "TOKEN=synthetic-project\n");
+        var source = new SecretsConfigurationStore(SecretsPaths.GetConfigurationPath(_directory)).UpsertEnvSource(
+            null, "Project", otherPath, new Dictionary<string, string>
+            {
+                ["SYNTHETIC_TOKEN"] = "TOKEN", ["PROJECT_TOKEN"] = "TOKEN",
+            }).Sources.Last();
+        using var process = StartHelper(harness, new Dictionary<string, string> { ["PROJECT_TOKEN"] = "" }, _directory,
+            ["exec", "--data-root", _directory, "--client", "codex", "--project", "joydex", "--reason", "Test source selection",
+             "--source", useSourceId ? source.SourceId.ToString() : "project", "--secret", "SYNTHETIC_TOKEN=PROJECT_TOKEN",
+             "--", harness.PowerShell, "-NoProfile", "-Command",
+             "if ($env:SYNTHETIC_TOKEN -eq 'synthetic-project' -and !$env:PROJECT_TOKEN) {exit 0} else {exit 9}"]);
+        var pending = await harness.WaitForRequestAsync(process);
+        var binding = Assert.Single(pending.SecretBindings!);
+        Assert.Equal("Project", binding.SourceName);
+        Assert.Equal(source.SourceId, binding.SourceId);
+        Assert.Equal("PROJECT_TOKEN", binding.Alias);
+        Assert.Equal("SYNTHETIC_TOKEN", binding.EnvironmentVariable);
+        Approve(harness, pending);
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(0, process.ExitCode);
+        Assert.Empty(await process.StandardOutput.ReadToEndAsync());
+        Assert.Empty(await process.StandardError.ReadToEndAsync());
+    }
+
+    [Theory]
+    [InlineData("synthetic_token=SYNTHETIC_TOKEN")]
+    [InlineData("BAD-NAME=SYNTHETIC_TOKEN")]
+    [InlineData("DESTINATION=")]
+    [InlineData("DESTINATION=not-a-source/SYNTHETIC_TOKEN")]
+    public async Task ExecRejectsDuplicateDestinationsAndMalformedMappings(string mapping)
+    {
+        await using var harness = new CliHarness(_directory);
+        using var process = StartCli(harness, "--secret", mapping, "--", harness.CommandShell, "/d", "/c", "echo must-not-run");
+        var error = await process.StandardError.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await process.WaitForExitAsync();
+        Assert.Equal(2, process.ExitCode);
+        Assert.Contains("destination", error);
+        Assert.Empty(await process.StandardOutput.ReadToEndAsync());
+        Assert.Empty(harness.Runtime.PendingRequests());
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("Missing source")]
+    public async Task ExecRejectsAmbiguousOrMissingSourceBeforeConsent(string? source)
+    {
+        await using var harness = new CliHarness(_directory);
+        var otherPath = Path.Combine(_directory, "other.env");
+        File.WriteAllText(otherPath, "TOKEN=synthetic-other\n");
+        new SecretsConfigurationStore(SecretsPaths.GetConfigurationPath(_directory)).UpsertEnvSource(
+            null, "Other", otherPath, new Dictionary<string, string> { ["SYNTHETIC_TOKEN"] = "TOKEN" });
+        using var process = StartCli(harness,
+            (source is null ? Array.Empty<string>() : new[] { "--source", source })
+                .Concat(["--", harness.CommandShell, "/d", "/c", "echo must-not-run"]).ToArray());
+        var error = await process.StandardError.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await process.WaitForExitAsync();
+        Assert.NotEqual(0, process.ExitCode);
+        Assert.Contains("secret_selection_unavailable", error);
+        Assert.Contains(source is null ? "ambiguous" : "source", error);
+        Assert.Empty(await process.StandardOutput.ReadToEndAsync());
+        Assert.Empty(harness.Runtime.PendingRequests());
+        Assert.DoesNotContain(harness.Audit.ReadAll(), record => record.Kind == SecretsAuditEventKind.LaunchCommitted);
+    }
+
+    [Fact]
     public async Task DetachedCliReturnsReceiptAndTaskSurvivesCallerAndBrokerShutdown()
     {
         SecretsDetachedTask.TestLaunchHost = (exe, args) =>

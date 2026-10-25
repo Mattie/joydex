@@ -280,7 +280,8 @@ internal sealed class SecretsSettingsControl : UserControl
         AddColumn(_decisions, "Secrets", 120);
         AddColumn(_decisions, "Scope", 120);
         AddColumn(_decisions, "Expires", 110);
-        AddColumn(_sources, "Source", 100);
+        AddColumn(_sources, "Namespace", 100);
+        AddColumn(_sources, "Source ID", 180);
         AddColumn(_sources, "Variables", 70);
         AddColumn(_sources, "File", 70);
         AddColumn(_sources, "Path", 180);
@@ -330,6 +331,14 @@ internal sealed class SecretsSettingsControl : UserControl
             var failures = _diagnostics.Read().Records.Where(record => record.AttemptId is not null && record.Failure is not null)
                 .GroupBy(record => record.AttemptId!.Value).ToDictionary(group => group.Key, group => group.Last().Failure!);
             var policy = new SecretsPolicyStore(_policyPath).Read(now);
+            var configuration = new SecretsConfigurationStore(_configurationPath).Read();
+            var sourceLabels = configuration.Sources.ToDictionary(source => source.SourceId.ToString("N"), source => source.DisplayName);
+            string DescribeAlias(string reference)
+            {
+                var separator = reference.IndexOf('/');
+                return separator > 0 && sourceLabels.TryGetValue(reference[..separator], out var label)
+                    ? label + " / " + reference[(separator + 1)..] : reference;
+            }
             var metadata = audit
                 .Where(record => record.RuleId is not null)
                 .GroupBy(record => record.RuleId!.Value)
@@ -343,10 +352,10 @@ internal sealed class SecretsSettingsControl : UserControl
                     rule.ClientLabel ?? rule.ClientReference ?? record?.ClientReference ?? "Unknown agent",
                     rule.ProjectReference ?? record?.ProjectReference ?? "Unknown project",
                     rule.Aliases is { Count: > 0 }
-                        ? string.Join(", ", rule.Aliases)
+                        ? string.Join(", ", rule.Aliases.Select(DescribeAlias))
                         : record is null
                             ? "Unavailable"
-                            : string.Join(", ", record.Aliases),
+                            : string.Join(", ", record.Aliases.Select(DescribeAlias)),
                     rule.ScopeKind == RememberedGrantScopeKind.ExactOperation
                         ? "This command"
                         : "All commands from agent",
@@ -356,11 +365,11 @@ internal sealed class SecretsSettingsControl : UserControl
                 _decisions.Rows[index].Tag = rule.RuleId;
             }
 
-            var configuration = new SecretsConfigurationStore(_configurationPath).Read();
             foreach (var source in configuration.Sources)
             {
                 var index = _sources.Rows.Add(
                     source.DisplayName,
+                    source.SourceId.ToString("N"),
                     source.Aliases.Count,
                     File.Exists(source.FilePath) ? "Found" : "Missing",
                     source.FilePath);
@@ -456,13 +465,9 @@ internal sealed class SecretsSettingsControl : UserControl
                 : store.Read().Sources.SingleOrDefault(source =>
                     SelectedTag(_sources) is Guid selected && source.SourceId == selected);
             if (!create && current is null) return;
-            using var dialog = new SecretsEnvSourceEditorDialog(current);
+            using var dialog = new SecretsEnvSourceEditorDialog(current, draft => store.UpsertEnvSource(
+                current?.SourceId, draft.DisplayName, draft.FilePath, draft.AliasKeys));
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            store.UpsertEnvSource(
-                current?.SourceId,
-                dialog.DisplayName,
-                dialog.FilePath,
-                dialog.AliasKeys);
             Reload();
         }
         catch (Exception exception)

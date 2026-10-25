@@ -349,13 +349,21 @@ requester name and any submitted task ID remain cooperative labels until trusted
 proves their origin.
 
 **Direct Secret Execution**:
-The ordinary agent flow in which one request names the required environment variables and exact
-child-process argument vector. Joydex obtains consent, injects approved values into that child,
+The ordinary agent flow in which one request selects secret source aliases, destination environment
+variables and an exact child-process argument vector. Joydex obtains consent, injects approved values into that child,
 and relays child stdin, stdout and stderr unchanged with the exact child exit code. An optional
 JSON mode returns bounded, redacted output. Values are supplied through the child environment;
 the approved child controls what its output reveals. Direct execution uses the requester's current
 working directory and inherited environment, with Joydex-approved values replacing matching names.
 _Avoid_: Recipe, raw secret retrieval
+
+**Secret Source Namespace**:
+The unique name of one configured secret source. Agents select it with `--source` using its name
+or stable source ID. Alias names may overlap between sources; an unqualified alias must identify
+exactly one configured source. Discovery returns source names, IDs, aliases and availability,
+without file paths or values. A qualified alias uses `<source-id>/ALIAS`; destination mappings use
+`--secret ENV_NAME=ALIAS`. The broker resolves the source before computing the approval scope.
+_Avoid_: Project scope, environment file path
 
 **Joydex Local Profile**:
 A value-free discovery file atomically rewritten by the normal tray process at

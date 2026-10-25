@@ -68,7 +68,11 @@ public sealed record SecretsPendingRequest(
     IReadOnlyList<string> NewAliases,
     SecretsDetachReason? DetachedReason,
     SecretsExecutionLifetime Lifetime = SecretsExecutionLifetime.Attached,
-    int? DetachedTimeoutSeconds = null);
+    int? DetachedTimeoutSeconds = null,
+    IReadOnlyList<SecretsSecretBinding>? SecretBindings = null);
+
+/// <summary>A resolved source and alias mapped to a child variable, without its secret value.</summary>
+public sealed record SecretsSecretBinding(string EnvironmentVariable, string Alias, Guid? SourceId, string? SourceName);
 
 /// <summary>
 /// Coordinates authenticated named-client requests, exact policy, pending consent and one-use exec.
@@ -165,7 +169,19 @@ public sealed class SecretsBrokerCore
                 SecretsRequestStatus.IdentityUnverified, now, operationDigest: null);
         }
 
-        if (submission.Operation!.SecretEnvironment.Values.Any(alias => !_aliases.ContainsKey(alias)))
+        ExecOperationProposal proposal;
+        try
+        {
+            proposal = submission.Operation! with
+            {
+                SecretEnvironment = submission.Operation!.SecretEnvironment.ToDictionary(
+                    mapping => mapping.Key,
+                    mapping => _provider.ResolveReference(mapping.Value, submission.Operation.Source),
+                    StringComparer.Ordinal),
+                Source = null,
+            };
+        }
+        catch (KeyNotFoundException exception)
         {
             return FinishAttempt(
                 attemptId,
@@ -175,7 +191,10 @@ public sealed class SecretsBrokerCore
                 requestedAliases,
                 SecretsRequestStatus.ProviderUnavailable,
                 now,
-                operationDigest: null);
+                operationDigest: null) with
+            {
+                Failure = new("secret_selection_unavailable", "provider", exception.Message),
+            };
         }
 
         ResolvedExecOperation operation;
@@ -185,7 +204,7 @@ public sealed class SecretsBrokerCore
             operation = ExecOperationCanonicalizer.Resolve(
                 authentication.Project,
                 _aliases.Keys.ToArray(),
-                submission.Operation!,
+                proposal,
                 submission.OperationGeneration);
             aliasIdentities = operation.SecretEnvironment.Values
                 .Distinct(StringComparer.Ordinal)
@@ -481,9 +500,16 @@ public sealed class SecretsBrokerCore
         }
     }
 
-    private static SecretsPendingRequest CreatePendingRequest(RequestState request)
+    private SecretsPendingRequest CreatePendingRequest(RequestState request)
     {
         var commandLine = CommandLineForDisplay(request.Operation, out var commandLineTruncated);
+        var aliases = _provider.ListAliases(checkAvailability: false)
+            .ToDictionary(alias => alias.QualifiedAlias ?? alias.Alias, StringComparer.Ordinal);
+        var bindings = request.Operation.SecretEnvironment.Select(mapping =>
+        {
+            var alias = aliases[mapping.Value];
+            return new SecretsSecretBinding(mapping.Key, alias.Alias, alias.SourceId, alias.SourceName);
+        }).ToArray();
         return new(
             request.Response.AttemptId,
             request.Response.RequestId,
@@ -502,8 +528,9 @@ public sealed class SecretsBrokerCore
             request.Response.ExpiresAt,
             request.Operation.Fingerprints.Keys.ToArray(),
             request.Operation.OutputDisclosure,
-            request.NewAliases,
-            request.DetachedReason, request.Operation.Lifetime, request.Operation.DetachedTimeoutSeconds);
+            request.NewAliases.Select(reference => aliases[reference] is { SourceName: { } name } alias
+                ? name + " / " + alias.Alias : aliases[reference].Alias).ToArray(),
+            request.DetachedReason, request.Operation.Lifetime, request.Operation.DetachedTimeoutSeconds, bindings);
     }
 
     private void ReconcileOperatingMode(DateTimeOffset now)
@@ -1205,7 +1232,7 @@ public sealed class SecretsBrokerCore
     private bool ProviderAliasesAreCurrent(IEnumerable<SecretsAliasIdentity> aliases)
     {
         var providerAliases = _provider.ListAliases()
-            .ToDictionary(alias => alias.Alias, StringComparer.Ordinal);
+            .ToDictionary(alias => alias.QualifiedAlias ?? alias.Alias, StringComparer.Ordinal);
         foreach (var expected in aliases)
         {
             if (!string.Equals(expected.ProviderId, "env", StringComparison.Ordinal)
@@ -1520,11 +1547,13 @@ public sealed class SecretsBrokerCore
         && !string.IsNullOrWhiteSpace(submission.ProjectReference)
         && submission.ProjectReference.Length <= 96
         && submission.Operation is not null
+        && (submission.Operation.Source is null || (submission.Operation.Source.Length is >= 1 and <= 96
+            && !submission.Operation.Source.Any(char.IsControl)))
         && submission.Reason is not null
         && submission.Reason.Length <= 512;
 
     private static IReadOnlyList<string> SafeAliases(IEnumerable<string>? aliases) =>
-        aliases?.Take(64).Select(alias => SafeIdentifier(alias, "invalid-alias")).ToArray() ?? [];
+        aliases?.Take(64).Select(alias => ExactEnvSecretProvider.IsValidReference(alias) ? alias : "invalid-alias").ToArray() ?? [];
 
     private static string SafeIdentifier(string? value, string fallback) =>
         !string.IsNullOrWhiteSpace(value)

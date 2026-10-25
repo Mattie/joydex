@@ -10,7 +10,8 @@ Use `joydex-secrets exec` when a command needs a configured secret. Name the env
 ## Rules
 
 - Make one exact request when the need arises. The user does not register or enroll the agent first; the helper creates its protected local requester identity on first use.
-- Use the environment variable name as the public alias: `--secret AGENTMAIL_API_KEY` requests the alias `AGENTMAIL_API_KEY` and injects it under that same name.
+- Use `--source NAME_OR_ID` to select the intended source namespace. `--secret AGENTMAIL_API_KEY` uses that alias and destination name; `--secret GH_TOKEN=PROJECT_GH_TOKEN` requests alias `PROJECT_GH_TOKEN` and injects it as `GH_TOKEN`.
+- Discover sources before choosing between overlapping names. `--project` identifies the workspace and approval scope, not a secret source. Without `--source`, an alias must be unique across configured sources; an unavailable duplicate is still ambiguous. Never assume Joydex picks the project-local file.
 - Put the executable and every argument after `--`. Use a shell only when the command itself requires one.
 - Keep the reason short and factual. It is shown to the user but does not broaden approval scope.
 - Let the default approval timeout cancel the command. Use `run-without-secrets` only when the work remains useful without Joydex-supplied credentials. Use `leave-pending` only when the command should stop while the user may still set a rule for later requests.
@@ -24,8 +25,8 @@ Give setup instructions when the user asks or when a requested variable is unava
 Ask the user to open the Joydex tray icon, choose **Configure…**, and open **Secrets**:
 
 1. If the credential is not already in a `.env` file, tell the user to add a normal `ENV_NAME=value` entry with their local editor. Name the variable, but do not ask them to reveal its value.
-2. Under **Secret sources**, choose **Add source** and select that `.env` file. Joydex imports its variable names automatically; **Import variable names** refreshes them later.
-3. Leave a variable as `ENV_NAME` to expose and inject it under that same name. Use `PUBLIC_NAME=ENV_NAME` only when the user wants a different public name.
+2. Under **Secret sources**, choose **Add source**, give it a unique **Namespace** such as `project`, and select that `.env` file. Joydex imports its variable names automatically; **Import variable names** refreshes them later.
+3. Leave a variable as `ENV_NAME`; the same name can exist in other namespaces. Use `PUBLIC_NAME=ENV_NAME` only when a different source alias is useful. Destination remapping belongs in `exec --secret DESTINATION=ALIAS` and does not require renaming the `.env` key.
 4. Save the source, then choose **Save and close**.
 
 There is no agent setup step. The first valid helper call creates its protected same-user identity and binds the supplied project name to the current workspace folder before the consent request appears.
@@ -40,7 +41,8 @@ Agent Secret Request
 Codex (cmd.exe) requests to use AGENTMAIL_API_KEY.
 
 Who:    Codex
-What:   AGENTMAIL_API_KEY
+What:   AGENTMAIL_API_KEY ← project / AGENTMAIL_API_KEY
+        Source <stable-source-id>
 Where:  Project my-project; Worktree preview
 Why:    Send the requested message
 Via:    agentmail.exe send ...
@@ -50,7 +52,7 @@ Choices: Allow once, Allow for 24 hours, Allow always,
 Option:  Apply my decision to all future commands from this agent
 ```
 
-Help the user review the agent and program, variable name, project and worktree, reason, and command. The secret value is never displayed. **Allow once** is the best default for a first expected request. The 24-hour and always choices remember an expected use; the deny choices stop it temporarily or until revoked. Selecting **Apply my decision to all future commands from this agent** disables the one-request choices and broadens a remembered answer to future commands from that agent within the shown project and secret set. A newly requested secret set asks again.
+Help the user review the agent and program, namespace and source ID, source alias and destination variable, project and worktree, reason, and command. The secret value is never displayed. **Allow once** is the best default for a first expected request. The 24-hour and always choices remember an expected use; the deny choices stop it temporarily or until revoked. Selecting **Apply my decision to all future commands from this agent** disables the one-request choices and broadens a remembered answer to future commands from that agent within the shown project and secret set. A newly requested secret set or source asks again.
 
 ## Run a command
 
@@ -100,11 +102,39 @@ Repeat `--secret` when a command needs more than one variable. The child runs in
 
 Use `--output-mode json` before `--` only when structured results are needed. That mode redacts Joydex-injected values, not unrelated values inherited from the caller, and includes `secretsInjected`. Wrapper failures are reported on stderr in default mode.
 
-If the public name is uncertain, list value-free names first. This also prepares the same local requester identity without asking for secret access:
+Discover available namespaces and aliases without requesting secret access. This also prepares the same local requester identity:
 
 ```powershell
+& $helper sources --data-root $dataRoot --client codex --project my-project
 & $helper aliases --data-root $dataRoot --client codex --project my-project
 ```
+
+`sources` groups aliases by namespace and stable source ID. Each alias includes availability and
+`qualifiedAlias` (`<source-id>/ALIAS`). These commands return no values or file paths. Source names
+match without case sensitivity; aliases match exactly. Prefer the discovered source ID when names
+could be confused. Existing source names are their namespaces; no `.env` renaming is needed.
+
+For a source whose discovered namespace is `project`, either request its same-named token or map
+a different source alias to the environment name the program expects:
+
+```powershell
+& $helper exec --data-root $dataRoot --client codex --project my-project `
+  --reason 'Read the requested repository' --source project --secret GH_TOKEN `
+  -- gh.exe repo view
+
+& $helper exec --data-root $dataRoot --client codex --project my-project `
+  --reason 'Read the requested repository' --source project --secret GH_TOKEN=PROJECT_GH_TOKEN `
+  -- gh.exe repo view
+```
+
+For several sources in one command, omit `--source` and use each discovered qualified alias as
+the right side of `--secret DESTINATION=QUALIFIED_ALIAS`. An explicit `--source` constrains all
+mappings to that source, including qualified aliases. Unknown, ambiguous, removed or unavailable
+sources fail without fallback to another credential. Do not retry another namespace to bypass
+a denial. Source-qualified approval identities may require fresh consent after upgrading.
+
+Older installed helpers may reject `sources`, `--source` or mapped `--secret` arguments. Report
+that the Joydex package needs an update; do not emulate source selection by reading `.env` files.
 
 ## Timeouts
 
