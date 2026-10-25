@@ -14,6 +14,18 @@ This attribution applies to the button-map asset in `src/Joydex.App/Assets/cm3-b
 
 The Alpha/WarBRD button-map artwork in `docs/images/joydex-button-map_vpc-constellation-alpha-warbrd.png` was created for Joydex by Mattie Casper and is distributed under the project's MIT License. The rendered documentation image in `docs/images/joydex-alpha-button-map.png` is derived from that original artwork.
 
+## README feature gallery images
+
+The thumbnails under `docs/images/feature-summary` are framed previews for device identification:
+
+- `throttle.png` and `touchscreen.png` use the existing Joydex photographs in `docs/images/20260720_064606c.jpg` and `docs/images/joydex-esp32-4848s040c-in-action.jpg`.
+- `alpha.png` uses the Alpha/WarBRD artwork credited above under the project's MIT License.
+- `voice.png` uses the [Home Assistant Voice Preview Edition product image](https://www.home-assistant.io/images/voice-pe/vpe-top.webp) from [Home Assistant / Nabu Casa](https://www.home-assistant.io/voice-pe/).
+- `index.png` uses the [Pebble Index 01 product image](https://repebble.com/index01-carousel/3-Index01-matte-black-iso_small.jpg) from [Pebble](https://repebble.com/index).
+- `secrets.png` is a Joydex-authored illustration of the approval UI, with no live request or credential data.
+
+The Home Assistant and Pebble product images retain their respective owners' rights and are not relicensed under Joydex's MIT License. Product imagery does not imply endorsement or show those integrations running.
+
 ## HID device access
 
 Joydex uses [HidSharp](https://github.com/SeekHisKingdom/HIDSharp), copyright 2010-2025 James F. Bellinger, under the Apache License 2.0, to communicate with supported HID devices.

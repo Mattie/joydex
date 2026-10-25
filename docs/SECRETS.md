@@ -1,5 +1,10 @@
 # Joydex Secrets
 
+---
+DISCLAIMER: This is NOT a secure solution for your secrets management. It helps you understand what secrets are being accessed/granted to a well-behaving agent and reduces how many .env files you sprinkle in agent directories. It does not protect your secrets fully very well.
+
+---
+
 Joydex Secrets lets a local agent run a specific command with selected secrets added to that child process. The agent requests public names; the broker supplies their values to the approved process environment. Command output passes through normally.
 
 This is a cooperative consent tool for one Windows account. An unrestricted process running as the same user may still be able to open a plaintext `.env` file or use that user's DPAPI data. The approval window does not claim to provide an operating-system sandbox.
