@@ -7,6 +7,14 @@ Why use Alexa when you could have your very own Codex voice companion?
 
 Just use Codex to set it up in a couple of hours and save yourself that extra $230. [See the prompt I started with.](docs/CASE_STUDY.md)
 
+## Joydex at a glance
+
+| [<img src="docs/images/feature-summary/throttle.png" width="180" height="110" alt="CM3 throttle"><br>**CM3 throttle**](#included-cm3-layout)<br><sub>Prompt pickers and task LEDs</sub> | [<img src="docs/images/feature-summary/alpha.png" width="180" height="110" alt="Alpha joystick"><br>**Alpha joystick**](#prompt-pickers-and-multiple-controllers)<br><sub>Custom bindings and floating maps</sub> | [<img src="docs/images/feature-summary/touchscreen.png" width="180" height="110" alt="ESP32 touchscreen"><br>**ESP32 touchscreen**](firmware/esphome/README.md)<br><sub>Task status and touch commands</sub> |
+| :---: | :---: | :---: |
+| [<img src="docs/images/feature-summary/voice.png" width="180" height="110" alt="Voice PE"><br>**Voice PE**](docs/ROOM_VOICE.md)<br><sub>Talk to Codex or a Dot</sub> | [<img src="docs/images/feature-summary/index.png" width="180" height="110" alt="Pebble Index 01"><br>**Pebble Index 01**](docs/PEBBLE_INDEX.md)<br><sub>Send transcriptions to a task</sub> | [<img src="docs/images/feature-summary/secrets.png" width="180" height="110" alt="Secrets management"><br>**Secrets management**](docs/SECRETS.md)<br><sub>Approvals, sources and detached jobs</sub> |
+
+Touchscreen, Room Voice, Index and Secrets integrations are experimental. Select an image for setup.
+
 ## What is Joydex?
 Joydex is a source example for using different hardware devices to work with Codex.
 
