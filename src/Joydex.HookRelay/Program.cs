@@ -74,6 +74,8 @@ internal static partial class HookRelay
                 writer.WriteString("turnId", item.TurnId);
                 writer.WriteString("attentionKey", item.AttentionKey);
                 writer.WriteString("workspace", item.Workspace);
+                writer.WriteString("questionTitle", item.QuestionTitle);
+                writer.WriteBoolean("isQuestionReply", item.IsQuestionReply);
                 writer.WriteNumber("receivedAtUnixMs", item.ReceivedAt.ToUnixTimeMilliseconds());
                 writer.WriteEndObject();
             }
@@ -130,7 +132,10 @@ internal static partial class HookRelay
             for (var index = 0; index < questions.GetArrayLength(); index++)
             {
                 var key = AttentionCorrelation.CreateAsyncQuestion(input.SessionId, input.ToolUseId, index);
-                if (key is not null) yield return Create(CodexLifecycleEvent.AsyncUserInputRequest, key);
+                if (key is not null) yield return Create(CodexLifecycleEvent.AsyncUserInputRequest, key) with
+                {
+                    QuestionTitle = AsyncQuestionHooks.ReadTitle(questions[index]),
+                };
             }
             yield break;
         }
@@ -138,7 +143,10 @@ internal static partial class HookRelay
         var mapped = MapRelayEvent(input.HookEventName!, input.ToolName);
         if (mapped is null) yield break;
         yield return Create(Enum.Parse<CodexLifecycleEvent>(mapped), AttentionCorrelation.Create(
-            input.SessionId, input.TurnId, input.ToolName, input.ToolInput));
+            input.SessionId, input.TurnId, input.ToolName, input.ToolInput)) with
+        {
+            IsQuestionReply = input.HookEventName == "UserPromptSubmit" && AsyncQuestionHooks.IsReplyEnvelope(input.Prompt),
+        };
         if (input.HookEventName == "UserPromptSubmit")
         {
             foreach (var key in AsyncQuestionHooks.ReadAnswerKeys(input.SessionId, input.Prompt))

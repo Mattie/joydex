@@ -8,12 +8,16 @@ Joydex connects physical controls and room devices to explicit Codex actions. It
 A question Codex has successfully sent through `request_user_input_async` and the user has not
 resolved through its question-card reply. The agent may keep working, but the task still
 needs attention. Its task-alert LED remains in the attention state across tool completion, turn
-completion, unrelated prompts and Joydex restart. Each reply resolves only its original call and
-question index. If a question is obsolete or was handled in ordinary chat, the user can select
-the task in Task Alerts and choose **Dismiss questions**. This dismisses only the displayed
-question hashes; newer questions and blocking permissions remain pending. Dismissal changes
-Joydex's alert without answering or removing the question in Codex. Joydex stores hashes of
-those identifiers, never question or answer text.
+completion, same-turn steering and Joydex restart. Each reply resolves only its original call and
+question index. An ordinary user prompt in a later turn supersedes questions from earlier turns;
+a question-card reply preserves the other unanswered questions. **Pending questions** in the tray
+or Task Alerts lists questions across tasks, each with its own **Dismiss** action. Dismissal
+changes only that question's Joydex alert without answering or removing it in Codex. Newer
+questions and blocking permissions remain pending. Joydex persists correlation hashes and turn
+identifiers, never question or answer text; bounded question titles are held only for live display.
+Older questions restored after a restart remain dismissible even when their titles are unavailable.
+Codex's UI-only Skip action currently has no observed hook notification; immediate skip
+synchronization remains an integration gap, not a guaranteed behavior.
 _Avoid_: Blocking tool call, completed question
 
 **Dedicated Voice Endpoint**:

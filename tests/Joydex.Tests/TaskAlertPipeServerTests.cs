@@ -169,6 +169,9 @@ public sealed class TaskAlertPipeServerTests
             await RunRelayAsync(pipeName, sent);
             await WaitUntilAsync(() => TaskAlertStateStore.Load(statePath).Assignments.SingleOrDefault()
                 ?.PendingAsyncQuestions?.Length == 2, AsyncTimeout);
+            Assert.Equal(new[] { "First fixture question", "Second fixture question" },
+                coordinator.GetSnapshot().Assignments.Single().Questions!.Select(question => question.Title).Order());
+            Assert.DoesNotContain("fixture question", File.ReadAllText(statePath));
             var replies = Enumerable.Range(0, 2).Select(index => new
             {
                 questionItemId = JsonSerializer.Serialize(new object[] { "request_user_input_async", "call-fixture", index }),

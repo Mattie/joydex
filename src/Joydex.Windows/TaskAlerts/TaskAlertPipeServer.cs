@@ -182,6 +182,7 @@ public sealed class TaskAlertPipeServer(
                         || message.TurnId?.Length > 512
                         || message.AttentionKey?.Length > 128
                         || message.Workspace?.Length > TaskAlertSuppression.MaximumWorkspaceLength
+                        || message.QuestionTitle?.Length > 1024
                         || !Enum.TryParse<CodexLifecycleEvent>(message.Event, ignoreCase: false, out var lifecycleEvent))
                     {
                         return;
@@ -209,7 +210,9 @@ public sealed class TaskAlertPipeServer(
                         message.TurnId,
                         receivedAt,
                         message.AttentionKey,
-                        message.Workspace));
+                        message.Workspace,
+                        message.QuestionTitle,
+                        message.IsQuestionReply));
                 }
 
                 // Validate the whole packet before publishing it in its original order.
@@ -234,5 +237,7 @@ public sealed class TaskAlertPipeServer(
         [property: JsonPropertyName("turnId")] string? TurnId,
         [property: JsonPropertyName("attentionKey")] string? AttentionKey,
         [property: JsonPropertyName("workspace")] string? Workspace,
-        [property: JsonPropertyName("receivedAtUnixMs")] long ReceivedAtUnixMs);
+        [property: JsonPropertyName("receivedAtUnixMs")] long ReceivedAtUnixMs,
+        [property: JsonPropertyName("questionTitle")] string? QuestionTitle = null,
+        [property: JsonPropertyName("isQuestionReply")] bool IsQuestionReply = false);
 }

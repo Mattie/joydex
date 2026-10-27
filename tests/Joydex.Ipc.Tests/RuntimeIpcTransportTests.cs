@@ -4,6 +4,7 @@ using System.IO.Pipes;
 using System.Security.Cryptography;
 using Joydex.Contracts;
 using Joydex.Core.Input;
+using Joydex.Core.TaskAlerts;
 using StreamJsonRpc;
 
 namespace Joydex.Ipc.Tests;
@@ -55,7 +56,19 @@ public sealed class RuntimeIpcTransportTests : IDisposable
             {
                 acceptedContext = context;
                 acceptedClientKind = authorizedClientKind;
-                implementation = new FakeRuntimeServer(endpoint, client);
+                var key = new string('A', 64);
+                implementation = new FakeRuntimeServer(endpoint, client)
+                {
+                    Snapshot = RuntimeIpcTestData.Snapshot(endpoint, cursor: 40) with
+                    {
+                        Ui = new RuntimeUiSnapshot(TaskAlerts: new RuntimeTaskAlertSnapshot(
+                            true, [new TaskAlertAssignment(1, "session", "turn", TaskAlertState.Approval,
+                                DateTimeOffset.UtcNow, PendingAsyncQuestions: [key],
+                                Questions: [new(key, "Fixture question", DateTimeOffset.UtcNow, "turn")])],
+                            0, 2, false, [], [], TaskAlertLedOptions.CreateDefault(),
+                            new(RuntimeTaskAlertHookState.Installed, null))),
+                    },
+                };
                 return ValueTask.FromResult<IRuntimeRpcServer>(implementation);
             });
         using var process = Process.GetCurrentProcess();
@@ -83,6 +96,9 @@ public sealed class RuntimeIpcTransportTests : IDisposable
         Assert.Equal(implementation!.Snapshot.EngineEpoch, snapshot.EngineEpoch);
         Assert.Equal(implementation.Snapshot.EventCursor, snapshot.EventCursor);
         Assert.Equal(endpoint.DataRootId, snapshot.Identity.DataRootId);
+        var pendingQuestion = Assert.Single(Assert.Single(snapshot.Ui!.TaskAlerts!.Assignments).Questions!);
+        Assert.Equal("Fixture question", pendingQuestion.Title);
+        Assert.Equal("turn", pendingQuestion.TurnId);
         Assert.Equal(
             SettingsPrepareStatus.NoChanges,
             (await connection.PrepareSettingsAsync(
