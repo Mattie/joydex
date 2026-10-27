@@ -1,5 +1,11 @@
 namespace Joydex.Core.TaskAlerts;
 
+/// <summary>Encoded packet limit shared by the hook sender and task-alert receiver.</summary>
+public static class TaskAlertTransportLimits
+{
+    public const int MaximumMessageBytes = 256 * 1024;
+}
+
 public enum TaskAlertState
 {
     Running,

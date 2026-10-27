@@ -11,7 +11,7 @@ public sealed class TaskAlertPipeServer(
     string pipeName = TaskAlertPipeServer.DefaultPipeName) : IAsyncDisposable
 {
     public const string DefaultPipeName = "Joydex.TaskAlerts.v1";
-    private const int MaximumMessageBytes = 256 * 1024;
+    private const int MaximumMessageBytes = TaskAlertTransportLimits.MaximumMessageBytes;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly HashSet<Task> _connections = [];
     private readonly object _connectionsLock = new();
@@ -174,6 +174,7 @@ public sealed class TaskAlertPipeServer(
                     : [root.Deserialize<RelayMessage>()];
                 if (messages.Length is < 1 or > 33) return;
                 var events = new List<TaskAlertEvent>(messages.Length);
+                var workspaces = new Dictionary<string, string>(StringComparer.Ordinal);
                 foreach (var message in messages)
                 {
                     if (message is null
@@ -204,13 +205,17 @@ public sealed class TaskAlertPipeServer(
                     {
                         return;
                     }
+                    // A size-constrained batch may send a repeated workspace only once per task.
+                    var workspace = message.Workspace;
+                    if (workspace is null) workspaces.TryGetValue(message.SessionId, out workspace);
+                    else workspaces[message.SessionId] = workspace;
                     events.Add(new TaskAlertEvent(
                         lifecycleEvent,
                         message.SessionId,
                         message.TurnId,
                         receivedAt,
                         message.AttentionKey,
-                        message.Workspace,
+                        workspace,
                         message.QuestionTitle,
                         message.IsQuestionReply));
                 }
