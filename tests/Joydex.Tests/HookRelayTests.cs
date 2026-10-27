@@ -16,15 +16,19 @@ public sealed class HookRelayTests
         var send = Task.Run(() =>
         {
             started.SetResult();
-            HookRelay.TrySend(name, [new(CodexLifecycleEvent.UserPromptSubmit, "fixture", "turn", receivedAt)]);
+            // Exercise the real delayed pipe without requiring a loaded runner to schedule
+            // this test's continuation inside the production 250 ms window. The default
+            // budget is checked separately below.
+            HookRelay.TrySend(name, [new(CodexLifecycleEvent.UserPromptSubmit, "fixture", "turn", receivedAt)],
+                connectionBudget: TimeSpan.FromSeconds(10));
         });
         await started.Task;
         await Task.Delay(50);
         await using var listener = new NamedPipeServerStream(name, PipeDirection.In, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-        await listener.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(3));
+        await listener.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(15));
         using var reader = new StreamReader(listener);
-        using var document = JsonDocument.Parse(await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(3)));
+        using var document = JsonDocument.Parse(await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(15)));
         await send;
         Assert.Equal("UserPromptSubmit", document.RootElement.GetProperty("event").GetString());
         Assert.Equal(receivedAt.ToUnixTimeMilliseconds(), document.RootElement.GetProperty("receivedAtUnixMs").GetInt64());

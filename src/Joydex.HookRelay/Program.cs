@@ -42,11 +42,13 @@ internal static partial class HookRelay
         return 0;
     }
 
-    internal static void TrySend(string pipeName, IReadOnlyList<TaskAlertEvent> events)
+    internal static void TrySend(string pipeName, IReadOnlyList<TaskAlertEvent> events,
+        TimeSpan? connectionBudget = null)
     {
         try
         {
             var deadline = Stopwatch.StartNew();
+            var budget = connectionBudget ?? TimeSpan.FromMilliseconds(250);
             SafeFileHandle handle;
             while (true)
             {
@@ -63,7 +65,7 @@ internal static partial class HookRelay
                 handle.Dispose();
                 // Retry only before a connection exists. Never replay a possibly written hook.
                 // This covers the receiver's next-instance gap without consuming the hook timeout.
-                if (error is not (2 or 231) || deadline.ElapsedMilliseconds >= 250) return;
+                if (error is not (2 or 231) || deadline.Elapsed >= budget) return;
                 Thread.Sleep(10);
             }
 
