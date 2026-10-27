@@ -10,6 +10,35 @@ public sealed class TaskAlertReconciliationTests
     private static readonly string Session = Guid.NewGuid().ToString("D");
     private static readonly string QuestionKey = new('A', 64);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ANewTurnInTheSameSecondAsThePreviousStopCanRecoverItsMissedStart(bool graceElapsed)
+    {
+        var pool = new TaskAlertPool();
+        var second = DateTimeOffset.FromUnixTimeSeconds(Now.AddMinutes(-1).ToUnixTimeSeconds());
+        pool.Apply(new(CodexLifecycleEvent.UserPromptSubmit, Session, "previous", second.AddMinutes(-1)));
+        pool.Apply(new(CodexLifecycleEvent.Stop, Session, "previous", second.AddMilliseconds(700)));
+        if (graceElapsed) pool.Advance(second.AddSeconds(3));
+        Assert.Equal(second.AddMilliseconds(700), Assert.Single(pool.Assignments).UpdatedAt);
+        Assert.True(pool.Reconcile(new(Session, "next", TaskAlertState.Running, second, null), Now));
+        Assert.Equal("next", Assert.Single(pool.Assignments).TurnId);
+        Assert.Equal(TaskAlertState.Running, Assert.Single(pool.Assignments).State);
+    }
+
+    [Fact]
+    public async Task AConfirmedIgnoredWorkspaceRemovesALegacyAssignmentWithoutCwd()
+    {
+        using var scratch = new Scratch();
+        await using var coordinator = new TaskAlertCoordinator(scratch.Preferences);
+        coordinator.AddSuppression(TaskAlertSuppressionScope.Workspace, scratch.Root);
+        coordinator.TryPublish(new(CodexLifecycleEvent.UserPromptSubmit, Session, "turn", Now));
+        await UntilAsync(() => coordinator.GetSnapshot().Assignments.Count == 1);
+        Assert.Equal(1, coordinator.Reconcile(coordinator.CaptureReconciliationCheckpoint(), new([
+            new(Session, "turn", TaskAlertState.Running, Now.AddMinutes(-1), null, scratch.Root)])));
+        Assert.Empty(coordinator.GetSnapshot().Assignments);
+    }
+
     [Fact]
     public async Task PolicyChangesInvalidateAnInFlightScanAndUnrelatedHooksDoNot()
     {
@@ -229,6 +258,10 @@ public sealed class TaskAlertReconciliationTests
         }]));
         var assignment = Assert.Single(coordinator.GetSnapshot().Assignments);
         Assert.True(coordinator.AcknowledgeTerminal(assignment.Slot, Session));
+        Assert.Equal(0, coordinator.Reconcile(coordinator.CaptureReconciliationCheckpoint(), new([active with
+        {
+            TurnId = "even-older", StartedAt = Now.AddMinutes(-3),
+        }])));
         Assert.Equal(0, coordinator.Reconcile(coordinator.CaptureReconciliationCheckpoint(), new([active])));
         Assert.Empty(coordinator.GetSnapshot().Assignments);
         Assert.Equal(0, coordinator.Reconcile(coordinator.CaptureReconciliationCheckpoint(), new([active with

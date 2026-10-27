@@ -320,10 +320,10 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         TaskAlertSnapshot? snapshot = null;
         lock (_sync)
         {
-            var turnId = _pool.Assignments.FirstOrDefault(item => item.Slot == slot && item.SessionId == sessionId)?.TurnId;
+            var acknowledged = _pool.Assignments.FirstOrDefault(item => item.Slot == slot && item.SessionId == sessionId);
             if (_pool.AcknowledgeTerminal(slot, sessionId, DateTimeOffset.UtcNow))
             {
-                _acknowledgedTurns[sessionId] = (turnId, DateTimeOffset.UtcNow);
+                _acknowledgedTurns[sessionId] = (acknowledged!.TurnId, acknowledged.UpdatedAt);
                 _sessionRevisions[sessionId] = ++_reconciliationRevision;
                 TrySaveStateUnsafe();
                 snapshot = SnapshotUnsafe();
@@ -380,10 +380,22 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
                 var workspace = TaskAlertSuppression.NormalizeWorkspace(observation.Workspace);
                 var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace)
                     ?? (TaskAlertSuppression.IsWorkspaceKey(observation.WorkspaceKey) ? observation.WorkspaceKey : before?.WorkspaceKey);
-                if (IsSuppressedUnsafe(observation.SessionId, workspaceKey)
-                    || before is null && (workspaceKey is null || _acknowledgedTurns.TryGetValue(observation.SessionId, out var acknowledged)
+                if (IsSuppressedUnsafe(observation.SessionId, workspaceKey))
+                {
+                    // A legacy hook may have omitted cwd. A fresh Desktop observation can
+                    // reveal that its existing light belongs to an ignored workspace.
+                    if (before is not null && _pool.Reconcile(observation, DateTimeOffset.UtcNow))
+                    {
+                        _pool.RemoveAssignments(item => item.SessionId == observation.SessionId, DateTimeOffset.UtcNow);
+                        _sessionRevisions[observation.SessionId] = ++_reconciliationRevision;
+                        applied = true;
+                        visibleChanges++;
+                    }
+                    continue;
+                }
+                if (before is null && (workspaceKey is null || _acknowledgedTurns.TryGetValue(observation.SessionId, out var acknowledged)
                         && (acknowledged.TurnId == observation.TurnId
-                            || acknowledged.TurnId is null && observation.StartedAt <= acknowledged.At))) continue;
+                            || observation.StartedAt.ToUnixTimeSeconds() < acknowledged.At.ToUnixTimeSeconds()))) continue;
                 if (!_pool.Reconcile(observation, DateTimeOffset.UtcNow)) continue;
                 applied = true;
                 _sessionRevisions[observation.SessionId] = ++_reconciliationRevision;

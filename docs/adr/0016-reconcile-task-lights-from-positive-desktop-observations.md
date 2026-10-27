@@ -20,6 +20,8 @@ attention and become Fault. Terminal observations never allocate historical idle
 unavailable, contradictory or unfamiliar states preserve the existing assignment. A legacy hook
 without a turn ID requires an observed turn spanning that hook's timestamp. Generic waiting
 flags cannot identify questions or user dismissals and do not create attention.
+Cross-turn timestamp ordering uses whole seconds, matching Desktop metadata precision, so a
+fast next turn is not rejected solely because the prior hook had a millisecond timestamp.
 
 Each scan captures per-task hook revisions and the current ignore/enable policy revision before
 reading Desktop. A hook accepted during the read, including one still queued for reduction,

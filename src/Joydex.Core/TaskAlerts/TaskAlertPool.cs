@@ -274,7 +274,6 @@ public sealed class TaskAlertPool
                 assignment = assignment with
                 {
                     State = TaskAlertState.Completed,
-                    UpdatedAt = completeAfter,
                     CompleteAfter = null,
                 };
                 _assignments[pair.Key] = assignment;
@@ -386,7 +385,10 @@ public sealed class TaskAlertPool
         var sameTurn = existing?.TurnId == observation.TurnId
             || existing is { TurnId: null } && observation.StartedAt <= existing.UpdatedAt
                 && (active || observation.CompletedAt?.ToUnixTimeSeconds() >= existing.UpdatedAt.ToUnixTimeSeconds());
-        if (existing is not null && !sameTurn && observation.StartedAt <= existing.UpdatedAt) return false;
+        // Desktop timestamps have whole-second precision; millisecond hook receipts in
+        // that same second cannot establish that the observed latest turn is older.
+        if (existing is not null && !sameTurn
+            && observation.StartedAt.ToUnixTimeSeconds() < existing.UpdatedAt.ToUnixTimeSeconds()) return false;
         if (active && sameTurn && (existing!.CompleteAfter is not null
             || existing.State is TaskAlertState.Completed or TaskAlertState.Fault)) return false;
         if (existing is null)
