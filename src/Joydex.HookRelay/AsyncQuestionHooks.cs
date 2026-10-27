@@ -7,6 +7,14 @@ internal static class AsyncQuestionHooks
     private const string OpeningTag = "<send_user_message_question_reply>";
     private const string ClosingTag = "</send_user_message_question_reply>";
 
+    internal static bool IsReplyEnvelope(string? prompt) => prompt?.Trim() is { } text
+        && text.StartsWith(OpeningTag, StringComparison.Ordinal)
+        && text.EndsWith(ClosingTag, StringComparison.Ordinal);
+
+    internal static string? ReadTitle(JsonElement question) => question.ValueKind == JsonValueKind.Object
+        && question.TryGetProperty("title", out var title) && title.ValueKind == JsonValueKind.String
+        && title.GetString() is { } text ? text[..Math.Min(text.Length, 1024)] : null;
+
     internal static bool WasAccepted(JsonElement response)
     {
         if (response.ValueKind == JsonValueKind.String)

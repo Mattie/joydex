@@ -29,7 +29,7 @@ internal sealed class TaskAlertsForm : ThemedForm
     private readonly ModernDataGridView _events;
     private readonly Label _selectedSource;
     private readonly RoundedButton _ignoreSelected;
-    private readonly RoundedButton _dismissSelectedQuestions;
+    private readonly RoundedButton _pendingQuestions;
     private readonly RoundedButton _ignoredSources;
     private readonly Label _hookStatus;
     private readonly Label _ledOutput;
@@ -44,7 +44,6 @@ internal sealed class TaskAlertsForm : ThemedForm
     private bool _snapshotUpdateScheduled;
     private bool _eventStreamSelected;
     private bool _updating;
-    private bool _dismissingQuestions;
     private IReadOnlyList<TaskAlertAssignment> _displayedAssignments = [];
     private bool _keepInitialSelectionForDocumentation;
     private int _recoveringPendingOperations;
@@ -386,15 +385,18 @@ internal sealed class TaskAlertsForm : ThemedForm
             Text = "Ignore selected ▾",
         };
         _ignoreSelected.Click += (_, _) => ShowIgnoreMenu();
-        _dismissSelectedQuestions = new RoundedButton
+        _pendingQuestions = new RoundedButton
         {
-            AccessibleName = "Dismiss selected task question alerts",
-            AccessibleDescription = "Clears the displayed question alerts without answering them or ignoring future alerts.",
-            Enabled = false,
+            AccessibleName = "Show pending task questions",
+            AccessibleDescription = "Shows pending questions from every task with an individual dismissal action.",
             Margin = new Padding(0, 0, 8, 0),
-            Text = "Dismiss questions",
+            Text = "Pending questions…",
         };
-        _dismissSelectedQuestions.Click += OnDismissQuestions;
+        _pendingQuestions.Click += (_, _) =>
+        {
+            using var questions = new PendingTaskQuestionsForm(_getSnapshot, _dismissQuestions);
+            questions.ShowDialog(this);
+        };
         _ignoredSources = new RoundedButton
         {
             AccessibleName = "Manage ignored Codex task status sources",
@@ -402,7 +404,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         };
         _ignoredSources.Click += (_, _) => ShowIgnoredSources();
         actionBar.Controls.Add(_selectedSource, 0, 0);
-        actionBar.Controls.Add(_dismissSelectedQuestions, 1, 0);
+        actionBar.Controls.Add(_pendingQuestions, 1, 0);
         actionBar.Controls.Add(_ignoreSelected, 2, 0);
         actionBar.Controls.Add(_ignoredSources, 3, 0);
         viewerLayout.Controls.Add(actionBar, 0, 1);
@@ -862,9 +864,8 @@ internal sealed class TaskAlertsForm : ThemedForm
     {
         var target = GetSelectedTarget();
         _ignoreSelected.Enabled = target is not null;
-        _dismissSelectedQuestions.Enabled = !_dismissingQuestions && target is not null
-            && _displayedAssignments.Any(assignment => assignment.SessionId == target.SessionId
-                && assignment.PendingAsyncQuestions is { Length: > 0 });
+        var questionCount = _displayedAssignments.Sum(assignment => assignment.PendingAsyncQuestions?.Length ?? 0);
+        _pendingQuestions.Text = $"Pending questions ({questionCount})…";
         if (target is null)
         {
             _selectedSource.Text = "Select a row to manage its signaling.";
@@ -951,32 +952,6 @@ internal sealed class TaskAlertsForm : ThemedForm
         _ignoreMenu.Items.Add(taskItem);
         _ignoreMenu.Items.Add(workspaceItem);
         _ignoreMenu.Show(_ignoreSelected, new Point(0, _ignoreSelected.Height));
-    }
-
-    private async void OnDismissQuestions(object? sender, EventArgs eventArgs)
-    {
-        var target = GetSelectedTarget();
-        var assignment = _displayedAssignments.FirstOrDefault(item => item.SessionId == target?.SessionId);
-        if (assignment?.PendingAsyncQuestions is not { Length: > 0 } keys) return;
-        // Capture the displayed hashes before awaiting: a later question must keep its alert.
-        var selection = new RuntimeTaskAlertQuestionDismissal(assignment.Slot, assignment.SessionId, keys.ToArray());
-        try
-        {
-            _dismissingQuestions = true;
-            _dismissSelectedQuestions.Enabled = false;
-            await _dismissQuestions(selection, Guid.NewGuid());
-            UpdateSnapshot(_getSnapshot());
-        }
-        catch (Exception exception)
-        {
-            MessageBox.Show(this, exception.Message, "Could not dismiss question alerts",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        finally
-        {
-            _dismissingQuestions = false;
-            UpdateSuppressionActions();
-        }
     }
 
     private async void IgnoreSelectedTask(SuppressionTarget target)

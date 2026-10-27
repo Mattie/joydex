@@ -7,7 +7,7 @@ namespace Joydex.Tests;
 public sealed class TaskAlertsFormTests
 {
     [Fact]
-    public async Task DismissButtonClearsSelectedQuestionAndPersistsWithoutIgnoringTheTask()
+    public async Task PendingQuestionsAreAvailableWithoutSelectingATaskAndDismissIndividually()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"joydex-question-dismiss-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
@@ -26,16 +26,19 @@ public sealed class TaskAlertsFormTests
                 Path.Combine(directory, "Joydex.HookRelay.exe"), Path.Combine(directory, "profile.json"),
                 _ => Task.CompletedTask);
             form.SetSnapshotForDocumentation(coordinator.GetSnapshot());
-            var button = FindControl<RoundedButton>(form, "Dismiss selected task question alerts");
-            Assert.False(button.Enabled);
-            var grid = FindControl<DataGridView>(form, "Current task-alert assignments");
-            grid.Rows[0].Selected = true;
-            grid.CurrentCell = grid.Rows[0].Cells[0];
+            var button = FindControl<RoundedButton>(form, "Show pending task questions");
             Assert.True(button.Enabled);
-            typeof(Control).GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
-                .Invoke(button, [EventArgs.Empty]);
+            Assert.Equal("Pending questions (1)…", button.Text);
+            var grid = FindControl<DataGridView>(form, "Current task-alert assignments");
+            Assert.Empty(grid.SelectedRows.Cast<DataGridViewRow>());
+            using var questions = new PendingTaskQuestionsForm(coordinator.GetSnapshot, (selection, _) =>
+            {
+                coordinator.DismissQuestions(selection.Slot, selection.SessionId, selection.QuestionKeys);
+                return Task.CompletedTask;
+            });
+            await questions.DismissQuestionAsync("session", new string('A', 64));
             Assert.Equal(TaskAlertState.Running, Assert.Single(coordinator.GetSnapshot().Assignments).State);
-            Assert.False(button.Enabled);
+            Assert.True(button.Enabled);
             Assert.Empty(Assert.Single(TaskAlertStateStore.Load(statePath).Assignments).PendingAsyncQuestions!);
             Assert.Empty(coordinator.GetSnapshot().Suppressions!);
         }

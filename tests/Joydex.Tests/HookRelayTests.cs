@@ -42,11 +42,8 @@ public sealed class HookRelayTests
             Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
             Assert.Single(restored.CaptureState().Assignments.Single().PendingAsyncQuestions!);
 
-            // An unknown reply and an ordinary new prompt cannot dismiss the outstanding card.
+            // An unknown reply cannot dismiss the outstanding card.
             foreach (var item in HookRelay.BuildEvents(Reply(sent, "other-call", 1), now.AddSeconds(7))) restored.Apply(item);
-            foreach (var item in HookRelay.BuildEvents(sent with
-                { HookEventName = "UserPromptSubmit", ToolName = null, Prompt = "Another request" }, now.AddSeconds(8)))
-                restored.Apply(item);
             Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
             foreach (var item in HookRelay.BuildEvents(Reply(sent, "call-fixture", 1), now.AddSeconds(9))) restored.Apply(item);
             Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);

@@ -51,6 +51,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _promptPickersItem;
     private readonly ToolStripMenuItem _taskAlertsItem;
     private readonly ToolStripMenuItem _taskAlertsStatusItem;
+    private readonly ToolStripMenuItem _pendingQuestionsItem;
     private readonly ToolStripMenuItem _modeItem;
     private readonly ToolStripMenuItem _testControlsItem;
     private readonly ToolStripMenuItem _startAtLoginItem;
@@ -77,6 +78,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
     private RuntimeSettingsWriter? _settingsWriter;
     private RoomVoiceForm? _voiceForm;
     private TaskAlertsForm? _taskAlertsForm;
+    private PendingTaskQuestionsForm? _pendingQuestionsForm;
     private bool _taskAlertsShowPending;
     private DryRunActivityForm? _activityForm;
     private PromptPickerEditorForm? _promptPickerEditor;
@@ -241,6 +243,14 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
         {
             Enabled = false,
         };
+        _pendingQuestionsItem = new ToolStripMenuItem("Pending questions…", image: null, (_, _) =>
+        {
+            if (_pendingQuestionsForm is null || _pendingQuestionsForm.IsDisposed)
+                _pendingQuestionsForm = new PendingTaskQuestionsForm(
+                    () => _taskAlerts.Current.Snapshot, DismissPendingQuestionAsync);
+            _pendingQuestionsForm.RefreshQuestions();
+            ShowAndActivate(_pendingQuestionsForm);
+        });
 
         if (!_demoMode)
         {
@@ -312,6 +322,7 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
                     _connectionItem,
                     _controllersItem,
                     _taskAlertsItem,
+                    _pendingQuestionsItem,
                     _voiceItem,
                     _pluginsItem,
                     new ToolStripSeparator(),
@@ -1525,11 +1536,20 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
 
     private void OnTaskAlertsChanged(object? sender, RuntimeTaskAlertsPresentationState state)
     {
+        var count = state.Snapshot.Assignments.Sum(assignment => assignment.PendingAsyncQuestions?.Length ?? 0);
+        _pendingQuestionsItem.Text = $"Pending questions ({count})…";
         _taskAlertsItem.Checked = state.Snapshot.Enabled;
         _taskAlertsItem.ToolTipText = state.LastAction?.Detail
             ?? state.Failure?.Message
             ?? state.Hooks.Detail
             ?? "Task alerts";
+    }
+
+    private async Task DismissPendingQuestionAsync(RuntimeTaskAlertQuestionDismissal selection, Guid operationId)
+    {
+        await RuntimeTaskAlertsRecoveryPolicy.ReconcileBeforeNewActionAsync(_taskAlerts).ConfigureAwait(true);
+        var result = await _taskAlerts.DismissQuestionsAsync(selection, operationId).ConfigureAwait(true);
+        if (!result.Succeeded) throw new InvalidOperationException(result.Detail);
     }
 
     private void OnTaskAlertsStatus(object? sender, EventArgs eventArgs)
@@ -1843,6 +1863,8 @@ internal sealed class RuntimeTrayApplicationContext : ApplicationContext
             }
             _taskAlertsForm?.Close();
             _taskAlertsForm?.Dispose();
+            _pendingQuestionsForm?.Close();
+            _pendingQuestionsForm?.Dispose();
             _activityForm?.Close();
             _activityForm?.Dispose();
             _voiceForm?.CloseWorkspace();

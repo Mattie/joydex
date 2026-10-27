@@ -1,5 +1,11 @@
 namespace Joydex.Core.TaskAlerts;
 
+/// <summary>Encoded packet limit shared by the hook sender and task-alert receiver.</summary>
+public static class TaskAlertTransportLimits
+{
+    public const int MaximumMessageBytes = 256 * 1024;
+}
+
 public enum TaskAlertState
 {
     Running,
@@ -26,7 +32,15 @@ public sealed record TaskAlertEvent(
     string? TurnId,
     DateTimeOffset ReceivedAt,
     string? AttentionKey = null,
-    string? Workspace = null);
+    string? Workspace = null,
+    string? QuestionTitle = null,
+    bool IsQuestionReply = false);
+
+/// <summary>Display-only question metadata. Titles are never written to task-alert state.</summary>
+public sealed record TaskAlertPendingQuestion(string Key, string? Title, DateTimeOffset? RequestedAt, string? TurnId = null);
+
+/// <summary>Restart-safe question origin metadata without question or answer content.</summary>
+public sealed record TaskAlertQuestionOrigin(string Key, string? TurnId);
 
 public sealed record TaskAlertAssignment(
     int Slot,
@@ -37,7 +51,8 @@ public sealed record TaskAlertAssignment(
     DateTimeOffset? CompleteAfter = null,
     string? WorkspaceKey = null,
     string? Workspace = null,
-    string[]? PendingAsyncQuestions = null);
+    string[]? PendingAsyncQuestions = null,
+    TaskAlertPendingQuestion[]? Questions = null);
 
 /// <summary>
 /// Captures the task assignments and pending approval correlations that must
@@ -59,7 +74,8 @@ public sealed record TaskAlertStoredAssignment(
     TaskAlertCorrelationCount[] CorrelatedAttention,
     int UncorrelatedAttentionCount,
     string? WorkspaceKey = null,
-    string[]? PendingAsyncQuestions = null);
+    string[]? PendingAsyncQuestions = null,
+    TaskAlertQuestionOrigin[]? QuestionOrigins = null);
 
 /// <summary>Stores one privacy-preserving correlation hash and its pending count.</summary>
 public sealed record TaskAlertCorrelationCount(string Key, int Count);

@@ -19,7 +19,11 @@ public sealed class TaskAlertPool
     public IReadOnlyList<TaskAlertAssignment> Assignments => _assignments.Values
         .OrderBy(assignment => assignment.Slot)
         .Select(assignment => HasAsyncQuestions(assignment.SessionId)
-            ? assignment with { PendingAsyncQuestions = _pendingAttention[assignment.SessionId].CaptureAsyncQuestions() }
+            ? assignment with
+            {
+                PendingAsyncQuestions = _pendingAttention[assignment.SessionId].CaptureAsyncQuestions(),
+                Questions = _pendingAttention[assignment.SessionId].CaptureQuestionDetails(),
+            }
             : assignment)
         .ToArray();
 
@@ -40,7 +44,8 @@ public sealed class TaskAlertPool
                     pending?.CaptureCorrelated() ?? [],
                     pending?.UncorrelatedCount ?? 0,
                     assignment.WorkspaceKey,
-                    pending?.CaptureAsyncQuestions() ?? []);
+                    pending?.CaptureAsyncQuestions() ?? [],
+                    pending?.CaptureQuestionOrigins() ?? []);
             })
             .ToArray());
 
@@ -88,7 +93,7 @@ public sealed class TaskAlertPool
             var pending = PendingAttention.Restore(
                 stored.CorrelatedAttention,
                 stored.UncorrelatedAttentionCount,
-                stored.PendingAsyncQuestions);
+                stored.PendingAsyncQuestions, stored.QuestionOrigins);
             if (pending.Any)
             {
                 if (stored.State != TaskAlertState.Approval)
@@ -195,6 +200,15 @@ public sealed class TaskAlertPool
             ClearBlockingAttention(taskEvent.SessionId);
         }
 
+        // A normal prompt starting a later turn supersedes the earlier turn's question cards.
+        // Card replies still resolve only their exact keys, including replies arriving in a new turn.
+        if (taskEvent.Event == CodexLifecycleEvent.UserPromptSubmit && !taskEvent.IsQuestionReply
+            && taskEvent.TurnId is not null
+            && _pendingAttention.TryGetValue(taskEvent.SessionId, out var previousAttention))
+        {
+            previousAttention.ClearQuestionsFromEarlierTurns(taskEvent.TurnId, existing.TurnId);
+        }
+
         var updated = taskEvent.Event switch
         {
             CodexLifecycleEvent.UserPromptSubmit => existing with
@@ -244,7 +258,8 @@ public sealed class TaskAlertPool
         }
         else if (taskEvent.Event == CodexLifecycleEvent.AsyncUserInputRequest)
         {
-            GetPendingAttention(taskEvent.SessionId).AddAsyncQuestion(taskEvent.AttentionKey!);
+            GetPendingAttention(taskEvent.SessionId).AddAsyncQuestion(
+                taskEvent.AttentionKey!, taskEvent.QuestionTitle, taskEvent.ReceivedAt, taskEvent.TurnId);
         }
         else if (taskEvent.Event == CodexLifecycleEvent.Stop)
         {
@@ -601,16 +616,30 @@ public sealed class TaskAlertPool
     private sealed class PendingAttention
     {
         private readonly Dictionary<string, int> _correlated = new(StringComparer.Ordinal);
-        private readonly HashSet<string> _asyncQuestions = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, TaskAlertPendingQuestion> _asyncQuestions = new(StringComparer.Ordinal);
         private int _uncorrelated;
 
         public bool Any => _uncorrelated > 0 || _correlated.Count > 0 || HasAsyncQuestions;
         public bool HasAsyncQuestions => _asyncQuestions.Count > 0;
 
-        public string[] CaptureAsyncQuestions() => _asyncQuestions.Order(StringComparer.Ordinal).ToArray();
+        public string[] CaptureAsyncQuestions() => _asyncQuestions.Keys.Order(StringComparer.Ordinal).ToArray();
 
-        public void AddAsyncQuestion(string key) => _asyncQuestions.Add(key);
+        public TaskAlertPendingQuestion[] CaptureQuestionDetails() => _asyncQuestions.Values
+            .OrderBy(question => question.RequestedAt).ThenBy(question => question.Key, StringComparer.Ordinal).ToArray();
+
+        public TaskAlertQuestionOrigin[] CaptureQuestionOrigins() => _asyncQuestions.Values
+            .Select(question => new TaskAlertQuestionOrigin(question.Key, question.TurnId)).ToArray();
+
+        public void AddAsyncQuestion(string key, string? title, DateTimeOffset requestedAt, string? turnId) =>
+            _asyncQuestions.TryAdd(key, new TaskAlertPendingQuestion(key,
+                string.IsNullOrWhiteSpace(title) ? null : title[..Math.Min(title.Length, 1024)], requestedAt, turnId));
         public bool CompleteAsyncQuestion(string key) => _asyncQuestions.Remove(key);
+        public void ClearQuestionsFromEarlierTurns(string turnId, string? legacyTurnId)
+        {
+            foreach (var question in _asyncQuestions.Values.ToArray())
+                if ((question.TurnId ?? legacyTurnId) is { } originalTurn && originalTurn != turnId)
+                    _asyncQuestions.Remove(question.Key);
+        }
 
         public void ClearBlocking()
         {
@@ -628,7 +657,7 @@ public sealed class TaskAlertPool
         public static PendingAttention Restore(
             TaskAlertCorrelationCount[] correlations,
             int uncorrelatedCount,
-            string[]? asyncQuestions)
+            string[]? asyncQuestions, TaskAlertQuestionOrigin[]? questionOrigins)
         {
             if (correlations is null || uncorrelatedCount < 0)
             {
@@ -638,8 +667,17 @@ public sealed class TaskAlertPool
             var pending = new PendingAttention { _uncorrelated = uncorrelatedCount };
             foreach (var key in asyncQuestions ?? [])
             {
-                if (!IsSha256Hash(key) || !pending._asyncQuestions.Add(key))
+                if (!IsSha256Hash(key) || !pending._asyncQuestions.TryAdd(key, new(key, null, null)))
                     throw new InvalidDataException("The task-alert state contains an invalid async question key.");
+            }
+            var origins = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var origin in questionOrigins ?? [])
+            {
+                if (origin is null || !IsSha256Hash(origin.Key) || !origins.Add(origin.Key)
+                    || !pending._asyncQuestions.TryGetValue(origin.Key, out var question)
+                    || origin.TurnId?.Length > 512)
+                    throw new InvalidDataException("The task-alert state contains an invalid question origin.");
+                pending._asyncQuestions[origin.Key] = question with { TurnId = origin.TurnId };
             }
             foreach (var correlation in correlations)
             {

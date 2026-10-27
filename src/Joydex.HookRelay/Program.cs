@@ -45,6 +45,8 @@ internal static partial class HookRelay
     {
         try
         {
+            var packet = SerializePacket(events);
+            if (packet.Length > TaskAlertTransportLimits.MaximumMessageBytes) return;
             var handle = CreateFile(
                 $"\\\\.\\pipe\\{pipeName}",
                 genericWrite: 0x40000000,
@@ -62,7 +64,31 @@ internal static partial class HookRelay
             // CreateFile performs one immediate open. ERROR_FILE_NOT_FOUND and
             // ERROR_PIPE_BUSY both drop inside the 20 ms connection budget.
             using var pipe = new FileStream(handle, FileAccess.Write, bufferSize: 4096, isAsync: false);
-            using var writer = new Utf8JsonWriter(pipe);
+            pipe.Write(packet);
+        }
+        catch (Exception exception) when (exception is IOException or TimeoutException)
+        {
+            // Joydex is optional. Do not retry when it is absent or busy.
+        }
+    }
+
+    /// <summary>Fits a whole hook batch without dropping question identities or reply markers.</summary>
+    internal static byte[] SerializePacket(IReadOnlyList<TaskAlertEvent> events)
+    {
+        var packet = EncodePacket(events, includeTitles: true, compactWorkspaces: false);
+        if (packet.Length > TaskAlertTransportLimits.MaximumMessageBytes)
+            packet = EncodePacket(events, includeTitles: false, compactWorkspaces: false);
+        if (packet.Length > TaskAlertTransportLimits.MaximumMessageBytes)
+            packet = EncodePacket(events, includeTitles: false, compactWorkspaces: true);
+        return packet;
+    }
+
+    private static byte[] EncodePacket(IReadOnlyList<TaskAlertEvent> events, bool includeTitles, bool compactWorkspaces)
+    {
+        using var output = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(output))
+        {
+            var workspaces = new Dictionary<string, string?>(StringComparer.Ordinal);
             // One hook uses one connection. Immediate, best-effort opens could otherwise drop
             // later questions while the receiver is preparing its next pipe instance.
             if (events.Count > 1) writer.WriteStartArray();
@@ -73,17 +99,20 @@ internal static partial class HookRelay
                 writer.WriteString("sessionId", item.SessionId);
                 writer.WriteString("turnId", item.TurnId);
                 writer.WriteString("attentionKey", item.AttentionKey);
-                writer.WriteString("workspace", item.Workspace);
+                var workspace = item.Workspace;
+                if (compactWorkspaces && workspaces.TryGetValue(item.SessionId, out var previous)
+                    && previous == workspace) workspace = null;
+                else workspaces[item.SessionId] = workspace;
+                writer.WriteString("workspace", workspace);
+                writer.WriteString("questionTitle", includeTitles ? item.QuestionTitle : null);
+                writer.WriteBoolean("isQuestionReply", item.IsQuestionReply);
                 writer.WriteNumber("receivedAtUnixMs", item.ReceivedAt.ToUnixTimeMilliseconds());
                 writer.WriteEndObject();
             }
             if (events.Count > 1) writer.WriteEndArray();
             writer.Flush();
         }
-        catch (Exception exception) when (exception is IOException or TimeoutException)
-        {
-            // Joydex is optional. Do not retry when it is absent or busy.
-        }
+        return output.ToArray();
     }
 
     private static string GetPipeName(IReadOnlyList<string> args)
@@ -130,7 +159,10 @@ internal static partial class HookRelay
             for (var index = 0; index < questions.GetArrayLength(); index++)
             {
                 var key = AttentionCorrelation.CreateAsyncQuestion(input.SessionId, input.ToolUseId, index);
-                if (key is not null) yield return Create(CodexLifecycleEvent.AsyncUserInputRequest, key);
+                if (key is not null) yield return Create(CodexLifecycleEvent.AsyncUserInputRequest, key) with
+                {
+                    QuestionTitle = AsyncQuestionHooks.ReadTitle(questions[index]),
+                };
             }
             yield break;
         }
@@ -138,7 +170,10 @@ internal static partial class HookRelay
         var mapped = MapRelayEvent(input.HookEventName!, input.ToolName);
         if (mapped is null) yield break;
         yield return Create(Enum.Parse<CodexLifecycleEvent>(mapped), AttentionCorrelation.Create(
-            input.SessionId, input.TurnId, input.ToolName, input.ToolInput));
+            input.SessionId, input.TurnId, input.ToolName, input.ToolInput)) with
+        {
+            IsQuestionReply = input.HookEventName == "UserPromptSubmit" && AsyncQuestionHooks.IsReplyEnvelope(input.Prompt),
+        };
         if (input.HookEventName == "UserPromptSubmit")
         {
             foreach (var key in AsyncQuestionHooks.ReadAnswerKeys(input.SessionId, input.Prompt))

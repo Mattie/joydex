@@ -169,6 +169,9 @@ public sealed class TaskAlertPipeServerTests
             await RunRelayAsync(pipeName, sent);
             await WaitUntilAsync(() => TaskAlertStateStore.Load(statePath).Assignments.SingleOrDefault()
                 ?.PendingAsyncQuestions?.Length == 2, AsyncTimeout);
+            Assert.Equal(new[] { "First fixture question", "Second fixture question" },
+                coordinator.GetSnapshot().Assignments.Single().Questions!.Select(question => question.Title).Order());
+            Assert.DoesNotContain("fixture question", File.ReadAllText(statePath));
             var replies = Enumerable.Range(0, 2).Select(index => new
             {
                 questionItemId = JsonSerializer.Serialize(new object[] { "request_user_input_async", "call-fixture", index }),
@@ -184,6 +187,57 @@ public sealed class TaskAlertPipeServerTests
                 AsyncTimeout);
             Assert.DoesNotContain("Fixture question", File.ReadAllText(statePath));
             Assert.DoesNotContain("Fixture answer", File.ReadAllText(statePath));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(400, false)]
+    [InlineData(4093, true)]
+    public async Task CompiledRelayPreservesEveryQuestionAndAnswerInOversizedBatches(
+        int workspaceCharacters, bool maximumIdentifiers)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-relay-budget", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "preferences.json"));
+            var pipeName = $"Joydex.Tests.{Guid.NewGuid():N}";
+            await using var server = new TaskAlertPipeServer(coordinator, _ => { }, pipeName);
+            server.Start();
+            var session = maximumIdentifiers ? new string('\u754c', 512) : "session";
+            var turn = maximumIdentifiers ? new string('\u754c', 512) : "turn";
+            var sent = new HookInput("PostToolUse", session, turn, null, @"C:\fixture\rollout.jsonl",
+                "request_user_input_async", JsonSerializer.SerializeToElement(new
+                {
+                    questions = Enumerable.Range(0, 32).Select(_ => new { title = new string('\u754c', 1024) }),
+                }), Cwd: @"C:\" + new string('\u754c', workspaceCharacters), ToolUseId: "call-fixture",
+                ToolResponse: JsonSerializer.SerializeToElement("{\"accepted\":true}"));
+            await RunRelayAsync(pipeName, sent);
+            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.SingleOrDefault()
+                ?.PendingAsyncQuestions?.Length == 32, AsyncTimeout);
+            var assignment = Assert.Single(coordinator.GetSnapshot().Assignments);
+            var expected = Enumerable.Range(0, 32)
+                .Select(index => AttentionCorrelation.CreateAsyncQuestion(session, "call-fixture", index)).Order();
+            Assert.Equal(expected, assignment.PendingAsyncQuestions!.Order());
+            Assert.Equal(TaskAlertState.Approval, assignment.State);
+            Assert.Equal(sent.Cwd, assignment.Workspace);
+            Assert.All(coordinator.GetSnapshot().RecentEvents!, trace => Assert.Equal(sent.Cwd, trace.Workspace));
+            var replies = Enumerable.Range(0, 32).Select(index => new
+            {
+                questionItemId = JsonSerializer.Serialize(new object[] { "request_user_input_async", "call-fixture", index }),
+                question = "Fixture question", answer = "Fixture answer",
+            });
+            await RunRelayAsync(pipeName, sent with
+            {
+                HookEventName = "UserPromptSubmit", ToolName = null,
+                TurnId = maximumIdentifiers ? new string('\u5c71', 512) : "answer-turn",
+                Prompt = "<send_user_message_question_reply>" + JsonSerializer.Serialize(replies)
+                    + "</send_user_message_question_reply>",
+            });
+            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.Single().State == TaskAlertState.Running,
+                AsyncTimeout);
+            Assert.Null(Assert.Single(coordinator.GetSnapshot().Assignments).PendingAsyncQuestions);
         }
         finally { Directory.Delete(directory, recursive: true); }
     }
