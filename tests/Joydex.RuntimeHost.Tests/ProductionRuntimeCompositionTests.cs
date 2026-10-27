@@ -1064,6 +1064,50 @@ public sealed class ProductionRuntimeCompositionTests
         Assert.True(encoded.Length <= RuntimeUiLimits.MaximumEncodedSnapshotBytes);
     }
 
+    [Theory]
+    [InlineData(1, 1, false)]
+    [InlineData(1, 128, true)]
+    [InlineData(10, 32, true)]
+    public void SnapshotBoundsQuestionDisplayDetailsWithoutLosingDismissalKeys(
+        int taskCount, int questionsPerTask, bool detailsOmitted)
+    {
+        var projector = new ProductionRuntimeUiProjector();
+        projector.PublishActivity("Activity remains available");
+        var title = new string('\u754c', 1024);
+        var assignments = Enumerable.Range(1, taskCount).Select(slot =>
+        {
+            var keys = Enumerable.Range(0, questionsPerTask)
+                .Select(index => (slot * questionsPerTask + index).ToString("X64")).ToArray();
+            return new TaskAlertAssignment(slot, $"task-{slot}", "turn", TaskAlertState.Approval,
+                DateTimeOffset.UnixEpoch, PendingAsyncQuestions: keys,
+                Questions: keys.Select(key => new TaskAlertPendingQuestion(
+                    key, title, DateTimeOffset.UnixEpoch, "turn")).ToArray());
+        }).ToArray();
+        RuntimeUiEvent? update = null;
+        projector.Changed += (_, value) => update = value;
+        projector.PublishTaskAlerts(
+            new Joydex.Windows.TaskAlerts.TaskAlertSnapshot(true, assignments, 0),
+            new RuntimeTaskAlertHookStatus(RuntimeTaskAlertHookState.Installed));
+
+        if (detailsOmitted)
+            Assert.Equal(RuntimeEventKind.UiResynchronizationRequired, update!.Kind);
+        var snapshot = projector.GetSnapshot();
+        Assert.Single(snapshot.RecentActivity!);
+        Assert.Equal(taskCount, snapshot.TaskAlerts!.Assignments.Length);
+        foreach (var assignment in snapshot.TaskAlerts.Assignments)
+        {
+            var original = assignments.Single(item => item.Slot == assignment.Slot);
+            Assert.Equal(original.PendingAsyncQuestions, assignment.PendingAsyncQuestions);
+            Assert.Equal(TaskAlertState.Approval, assignment.State);
+            if (detailsOmitted) Assert.Null(assignment.Questions);
+            else Assert.Equal(title, Assert.Single(assignment.Questions!).Title);
+            Assert.All(original.Questions!, question => Assert.Equal(title, question.Title));
+        }
+        var encoded = JsonSerializer.SerializeToUtf8Bytes(snapshot,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.True(encoded.Length <= RuntimeUiLimits.MaximumEncodedSnapshotBytes);
+    }
+
     [Fact]
     public void DelayedVoiceStatusAndTaskCatalogKeepTheCurrentActiveTarget()
     {

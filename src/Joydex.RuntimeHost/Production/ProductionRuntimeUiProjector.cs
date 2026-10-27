@@ -390,6 +390,24 @@ internal sealed class ProductionRuntimeUiProjector
             return snapshot;
         }
 
+        if (snapshot.TaskAlerts is { } questionAlerts
+            && questionAlerts.Assignments.Any(assignment => assignment.Questions is { Length: > 0 }))
+        {
+            // Display-only titles can dominate the encoded size. Keep every dismissal key and
+            // attention state, so clients can still recover and dismiss questions after reconnect.
+            snapshot = snapshot with
+            {
+                TaskAlerts = questionAlerts with
+                {
+                    Assignments = questionAlerts.Assignments
+                        .Select(assignment => assignment with { Questions = null }).ToArray(),
+                },
+            };
+            if (JsonSerializer.SerializeToUtf8Bytes(snapshot, JsonOptions).Length
+                <= RuntimeUiLimits.MaximumEncodedSnapshotBytes)
+                return snapshot;
+        }
+
         snapshot = snapshot with { RecentActivity = [] };
         if (snapshot.Voice is { } voice)
         {

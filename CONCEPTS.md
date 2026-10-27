@@ -16,6 +16,7 @@ changes only that question's Joydex alert without answering or removing it in Co
 questions and blocking permissions remain pending. Joydex persists correlation hashes and turn
 identifiers, never question or answer text; bounded question titles are held only for live display.
 Older questions restored after a restart remain dismissible even when their titles are unavailable.
+An oversized UI snapshot can omit display details while retaining every question's dismissal key.
 Codex's UI-only Skip action currently has no observed hook notification; immediate skip
 synchronization remains an integration gap, not a guaranteed behavior.
 _Avoid_: Blocking tool call, completed question

@@ -120,7 +120,7 @@ internal sealed class PendingTaskQuestionsForm : ThemedForm
                 var workspace = Path.GetFileName(assignment.Workspace?.TrimEnd('\\', '/'));
                 var task = string.IsNullOrWhiteSpace(workspace) ? assignment.SessionId : workspace;
                 return new QuestionRow(assignment.SessionId, key,
-                    detail?.Title ?? "Question text unavailable after restart", task);
+                    detail?.Title ?? "Question text unavailable", task);
             })).ToArray();
         if (!_displayed.SequenceEqual(rows))
         {
