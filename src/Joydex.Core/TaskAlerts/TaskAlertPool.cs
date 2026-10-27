@@ -40,7 +40,7 @@ public sealed class TaskAlertPool
                     pending?.CaptureCorrelated() ?? [],
                     pending?.UncorrelatedCount ?? 0,
                     assignment.WorkspaceKey,
-                    pending?.CaptureAsyncQuestions() ?? []);
+                    pending?.CaptureAsyncQuestions() ?? [], assignment.ObservedActiveAt);
             })
             .ToArray());
 
@@ -65,6 +65,7 @@ public sealed class TaskAlertPool
                 || string.IsNullOrWhiteSpace(stored.SessionId)
                 || !Enum.IsDefined(stored.State)
                 || stored.UpdatedAt == default
+                || stored.ObservedActiveAt == default(DateTimeOffset)
                 || stored.WorkspaceKey is not null
                     && !TaskAlertSuppression.IsWorkspaceKey(stored.WorkspaceKey)
                 || stored.CompleteAfter is { } completeAfter
@@ -79,7 +80,7 @@ public sealed class TaskAlertPool
                         stored.State,
                         stored.UpdatedAt,
                         stored.CompleteAfter,
-                        stored.WorkspaceKey))
+                        stored.WorkspaceKey, ObservedActiveAt: stored.ObservedActiveAt))
                 || !sessions.Add(stored.SessionId))
             {
                 throw new InvalidDataException("The task-alert state contains an invalid assignment.");
@@ -281,7 +282,9 @@ public sealed class TaskAlertPool
             }
 
             var lease = assignment.State == TaskAlertState.Running ? RunningLease : AttentionLease;
-            if (now - assignment.UpdatedAt >= lease)
+            var leaseStarted = assignment.ObservedActiveAt > assignment.UpdatedAt
+                ? assignment.ObservedActiveAt.Value : assignment.UpdatedAt;
+            if (now - leaseStarted >= lease)
             {
                 _assignments.Remove(pair.Key);
                 _pendingAttention.Remove(assignment.SessionId);
@@ -362,6 +365,58 @@ public sealed class TaskAlertPool
         // Hooks already received by the runtime may still be queued. A UI action must not
         // advance their ordering watermark and make a real, earlier hook look out of order.
         UpdateAfterAsyncQuestions(existing, pending, dismissedAt, updateEventTimestamp: false);
+        return true;
+    }
+
+    /// <summary>Applies positive Desktop turn metadata without inventing a lifecycle hook.</summary>
+    public bool Reconcile(TaskAlertDesktopObservation observation, DateTimeOffset observedAt)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+        var active = observation.State is TaskAlertState.Running or TaskAlertState.Approval;
+        if (!Enabled || string.IsNullOrWhiteSpace(observation.SessionId) || observation.SessionId.Length > 512
+            || string.IsNullOrWhiteSpace(observation.TurnId) || observation.TurnId.Length > 512
+            || !Enum.IsDefined(observation.State) || observation.StartedAt == default
+            || observation.StartedAt > observedAt.AddSeconds(5)
+            || !active && (observation.CompletedAt is null || observation.CompletedAt < observation.StartedAt
+                || observation.CompletedAt > observedAt.AddSeconds(5))) return false;
+        var existing = _assignments.Values.FirstOrDefault(item => item.SessionId == observation.SessionId);
+        if (existing is null && !active) return false;
+        // Older hook payloads may omit the turn ID. Accept only a turn spanning that
+        // hook's event time, rather than treating any historical terminal turn as current.
+        var sameTurn = existing?.TurnId == observation.TurnId
+            || existing is { TurnId: null } && observation.StartedAt <= existing.UpdatedAt
+                && (active || observation.CompletedAt?.ToUnixTimeSeconds() >= existing.UpdatedAt.ToUnixTimeSeconds());
+        if (existing is not null && !sameTurn && observation.StartedAt <= existing.UpdatedAt) return false;
+        if (active && sameTurn && (existing!.CompleteAfter is not null
+            || existing.State is TaskAlertState.Completed or TaskAlertState.Fault)) return false;
+        if (existing is null)
+        {
+            var slot = TaskAlertSlots.All.FirstOrDefault(candidate => !_assignments.ContainsKey(candidate)
+                && !_backfillAfter.ContainsKey(candidate));
+            if (slot == 0) return false;
+            existing = new(slot, observation.SessionId, observation.TurnId, observation.State, observation.StartedAt);
+        }
+        if (!active || !sameTurn) ClearBlockingAttention(observation.SessionId);
+        if (observation.State == TaskAlertState.Fault) _pendingAttention.Remove(observation.SessionId);
+        var workspace = TaskAlertSuppression.NormalizeWorkspace(observation.Workspace);
+        var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace)
+            ?? (TaskAlertSuppression.IsWorkspaceKey(observation.WorkspaceKey) ? observation.WorkspaceKey : existing.WorkspaceKey);
+        workspace ??= workspaceKey == existing.WorkspaceKey ? existing.Workspace : null;
+        var state = observation.State;
+        if (_pendingAttention.TryGetValue(observation.SessionId, out var pending) && pending.Any)
+            state = TaskAlertState.Approval;
+        var eventTime = active && sameTurn ? existing.UpdatedAt : observation.CompletedAt ?? observation.StartedAt;
+        if (eventTime < existing.UpdatedAt) eventTime = existing.UpdatedAt;
+        _assignments[existing.Slot] = existing with
+        {
+            TurnId = observation.TurnId,
+            State = state,
+            UpdatedAt = eventTime,
+            CompleteAfter = !active && state == TaskAlertState.Approval ? observation.CompletedAt : null,
+            Workspace = workspace,
+            WorkspaceKey = workspaceKey,
+            ObservedActiveAt = active ? observedAt : null,
+        };
         return true;
     }
 

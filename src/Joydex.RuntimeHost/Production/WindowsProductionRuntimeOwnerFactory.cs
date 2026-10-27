@@ -635,6 +635,9 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         }
     }
 
+    internal Task<ProductionDesktopBrokerLease> AcquireTaskAlertDesktopBrokerAsync(CancellationToken token) =>
+        _desktopBroker.AcquireAsync(token);
+
     private TaskAlertProductionOwner CreateTaskAlerts(SettingsBundle activeSettings)
     {
         var owner = _windowsSta.InvokeAsync(() => TaskAlertProductionOwner.Start(

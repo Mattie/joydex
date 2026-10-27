@@ -3,6 +3,7 @@ using Joydex.Contracts;
 using Joydex.Core.TaskAlerts;
 using Joydex.Virpil;
 using Joydex.Windows.TaskAlerts;
+using Joydex.Windows.Voice;
 using Microsoft.Win32;
 
 namespace Joydex.RuntimeHost.Production;
@@ -14,6 +15,8 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
     private readonly TaskAlertCoordinator _coordinator;
     private readonly TaskAlertPipeServer _pipe;
     private readonly VirpilProductionPlugin _virpil;
+    private readonly TaskAlertReconciler _reconciler;
+    private ProductionDesktopBrokerLease? _desktopBrokerLease;
     private readonly TaskCompletionSource _ownedCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _completion;
@@ -33,7 +36,8 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
         _coordinator = coordinator;
         _pipe = pipe;
         _virpil = virpil;
-        _completion = Task.WhenAny(_ownedCompletion.Task, windowsSta.Completion, pipe.Completion).Unwrap();
+        _reconciler = new TaskAlertReconciler(coordinator, ReadDesktopAsync, factory.WriteLog);
+        _completion = Task.WhenAny(_ownedCompletion.Task, windowsSta.Completion, pipe.Completion, _reconciler.Completion).Unwrap();
     }
 
     public SettingsAggregateId Aggregate => SettingsAggregateId.TaskAlerts;
@@ -84,6 +88,7 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
             SystemEvents.PowerModeChanged += owner.OnPowerModeChanged;
             SystemEvents.SessionEnding += owner.OnSessionEnding;
             pipe.Start();
+            owner._reconciler.Start();
             return owner;
         }
         catch (Exception startupFailure)
@@ -98,6 +103,16 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
                 catch (Exception exception) { cleanupFailures.Add(exception); }
                 try { coordinator!.Changed -= owner.OnChanged; }
                 catch (Exception exception) { cleanupFailures.Add(exception); }
+            }
+            if (owner is not null)
+            {
+                try { owner._reconciler.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                catch (Exception exception) { cleanupFailures.Add(exception); }
+                if (owner._desktopBrokerLease is not null)
+                {
+                    try { owner._desktopBrokerLease.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                    catch (Exception exception) { cleanupFailures.Add(exception); }
+                }
             }
             try { pipe?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
             catch (Exception exception) { cleanupFailures.Add(exception); }
@@ -136,6 +151,8 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
         _factory.ClearTaskAlerts(this);
         _coordinator.Changed -= OnChanged;
         var failures = new List<Exception>();
+        await TryDisposeAsync(_reconciler, failures);
+        if (_desktopBrokerLease is not null) await TryDisposeAsync(_desktopBrokerLease, failures);
         await TryDisposeAsync(_pipe, failures);
         await TryDisposeAsync(_virpil, failures);
         await TryDisposeAsync(_coordinator, failures);
@@ -145,8 +162,16 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
 
     private void OnChanged(object? sender, TaskAlertSnapshot snapshot)
     {
+        if (Volatile.Read(ref _disposed) != 0) return;
         _virpil.Apply(snapshot);
         _factory.PublishTaskAlerts(this, snapshot);
+    }
+
+    private async Task<TaskAlertDesktopSnapshot> ReadDesktopAsync(IReadOnlyList<string> knownTaskIds, CancellationToken token)
+    {
+        _desktopBrokerLease ??= await _factory.AcquireTaskAlertDesktopBrokerAsync(token).ConfigureAwait(false);
+        return await new DesktopTaskBridgeClient(_desktopBrokerLease.PipeName)
+            .ReadTaskAlertSnapshotAsync(knownTaskIds, token).ConfigureAwait(false);
     }
 
     private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs eventArgs)

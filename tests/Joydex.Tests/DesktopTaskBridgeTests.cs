@@ -12,6 +12,28 @@ public sealed class DesktopTaskBridgeTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "joydex-tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task TaskAlertSnapshotUsesARealObservedSourceAndRoundTripsMetadata()
+    {
+        var pipe = "Joydex.Tests." + Guid.NewGuid().ToString("N");
+        var source = Guid.NewGuid().ToString("D");
+        var observation = new Joydex.Core.TaskAlerts.TaskAlertDesktopObservation(source, "turn",
+            Joydex.Core.TaskAlerts.TaskAlertState.Running, DateTimeOffset.UtcNow, null);
+        var server = ServeOnceAsync(pipe, request =>
+        {
+            Assert.Equal(DesktopTaskBridgeProtocol.TaskAlertSnapshotMethod, request.Method);
+            Assert.Equal(source, request.SourceThreadId);
+            Assert.Equal(source, request.Arguments.GetProperty("knownTaskIds")[0].GetString());
+            return JsonSerializer.SerializeToElement(new Joydex.Core.TaskAlerts.TaskAlertDesktopSnapshot([observation]),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        });
+        var actual = await new DesktopTaskBridgeClient(pipe).ReadTaskAlertSnapshotAsync([source]);
+        await server;
+        Assert.Equal(observation, Assert.Single(actual.Tasks));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new DesktopTaskBridgeClient(pipe).ReadTaskAlertSnapshotAsync([]));
+    }
+
+    [Fact]
     public async Task HandoffRestoresAfterAnUncertainArchiveResponse()
     {
         var calls = new List<bool>();

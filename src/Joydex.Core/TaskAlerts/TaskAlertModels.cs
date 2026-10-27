@@ -37,7 +37,8 @@ public sealed record TaskAlertAssignment(
     DateTimeOffset? CompleteAfter = null,
     string? WorkspaceKey = null,
     string? Workspace = null,
-    string[]? PendingAsyncQuestions = null);
+    string[]? PendingAsyncQuestions = null,
+    DateTimeOffset? ObservedActiveAt = null);
 
 /// <summary>
 /// Captures the task assignments and pending approval correlations that must
@@ -59,7 +60,8 @@ public sealed record TaskAlertStoredAssignment(
     TaskAlertCorrelationCount[] CorrelatedAttention,
     int UncorrelatedAttentionCount,
     string? WorkspaceKey = null,
-    string[]? PendingAsyncQuestions = null);
+    string[]? PendingAsyncQuestions = null,
+    DateTimeOffset? ObservedActiveAt = null);
 
 /// <summary>Stores one privacy-preserving correlation hash and its pending count.</summary>
 public sealed record TaskAlertCorrelationCount(string Key, int Count);

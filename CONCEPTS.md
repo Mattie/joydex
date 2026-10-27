@@ -4,6 +4,17 @@ Joydex connects physical controls and room devices to explicit Codex actions. It
 
 ## Language
 
+**Task Alert Reconciliation**:
+A periodic, read-only comparison of task lights with explicit Codex Desktop turn metadata.
+The task-alert runtime shares the Desktop Task Bridge independently of Room Voice. Once a
+local hook supplies a real task identity, a bounded scan can recover missed starts and retire
+confirmed completed, failed or interrupted turns. Unknown or contradictory observations leave
+lights unchanged. Hooks, ignores, question dismissals and terminal acknowledgments retain
+authority over older scans; generic Desktop waiting flags do not create questions. Scans renew
+active-task leases separately from hook timestamps, so long-running tasks remain visible without
+making delayed hook events appear obsolete. See ADR 0016 for recovery boundaries.
+_Avoid_: Synthetic hook, task writer, transcript watcher
+
 **Pending Async Question**:
 A question Codex has successfully sent through `request_user_input_async` and the user has not
 resolved through its question-card reply. The agent may keep working, but the task still

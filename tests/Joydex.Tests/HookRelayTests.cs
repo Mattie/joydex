@@ -1,10 +1,44 @@
 using System.Text.Json;
+using System.IO.Pipes;
+using System.Diagnostics;
 using Joydex.Core.TaskAlerts;
 
 namespace Joydex.Tests;
 
 public sealed class HookRelayTests
 {
+    [Fact]
+    public async Task RelayRecoversWhenTheListenerAppearsDuringItsConnectionBudget()
+    {
+        var name = $"Joydex.Tests.{Guid.NewGuid():N}";
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receivedAt = DateTimeOffset.UtcNow;
+        var send = Task.Run(() =>
+        {
+            started.SetResult();
+            HookRelay.TrySend(name, [new(CodexLifecycleEvent.UserPromptSubmit, "fixture", "turn", receivedAt)]);
+        });
+        await started.Task;
+        await Task.Delay(50);
+        await using var listener = new NamedPipeServerStream(name, PipeDirection.In, 1,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        await listener.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(3));
+        using var reader = new StreamReader(listener);
+        using var document = JsonDocument.Parse(await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(3)));
+        await send;
+        Assert.Equal("UserPromptSubmit", document.RootElement.GetProperty("event").GetString());
+        Assert.Equal(receivedAt.ToUnixTimeMilliseconds(), document.RootElement.GetProperty("receivedAtUnixMs").GetInt64());
+    }
+
+    [Fact]
+    public void MissingOptionalListenerReturnsWithinTheHookTimeout()
+    {
+        var elapsed = Stopwatch.StartNew();
+        HookRelay.TrySend($"Joydex.Tests.{Guid.NewGuid():N}",
+            [new(CodexLifecycleEvent.UserPromptSubmit, "fixture", "turn", DateTimeOffset.UtcNow)]);
+        Assert.InRange(elapsed.Elapsed, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(2));
+    }
+
     [Fact]
     public void AsyncQuestionsRemainAttentionUntilEachReplyIncludingAfterStopAndRestart()
     {

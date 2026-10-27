@@ -14,6 +14,7 @@ public static class DesktopTaskBridgeProtocol
     public const string ReadTaskMethod = "threads.read";
     public const string SendMessageMethod = "threads.send";
     public const string ReleaseTaskMethod = "threads.release";
+    public const string TaskAlertSnapshotMethod = "alerts.snapshot";
 }
 
 public sealed record DesktopTaskBridgeRequest(

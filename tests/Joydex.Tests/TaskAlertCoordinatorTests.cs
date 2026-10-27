@@ -173,6 +173,7 @@ public sealed class TaskAlertCoordinatorTests
                 [
                     "completeAfter",
                     "correlatedAttention",
+                    "observedActiveAt",
                     "pendingAsyncQuestions",
                     "sessionId",
                     "slot",
