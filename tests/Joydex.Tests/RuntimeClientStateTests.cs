@@ -450,7 +450,7 @@ public sealed class RuntimeClientStateTests
     [Fact]
     public async Task ConcurrentCallbacksArePostedInTheirMutationOrder()
     {
-        var context = new BlockingPostSynchronizationContext();
+        using var context = new BlockingPostSynchronizationContext();
         var client = new RuntimeClientState(context);
         var sequences = new List<long>();
         client.Changed += (_, change) =>
@@ -464,23 +464,35 @@ public sealed class RuntimeClientStateTests
         client.Initialize(Attach(Snapshot(epoch, eventCursor: 0, bank: 2)));
         context.BlockNextPost();
 
-        var first = Task.Run(() => client.RuntimeEventAsync(
+        // Post blocks synchronously, so give its producer a dedicated worker.
+        var first = Task.Factory.StartNew(() => client.RuntimeEventAsync(
             new RuntimeEvent(
                 epoch,
                 1,
                 RuntimeEventKind.SettingsChanged,
                 Settings: Settings(1, bank: 3)),
-            CancellationToken.None));
-        await context.PostBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await client.RuntimeEventAsync(
-            new RuntimeEvent(
-                epoch,
-                2,
-                RuntimeEventKind.SettingsChanged,
-                Settings: Settings(2, bank: 4)),
-            CancellationToken.None);
-        context.ReleasePost.TrySetResult();
-        await first;
+            CancellationToken.None),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default).Unwrap();
+        try
+        {
+            Assert.True(
+                context.PostBlocked.Wait(TimeSpan.FromSeconds(2)),
+                "The first callback did not reach the blocked Post.");
+            await client.RuntimeEventAsync(
+                new RuntimeEvent(
+                    epoch,
+                    2,
+                    RuntimeEventKind.SettingsChanged,
+                    Settings: Settings(2, bank: 4)),
+                CancellationToken.None);
+        }
+        finally
+        {
+            context.ReleasePost.Set();
+            await first;
+        }
 
         Assert.Equal([1, 2], sequences);
     }
@@ -605,15 +617,13 @@ public sealed class RuntimeClientStateTests
         public override void Post(SendOrPostCallback callback, object? state) => callback(state);
     }
 
-    private sealed class BlockingPostSynchronizationContext : SynchronizationContext
+    private sealed class BlockingPostSynchronizationContext : SynchronizationContext, IDisposable
     {
         private int _blockNextPost;
 
-        public TaskCompletionSource PostBlocked { get; } = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim PostBlocked { get; } = new();
 
-        public TaskCompletionSource ReleasePost { get; } = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        public ManualResetEventSlim ReleasePost { get; } = new();
 
         public void BlockNextPost() => Interlocked.Exchange(ref _blockNextPost, 1);
 
@@ -621,10 +631,16 @@ public sealed class RuntimeClientStateTests
         {
             if (Interlocked.Exchange(ref _blockNextPost, 0) != 0)
             {
-                PostBlocked.TrySetResult();
-                ReleasePost.Task.GetAwaiter().GetResult();
+                PostBlocked.Set();
+                ReleasePost.Wait();
             }
             callback(state);
+        }
+
+        public void Dispose()
+        {
+            PostBlocked.Dispose();
+            ReleasePost.Dispose();
         }
     }
 }
