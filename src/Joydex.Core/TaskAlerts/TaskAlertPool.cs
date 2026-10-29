@@ -244,7 +244,7 @@ public sealed class TaskAlertPool
 
         if (taskEvent.Event == CodexLifecycleEvent.UserPromptSubmit)
             if (_pendingAttention.TryGetValue(taskEvent.SessionId, out var oldQuestions))
-                oldQuestions.ClearQuestionsBefore(taskEvent.ReceivedAt, taskEvent.TurnId);
+                oldQuestions.ClearQuestionsBefore(taskEvent.ReceivedAt, taskEvent.TurnId, retireOtherTurns: establishesTurn);
 
         if (taskEvent.Event is CodexLifecycleEvent.PermissionRequest
                 or CodexLifecycleEvent.UserInputRequest
@@ -797,11 +797,12 @@ public sealed class TaskAlertPool
             _asyncQuestions.TryAdd(key, new(key, turnId, requestedAt));
         public bool CompleteAsyncQuestion(string key) => _asyncQuestions.Remove(key);
 
-        public bool ClearQuestionsBefore(DateTimeOffset promptAt, string? promptTurnId)
+        public bool ClearQuestionsBefore(DateTimeOffset promptAt, string? promptTurnId, bool retireOtherTurns = false)
         {
             var removed = false;
             foreach (var question in _asyncQuestions.Values.ToArray())
-                if (question.RequestedAt is null || question.RequestedAt < promptAt
+                if (retireOtherTurns && question.TurnId != promptTurnId
+                    || question.RequestedAt is null || question.RequestedAt < promptAt
                     || question.RequestedAt == promptAt && (promptTurnId is null || question.TurnId != promptTurnId))
                     removed |= _asyncQuestions.Remove(question.Key);
             return removed;
