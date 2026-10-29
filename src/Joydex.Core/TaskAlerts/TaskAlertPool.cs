@@ -259,7 +259,8 @@ public sealed class TaskAlertPool
             {
                 TurnId = taskEvent.TurnId,
                 State = HasAsyncQuestions(taskEvent.SessionId) ? TaskAlertState.Approval : TaskAlertState.Running,
-                UpdatedAt = taskEvent.ReceivedAt > existing.UpdatedAt ? taskEvent.ReceivedAt : existing.UpdatedAt,
+                UpdatedAt = establishesTurn || taskEvent.ReceivedAt > existing.UpdatedAt
+                    ? taskEvent.ReceivedAt : existing.UpdatedAt,
                 TurnBoundaryAt = taskEvent.ReceivedAt,
                 CompleteAfter = null,
             },
@@ -477,7 +478,7 @@ public sealed class TaskAlertPool
         if (_pendingAttention.TryGetValue(observation.SessionId, out var pending) && pending.Any)
             state = TaskAlertState.Approval;
         var eventTime = active && sameTurn ? existing.UpdatedAt : observation.CompletedAt ?? observation.StartedAt;
-        if (eventTime < existing.UpdatedAt) eventTime = existing.UpdatedAt;
+        if (sameTurn && eventTime < existing.UpdatedAt) eventTime = existing.UpdatedAt;
         _assignments[existing.Slot] = existing with
         {
             TurnId = observation.TurnId,

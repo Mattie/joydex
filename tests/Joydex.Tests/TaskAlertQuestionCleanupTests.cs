@@ -59,6 +59,24 @@ public sealed class TaskAlertQuestionCleanupTests
     }
 
     [Fact]
+    public void ANewTurnDoesNotInheritALateOldStopsEventWatermark()
+    {
+        foreach (var nativeConfirmation in new[] { false, true })
+        {
+            var pool = new TaskAlertPool();
+            pool.Apply(new(CodexLifecycleEvent.UserPromptSubmit, "chat", "old", At));
+            pool.Apply(new(CodexLifecycleEvent.Stop, "chat", "old", At.AddSeconds(4)));
+            if (nativeConfirmation)
+                Assert.True(pool.Reconcile(new("chat", "new", TaskAlertState.Running, At.AddSeconds(2), null), At.AddSeconds(5)));
+            else Assert.True(pool.Apply(new(CodexLifecycleEvent.UserPromptSubmit, "chat", "new", At.AddSeconds(2))));
+            Assert.True(pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "chat", "new", At.AddSeconds(3), Second)));
+            Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
+            Assert.True(pool.Apply(new(CodexLifecycleEvent.Stop, "chat", "new", At.AddSeconds(3.5))));
+            Assert.Null(Assert.Single(pool.Assignments).PendingAsyncQuestions);
+        }
+    }
+
+    [Fact]
     public void ALateOldStopCannotStrandANewerDeferredQuestionAndItsDelayedPromptAfterRestore()
     {
         var pool = new TaskAlertPool();
