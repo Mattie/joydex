@@ -19,6 +19,9 @@ public sealed class TaskAlertPool
 
     public bool Enabled { get; private set; } = true;
 
+    /// <summary>Whether normal turn completion retires unanswered question alerts.</summary>
+    public bool ClearQuestionsOnTurnEnd { get; set; }
+
     public long DroppedEventCount { get; private set; }
 
     public IReadOnlyList<TaskAlertAssignment> Assignments => _assignments.Values
@@ -275,7 +278,8 @@ public sealed class TaskAlertPool
             CodexLifecycleEvent.Stop => existing with
             {
                 TurnId = taskEvent.TurnId,
-                State = TaskAlertState.Running,
+                State = !ClearQuestionsOnTurnEnd && HasAsyncQuestions(taskEvent.SessionId)
+                    ? TaskAlertState.Approval : TaskAlertState.Running,
                 UpdatedAt = taskEvent.ReceivedAt,
                 CompleteAfter = taskEvent.ReceivedAt + StopGrace,
             },
@@ -314,7 +318,8 @@ public sealed class TaskAlertPool
         }
         else if (taskEvent.Event == CodexLifecycleEvent.Stop)
         {
-            _pendingAttention.Remove(taskEvent.SessionId);
+            if (ClearQuestionsOnTurnEnd) _pendingAttention.Remove(taskEvent.SessionId);
+            else ClearBlockingAttention(taskEvent.SessionId);
         }
         else if (taskEvent.Event == CodexLifecycleEvent.Fault)
         {
@@ -469,7 +474,9 @@ public sealed class TaskAlertPool
             if (slot == 0) return false;
             existing = new(slot, observation.SessionId, observation.TurnId, observation.State, observation.StartedAt);
         }
-        if (!active || !sameTurn) _pendingAttention.Remove(observation.SessionId);
+        if (!sameTurn || observation.State == TaskAlertState.Fault
+            || !active && ClearQuestionsOnTurnEnd) _pendingAttention.Remove(observation.SessionId);
+        else if (!active) ClearBlockingAttention(observation.SessionId);
         var workspace = TaskAlertSuppression.NormalizeWorkspace(observation.Workspace);
         var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace)
             ?? (TaskAlertSuppression.IsWorkspaceKey(observation.WorkspaceKey) ? observation.WorkspaceKey : existing.WorkspaceKey);
@@ -484,13 +491,18 @@ public sealed class TaskAlertPool
             TurnId = observation.TurnId,
             State = state,
             UpdatedAt = eventTime,
-            CompleteAfter = null,
+            CompleteAfter = !active && state == TaskAlertState.Approval ? observation.CompletedAt : null,
             Workspace = workspace,
             WorkspaceKey = workspaceKey,
             ObservedActiveAt = active ? observedAt : null,
             TurnBoundaryAt = sameTurn ? existing.TurnBoundaryAt ?? observation.StartedAt : observation.StartedAt,
         };
-        if (active) PromoteDeferredQuestions(_assignments[existing.Slot], observation.StartedAt);
+        if (active || observation.State == TaskAlertState.Completed && !ClearQuestionsOnTurnEnd)
+        {
+            PromoteDeferredQuestions(_assignments[existing.Slot], observation.StartedAt);
+            if (!active && HasAsyncQuestions(observation.SessionId))
+                _assignments[existing.Slot] = _assignments[existing.Slot] with { CompleteAfter = observation.CompletedAt };
+        }
         else RemoveDeferredTurn(observation.SessionId, observation.TurnId);
         return true;
     }

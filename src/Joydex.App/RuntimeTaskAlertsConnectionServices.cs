@@ -15,6 +15,7 @@ internal enum RuntimeTaskAlertsActionKind
     InstallHooks,
     RemoveHooks,
     DismissQuestions,
+    SetClearQuestionsOnTurnEnd,
 }
 
 internal enum RuntimeTaskAlertsActionOutcome
@@ -205,6 +206,16 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
         CancellationToken cancellationToken = default) =>
         ApplySettingsAsync(
             new SettingsIntent(RuntimeTaskAlertsActionKind.SetEnabled, Enabled: enabled),
+            operationId,
+            cancellationToken);
+
+    public Task<RuntimeTaskAlertsActionResult> SetClearQuestionsOnTurnEndAsync(
+        bool enabled,
+        Guid operationId,
+        CancellationToken cancellationToken = default) =>
+        ApplySettingsAsync(
+            new SettingsIntent(RuntimeTaskAlertsActionKind.SetClearQuestionsOnTurnEnd,
+                ClearQuestionsOnTurnEnd: enabled),
             operationId,
             cancellationToken);
 
@@ -786,7 +797,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
                 BankAutomaticallyDetected: false,
                 RecentEvents: [],
                 completeSuppressions,
-                active.LedOutput);
+                active.LedOutput,
+                active.ClearQuestionsOnTurnEnd);
         }
 
         return new TaskAlertSnapshot(
@@ -797,7 +809,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
             snapshot.BankAutomaticallyDetected,
             snapshot.RecentEvents.Select(ToEventTrace).ToArray(),
             completeSuppressions,
-            snapshot.LedOutput.Normalize());
+            snapshot.LedOutput.Normalize(),
+            active.ClearQuestionsOnTurnEnd);
     }
 
     private static TaskAlertEventTrace ToEventTrace(RuntimeTaskAlertEventTrace trace) => new(
@@ -836,6 +849,11 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
             {
                 LedOutput = intent.LedOutput
                     ?? throw new InvalidOperationException("The LED setting was omitted."),
+            },
+            RuntimeTaskAlertsActionKind.SetClearQuestionsOnTurnEnd => normalized with
+            {
+                ClearQuestionsOnTurnEnd = intent.ClearQuestionsOnTurnEnd
+                    ?? throw new InvalidOperationException("The question cleanup setting was omitted."),
             },
             RuntimeTaskAlertsActionKind.AddSuppression => AddSuppression(normalized, intent.Rule),
             RuntimeTaskAlertsActionKind.RemoveSuppression => RemoveSuppression(normalized, intent.Rule),
@@ -1106,7 +1124,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
         RuntimeTaskAlertsActionKind Kind,
         bool? Enabled = null,
         TaskAlertLedOptions? LedOutput = null,
-        TaskAlertSuppressionRule? Rule = null);
+        TaskAlertSuppressionRule? Rule = null,
+        bool? ClearQuestionsOnTurnEnd = null);
 
     private sealed record PendingSettingsAction(Guid OperationId, SettingsIntent Intent);
 

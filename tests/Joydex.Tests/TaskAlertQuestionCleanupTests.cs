@@ -29,11 +29,11 @@ public sealed class TaskAlertQuestionCleanupTests
     [InlineData(true)]
     public void AQuestionAfterItsTurnStoppedCannotRelightEvenAfterRestart(bool graceElapsed)
     {
-        var pool = new TaskAlertPool();
+        var pool = new TaskAlertPool { ClearQuestionsOnTurnEnd = true };
         pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "chat", "turn", At, First));
         pool.Apply(new(CodexLifecycleEvent.Stop, "chat", "turn", At.AddSeconds(1)));
         if (graceElapsed) pool.Advance(At.AddSeconds(3));
-        var restored = new TaskAlertPool();
+        var restored = new TaskAlertPool { ClearQuestionsOnTurnEnd = true };
         restored.Restore(pool.CaptureState());
         Assert.False(restored.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "chat", "turn", At.AddSeconds(4), Second)));
         restored.Advance(At.AddSeconds(5));
@@ -76,7 +76,7 @@ public sealed class TaskAlertQuestionCleanupTests
     {
         foreach (var nativeConfirmation in new[] { false, true })
         {
-            var pool = new TaskAlertPool();
+            var pool = new TaskAlertPool { ClearQuestionsOnTurnEnd = true };
             pool.Apply(new(CodexLifecycleEvent.UserPromptSubmit, "chat", "old", At));
             pool.Apply(new(CodexLifecycleEvent.Stop, "chat", "old", At.AddSeconds(4)));
             if (nativeConfirmation)
@@ -142,7 +142,7 @@ public sealed class TaskAlertQuestionCleanupTests
     [InlineData(TaskAlertState.Fault)]
     public void DesktopConfirmsWhetherAnUnprovenQuestionShouldLight(TaskAlertState observed)
     {
-        var pool = new TaskAlertPool();
+        var pool = new TaskAlertPool { ClearQuestionsOnTurnEnd = true };
         pool.Apply(new(CodexLifecycleEvent.UserPromptSubmit, "chat", "old", At.AddMinutes(-2)));
         pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "chat", "new", At.AddMinutes(-1), Second));
         Assert.Equal(TaskAlertState.Running, Assert.Single(pool.Assignments).State);

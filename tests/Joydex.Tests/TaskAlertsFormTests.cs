@@ -7,6 +7,37 @@ namespace Joydex.Tests;
 public sealed class TaskAlertsFormTests
 {
     [Fact]
+    public async Task TurnEndCheckboxDefaultsOffAndSavesTheOptionalPolicy()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"joydex-question-policy-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var originalContext = SynchronizationContext.Current;
+        TaskAlertCoordinator? coordinator = null;
+        try
+        {
+            var path = Path.Combine(directory, "task-alerts.json");
+            coordinator = new TaskAlertCoordinator(path);
+            using var form = new TaskAlertsForm(coordinator,
+                new CodexHookManager(Path.Combine(directory, "hooks.json")),
+                Path.Combine(directory, "Joydex.HookRelay.exe"), Path.Combine(directory, "profile.json"),
+                _ => Task.CompletedTask);
+            var checkbox = FindControl<CheckBox>(form, "Clear questions when the turn finishes");
+            Assert.False(checkbox.Checked);
+            checkbox.Checked = true;
+            Assert.True(coordinator.GetSnapshot().ClearQuestionsOnTurnEnd);
+            Assert.True(TaskAlertPreferencesStore.LoadOrCreate(path).ClearQuestionsOnTurnEnd);
+            checkbox.Checked = false;
+            Assert.False(TaskAlertPreferencesStore.LoadOrCreate(path).ClearQuestionsOnTurnEnd);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(originalContext);
+            if (coordinator is not null) await coordinator.DisposeAsync();
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task DismissButtonClearsSelectedQuestionAndPersistsWithoutIgnoringTheTask()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"joydex-question-dismiss-{Guid.NewGuid():N}");

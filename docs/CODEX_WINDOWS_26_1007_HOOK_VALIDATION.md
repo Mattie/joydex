@@ -28,8 +28,9 @@ function-name matching and the `UserPromptSubmit`, `PreToolUse` and `PostToolUse
 ## Correction
 
 The current source policy retires prior question alerts on any new user turn in the same chat,
-or when a matching Stop or confirmed terminal Desktop turn ends that activity. A partial or
-unknown question-card reply still begins a user turn. This changes only Joydex attention, without
+or acknowledges displayed questions when a Joydex task control successfully opens that chat.
+Normal turn-end cleanup on matching Stop or Desktop completion is optional and defaults off.
+A partial or unknown question-card reply still begins a user turn. This changes only Joydex attention, without
 answering or removing Codex question cards. The original package behavior and attended evidence
 below describe the earlier retention policy; they do not establish deployment of this change.
 See ADR 0016 for late-hook safeguards and the limits of missing turn identities.

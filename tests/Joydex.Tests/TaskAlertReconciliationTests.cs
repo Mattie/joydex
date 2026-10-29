@@ -205,7 +205,7 @@ public sealed class TaskAlertReconciliationTests
     [InlineData(TaskAlertState.Fault)]
     public void ConfirmedTerminalTurnsRetireQuestionAttention(TaskAlertState terminal)
     {
-        var pool = new TaskAlertPool();
+        var pool = new TaskAlertPool { ClearQuestionsOnTurnEnd = true };
         pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, Session, "turn", Now.AddMinutes(-2), QuestionKey));
         pool.Reconcile(new(Session, "turn", terminal, Now.AddMinutes(-3), Now.AddMinutes(-1)), Now);
         var assignment = Assert.Single(pool.Assignments);

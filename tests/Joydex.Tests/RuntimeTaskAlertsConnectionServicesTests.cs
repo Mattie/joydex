@@ -10,6 +10,41 @@ namespace Joydex.Tests;
 public sealed class RuntimeTaskAlertsConnectionServicesTests
 {
     [Fact]
+    public async Task TurnEndPolicyUsesDesiredSettingsAndShowsOnlyTheActivatedPolicy()
+    {
+        var original = Preferences(bank: 4);
+        var settings = Settings(original, revision: 8) with
+        {
+            Desired = Settings(original).Desired with { TaskAlerts = original with { Enabled = false } },
+        };
+        var writer = new FakeSettingsWriter
+        {
+            ApplyHandler = (_, patch, operationId, _) => Task.FromResult(Result(
+                RuntimeSettingsWriteOutcome.PendingIdle, operationId,
+                settings with { Revision = 9, Desired = settings.Desired with { TaskAlerts = patch.TaskAlerts! } },
+                "Waiting for activation.")),
+        };
+        var runner = new FakeCommandRunner();
+        using var services = new RuntimeTaskAlertsConnectionServices(new ImmediateSynchronizationContext());
+        services.BeginConnection(1, writer, runner, State(Snapshot(settings, Alerts())));
+        var result = await services.SetClearQuestionsOnTurnEndAsync(true, Guid.NewGuid());
+        Assert.True(result.Succeeded);
+        var patch = Assert.Single(writer.ApplyCalls).Patch;
+        Assert.True(patch.TaskAlerts!.ClearQuestionsOnTurnEnd);
+        Assert.False(patch.TaskAlerts.Enabled);
+        Assert.Equal(4, patch.TaskAlerts.Bank);
+        Assert.Null(patch.Companion);
+        Assert.Null(patch.Voice);
+        Assert.Null(patch.PebbleIndex);
+        Assert.Empty(runner.ExecuteRequests);
+        Assert.True(services.Current.Settings!.Desired.TaskAlerts.ClearQuestionsOnTurnEnd);
+        Assert.False(services.Current.Snapshot.ClearQuestionsOnTurnEnd);
+        var activated = services.Current.Settings with { Active = services.Current.Settings.Desired };
+        services.BeginConnection(2, writer, runner, State(Snapshot(activated, Alerts())));
+        Assert.True(services.Current.Snapshot.ClearQuestionsOnTurnEnd);
+    }
+
+    [Fact]
     public async Task QuestionDismissalSendsExactSelectionWithoutRequiringHookStatus()
     {
         var runner = new FakeCommandRunner

@@ -213,14 +213,17 @@ public sealed class TaskAlertPipeServerTests
         Assert.True(process.ExitCode == 0, await process.StandardError.ReadToEndAsync());
     }
 
-    [Fact]
-    public async Task AsyncQuestionClearsAtStopThroughTheProductionPipe()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AsyncQuestionStopCleanupFollowsPolicyThroughTheProductionPipe(bool clearOnEnd)
     {
         var directory = Path.Combine(Path.GetTempPath(), "joydex-pipe-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
         {
-            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"),
+                TaskAlertPreferences.Default with { ClearQuestionsOnTurnEnd = clearOnEnd });
             var pipeName = $"Joydex.Tests.{Guid.NewGuid():N}";
             await using var server = new TaskAlertPipeServer(coordinator, _ => { }, pipeName);
             server.Start();
@@ -238,10 +241,14 @@ public sealed class TaskAlertPipeServerTests
                 @event = "Stop", sessionId = "session", turnId = "turn",
                 receivedAtUnixMs = now.AddMilliseconds(1).ToUnixTimeMilliseconds(),
             }));
-            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Completed,
+            await WaitUntilAsync(() => coordinator.GetSnapshot().RecentEvents!.Any(item => item.Event == CodexLifecycleEvent.Stop),
                 AsyncTimeout);
-            Assert.Equal(TaskAlertState.Completed, Assert.Single(coordinator.GetSnapshot().Assignments).State);
-            Assert.Null(Assert.Single(coordinator.GetSnapshot().Assignments).PendingAsyncQuestions);
+            if (clearOnEnd)
+                await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Completed,
+                    AsyncTimeout);
+            Assert.Equal(clearOnEnd ? TaskAlertState.Completed : TaskAlertState.Approval,
+                Assert.Single(coordinator.GetSnapshot().Assignments).State);
+            Assert.Equal(!clearOnEnd, Assert.Single(coordinator.GetSnapshot().Assignments).PendingAsyncQuestions is { Length: 1 });
             await SendPayloadAsync(pipeName, JsonSerializer.Serialize(new
             {
                 @event = "AsyncUserInputAnswered", sessionId = "session", turnId = "answer-turn",

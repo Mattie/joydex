@@ -358,10 +358,21 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
 
     PadCommandPolicy IPadPluginHostServices.CreatePadCommandPolicy(CompanionConfig config)
     {
-        var navigator = new TaskDeepLinkNavigator(config.Safety, WriteLog);
+        var navigator = CreateTaskAlertNavigator(config);
         var executor = CreateActionExecutor(config);
         return new PadCommandPolicy(navigator, executor.ExecuteAsync);
     }
+
+    internal ITaskAlertNavigator CreateTaskAlertNavigator(CompanionConfig config) =>
+        new QuestionAcknowledgingTaskNavigator(
+            new TaskDeepLinkNavigator(config.Safety, WriteActivity),
+            GetTaskAlertSnapshot,
+            (slot, sessionId, keys) =>
+            {
+                lock (_stateGate)
+                    return _taskAlerts?.DismissQuestions(new(slot, sessionId, keys.ToArray())) == true;
+            },
+            WriteLog);
 
     void IPadPluginHostServices.WritePadLog(string message) => WriteLog(message);
 

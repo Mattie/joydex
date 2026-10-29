@@ -6,6 +6,31 @@ namespace Joydex.Tests;
 
 public sealed class TaskAlertCoordinatorTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ActivatedTurnEndPolicyControlsTheLiveReducer(bool clearOnEnd)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "joydex-policy-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "task-alerts.json");
+            TaskAlertPreferencesStore.Save(path, TaskAlertPreferences.Default);
+            await using var coordinator = new TaskAlertCoordinator(path,
+                TaskAlertPreferences.Default with { ClearQuestionsOnTurnEnd = clearOnEnd });
+            Assert.Equal(clearOnEnd, coordinator.GetSnapshot().ClearQuestionsOnTurnEnd);
+            var now = DateTimeOffset.UtcNow;
+            coordinator.TryPublish(new(CodexLifecycleEvent.AsyncUserInputRequest, "chat", "turn", now, AttentionKey));
+            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.Count == 1, TimeSpan.FromSeconds(3));
+            coordinator.TryPublish(new(CodexLifecycleEvent.Stop, "chat", "turn", now.AddMilliseconds(1)));
+            await WaitUntilAsync(() => coordinator.GetSnapshot().RecentEvents!.Any(item => item.Event == CodexLifecycleEvent.Stop),
+                TimeSpan.FromSeconds(3));
+            Assert.Equal(!clearOnEnd, Assert.Single(coordinator.GetSnapshot().Assignments).PendingAsyncQuestions is { Length: 1 });
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
     private static readonly string AttentionKey = new('B', 64);
 
     [Fact]

@@ -12,7 +12,8 @@ public sealed record TaskAlertSnapshot(
     bool BankAutomaticallyDetected = false,
     IReadOnlyList<TaskAlertEventTrace>? RecentEvents = null,
     IReadOnlyList<TaskAlertSuppressionRule>? Suppressions = null,
-    TaskAlertLedOptions? LedOutput = null)
+    TaskAlertLedOptions? LedOutput = null,
+    bool ClearQuestionsOnTurnEnd = false)
 {
     public TaskAlertLedOptions EffectiveLedOutput =>
         (LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize();
@@ -98,7 +99,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         _statePath = statePath ?? Path.Combine(preferencesDirectory, "task-alert-state.json");
         _log = log ?? (_ => { });
         _preferences = activePreferences.Normalize();
-        _pool = new TaskAlertPool();
+        _pool = new TaskAlertPool { ClearQuestionsOnTurnEnd = _preferences.ClearQuestionsOnTurnEnd };
         if (!_preferences.Enabled)
         {
             _pool.SetEnabled(false);
@@ -179,6 +180,23 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             }
         }
 
+        RaiseChanged(snapshot);
+    }
+
+    /// <summary>Persists the normal turn-end question policy without changing hook registration.</summary>
+    public void SetClearQuestionsOnTurnEnd(bool enabled)
+    {
+        TaskAlertSnapshot snapshot;
+        lock (_sync)
+        {
+            if (_preferences.ClearQuestionsOnTurnEnd == enabled) return;
+            var updated = _preferences with { ClearQuestionsOnTurnEnd = enabled };
+            TaskAlertPreferencesStore.Save(_preferencesPath, updated);
+            _preferences = updated;
+            _pool.ClearQuestionsOnTurnEnd = enabled;
+            _reconciliationAuthorityVersion++;
+            snapshot = SnapshotUnsafe();
+        }
         RaiseChanged(snapshot);
     }
 
@@ -559,7 +577,8 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         _detectedBank is not null,
         [.. _recentEvents],
         [.. (_preferences.Suppressions ?? [])],
-        (_preferences.LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize());
+        (_preferences.LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize(),
+        _preferences.ClearQuestionsOnTurnEnd);
 
     private void RestoreStateUnsafe()
     {

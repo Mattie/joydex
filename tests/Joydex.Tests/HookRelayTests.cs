@@ -44,7 +44,7 @@ public sealed class HookRelayTests
     }
 
     [Fact]
-    public void QuestionsSurviveActiveRestartThenClearOnAnyReplyPromptOrStop()
+    public void QuestionsSurviveActiveRestartThenClearOnAnyReplyPromptOrOptedInStop()
     {
         var now = DateTimeOffset.UtcNow;
         var sent = new HookInput("PostToolUse", "session", "turn", null, @"C:\fixture\rollout.jsonl",
@@ -52,7 +52,7 @@ public sealed class HookRelayTests
             {
                 new { title = "First private fixture question" }, new { title = "Second private fixture question" },
             } }), ToolUseId: "call-fixture", ToolResponse: JsonSerializer.SerializeToElement("{\"accepted\":true}"));
-        var pool = new TaskAlertPool();
+        var pool = new TaskAlertPool { ClearQuestionsOnTurnEnd = true };
         Assert.Empty(HookRelay.BuildEvents(sent with { HookEventName = "PreToolUse" }, now));
         foreach (var item in HookRelay.BuildEvents(sent, now)) pool.Apply(item);
         Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
@@ -71,7 +71,7 @@ public sealed class HookRelayTests
         {
             TaskAlertStateStore.Save(path, pool.CaptureState());
             Assert.DoesNotContain("private fixture question", File.ReadAllText(path));
-            var restored = new TaskAlertPool();
+            var restored = new TaskAlertPool { ClearQuestionsOnTurnEnd = true };
             restored.Restore(TaskAlertStateStore.Load(path));
             Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
             foreach (var item in HookRelay.BuildEvents(Reply(sent, "call-fixture", 0), now.AddSeconds(6))) restored.Apply(item);

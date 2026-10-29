@@ -15,15 +15,19 @@ tasks remain outside this recovery path.
 
 An active task with an in-progress latest turn can recover Running. An idle or not-loaded task
 with a confirmed completed, failed or interrupted latest turn can retire an existing assignment.
-Completed, failed and interrupted turns clear question attention; failed and interrupted turns
-become Fault. A positive new-turn observation also retires the prior turn's questions.
+Failed and interrupted turns clear attention and become Fault. Completed turns preserve
+unanswered questions unless **Clear questions when the turn finishes** is enabled. This Task
+Alerts preference defaults to false, including existing settings files that omit it. A positive
+new-turn observation retires the prior turn's questions.
 Terminal observations never allocate historical idle tasks. Missing,
 unavailable, contradictory or unfamiliar states preserve the existing assignment. A legacy hook
 without a turn ID requires an observed turn spanning that hook's timestamp. Generic waiting
 flags cannot identify questions or user dismissals and do not create attention.
 Any UserPromptSubmit hook retires questions that preceded it, including question-card replies
-and hooks with missing or unchanged turn IDs. A matching Stop hook retires question attention
-and retains the normal completion grace. A known turn's late question cannot reopen it after
+and hooks with missing or unchanged turn IDs. A matching Stop hook retains the normal completion
+grace and uses the same optional question-cleanup policy as Desktop completion. With the default
+off, pending questions retain attention and the completed-turn marker until acknowledged.
+A known turn's late question cannot reopen it after
 Stop, and a mismatched or missing Stop turn ID cannot close a different known turn; positive
 Desktop terminal confirmation supplies that fallback. Question hashes, originating turn IDs and
 receipt times survive restart without storing their text. Receipt times let a delayed prompt
@@ -33,12 +37,22 @@ rather than proof that a different turn ended.
 Questions arriving for a different known turn wait without changing its light or event watermark.
 At most 32 content-free question origins are deferred per assigned chat, matching one hook batch;
 overflow is counted as dropped. This bounded state survives restart. A matching prompt or active
-Desktop observation promotes the questions; terminal confirmation drops them. The event trace
+Desktop observation promotes the questions. Completed-turn confirmation preserves them when
+automatic cleanup is off, while opting in or fault confirmation drops them. The event trace
 labels these receipts Deferred rather than presenting them as a visible question update.
 The accepted turn boundary is persisted separately from generic hook receipt time. A late Stop
 for the previous turn therefore cannot make a genuinely newer prompt or native turn look older.
 Cross-turn timestamp ordering uses whole seconds, matching Desktop metadata precision, so a
 fast next turn is not rejected solely because the prior hook had a millisecond timestamp.
+
+Successful task navigation acknowledges only the question hashes captured before opening the
+thread. CM3/joystick task buttons, PAD interfaces and the runtime's task-open command share this
+navigation path. Blocked, dry-run, cancelled or failed navigation does not acknowledge questions.
+The callback resolves the same chat's current slot after navigation so overflow promotion cannot
+strand its questions, while slot reuse cannot clear a different chat. Later questions and blocking
+permissions remain pending. Acknowledgement changes Joydex's notification, without answering or
+removing question cards in Codex. URI dispatch success is the existing navigation contract; this
+does not add a Codex read receipt or acknowledge browsing outside Joydex task controls.
 
 Each scan captures per-task hook revisions and the current ignore/enable policy revision before
 reading Desktop. A hook accepted during the read, including one still queued for reduction,

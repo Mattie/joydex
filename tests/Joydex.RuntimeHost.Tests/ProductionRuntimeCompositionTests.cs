@@ -16,6 +16,26 @@ namespace Joydex.RuntimeHost.Tests;
 public sealed class ProductionRuntimeCompositionTests
 {
     [Fact]
+    public async Task TurnEndQuestionPolicyIsCanonicalAndReplacesOnlyTheTaskAlertOwner()
+    {
+        var initial = Bundle();
+        Assert.False(initial.TaskAlerts.ClearQuestionsOnTurnEnd);
+        var candidate = initial with { TaskAlerts = initial.TaskAlerts with { ClearQuestionsOnTurnEnd = true } };
+        Assert.Equal([SettingsAggregateId.TaskAlerts], SettingsCanonicalizer.Changed(initial, candidate));
+        Assert.True(SettingsCanonicalizer.Clone(candidate).TaskAlerts.ClearQuestionsOnTurnEnd);
+        var factory = new FakeFactory();
+        await using var composition = new ProductionRuntimeComposition(factory, default);
+        composition.Refresh(initial);
+        var originals = factory.LatestOwners();
+        var result = await composition.ActivateAsync(SettingsAggregateId.TaskAlerts, candidate, 2, default);
+        Assert.Equal(SettingsActivationState.Applied, result.State);
+        Assert.True(originals[SettingsAggregateId.TaskAlerts].Disposed);
+        Assert.NotSame(originals[SettingsAggregateId.TaskAlerts], factory.Latest(SettingsAggregateId.TaskAlerts));
+        Assert.Same(originals[SettingsAggregateId.Companion], factory.Latest(SettingsAggregateId.Companion));
+        Assert.Same(originals[SettingsAggregateId.Voice], factory.Latest(SettingsAggregateId.Voice));
+    }
+
+    [Fact]
     public void ActiveVoiceProjectionIsOutsideCanonicalSettingsDocuments()
     {
         using var scratch = new ScratchDirectory();

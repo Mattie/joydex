@@ -19,9 +19,13 @@ _Avoid_: Synthetic hook, task writer, transcript watcher
 A question Codex has successfully sent through `request_user_input_async` during the current
 activity in a chat. The agent may keep working while its task-alert LED requests attention.
 Any new user turn in that chat retires prior question alerts, including partial or unknown
-question-card replies. A matching Stop hook or confirmed terminal Desktop turn also retires them.
-This clears Joydex attention without answering or removing question cards in Codex. Ordinary tool
-completion does not clear a question; restart preserves questions while the turn is active.
+question-card replies. Successfully opening that chat with a Joydex task button acknowledges
+the questions displayed when navigation began. Questions arriving during navigation remain
+pending. Normal turn completion preserves unanswered questions by default; the Task Alerts
+setting **Clear questions when the turn finishes** opts into cleanup on matching Stop hooks and
+confirmed Desktop completion. This clears Joydex attention without answering or removing
+question cards in Codex. Ordinary tool completion does not clear a question; restart preserves
+unacknowledged questions.
 New questions received after a user prompt remain pending even if that prompt's hook arrives
 late. If a question is obsolete or was handled in ordinary chat, the user can select
 the task in Task Alerts and choose **Dismiss questions**. This dismisses only the displayed

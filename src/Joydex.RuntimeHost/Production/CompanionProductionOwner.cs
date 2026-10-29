@@ -112,9 +112,7 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
                         DeviceId: request.DeviceId),
                     token));
             promptPicker.Changed += factory.OnPromptPickerChanged;
-            var navigator = new TaskDeepLinkNavigator(
-                config.Safety,
-                factory.WriteActivity);
+            var navigator = factory.CreateTaskAlertNavigator(config);
             foreach (var device in config.Devices)
             {
                 var executor = factory.CreateActionExecutor(
