@@ -16,6 +16,26 @@ namespace Joydex.RuntimeHost.Tests;
 public sealed class ProductionRuntimeCompositionTests
 {
     [Fact]
+    public async Task TurnEndQuestionPolicyIsCanonicalAndReplacesOnlyTheTaskAlertOwner()
+    {
+        var initial = Bundle();
+        Assert.False(initial.TaskAlerts.ClearQuestionsOnTurnEnd);
+        var candidate = initial with { TaskAlerts = initial.TaskAlerts with { ClearQuestionsOnTurnEnd = true } };
+        Assert.Equal([SettingsAggregateId.TaskAlerts], SettingsCanonicalizer.Changed(initial, candidate));
+        Assert.True(SettingsCanonicalizer.Clone(candidate).TaskAlerts.ClearQuestionsOnTurnEnd);
+        var factory = new FakeFactory();
+        await using var composition = new ProductionRuntimeComposition(factory, default);
+        composition.Refresh(initial);
+        var originals = factory.LatestOwners();
+        var result = await composition.ActivateAsync(SettingsAggregateId.TaskAlerts, candidate, 2, default);
+        Assert.Equal(SettingsActivationState.Applied, result.State);
+        Assert.True(originals[SettingsAggregateId.TaskAlerts].Disposed);
+        Assert.NotSame(originals[SettingsAggregateId.TaskAlerts], factory.Latest(SettingsAggregateId.TaskAlerts));
+        Assert.Same(originals[SettingsAggregateId.Companion], factory.Latest(SettingsAggregateId.Companion));
+        Assert.Same(originals[SettingsAggregateId.Voice], factory.Latest(SettingsAggregateId.Voice));
+    }
+
+    [Fact]
     public void ActiveVoiceProjectionIsOutsideCanonicalSettingsDocuments()
     {
         using var scratch = new ScratchDirectory();
@@ -1020,6 +1040,18 @@ public sealed class ProductionRuntimeCompositionTests
         Assert.Equal(RuntimeUiLimits.MaximumVoiceOutboxDrafts, messaging.Drafts.Length);
         Assert.Equal("Message 1", messaging.Drafts[0].MessagePreview);
         Assert.Equal($"Message {RuntimeUiLimits.MaximumVoiceOutboxDrafts}", messaging.Drafts[^1].MessagePreview);
+    }
+
+    [Fact]
+    public void DeferredQuestionDiagnosticsReachTheRuntimeSnapshot()
+    {
+        var projector = new ProductionRuntimeUiProjector();
+        projector.PublishTaskAlerts(new Joydex.Windows.TaskAlerts.TaskAlertSnapshot(true, [], 0, RecentEvents:
+            [new(DateTimeOffset.UtcNow, CodexLifecycleEvent.AsyncUserInputRequest, "fixture", "unconfirmed", 1,
+                TaskAlertState.Running, Joydex.Windows.TaskAlerts.TaskAlertEventResult.Deferred)]),
+            new RuntimeTaskAlertHookStatus(RuntimeTaskAlertHookState.Installed));
+        Assert.Equal(RuntimeTaskAlertEventResult.Deferred,
+            Assert.Single(projector.GetSnapshot().TaskAlerts!.RecentEvents).Result);
     }
 
     [Fact]

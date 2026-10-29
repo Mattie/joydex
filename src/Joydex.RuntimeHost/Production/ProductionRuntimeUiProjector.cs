@@ -148,6 +148,7 @@ internal sealed class ProductionRuntimeUiProjector
                         TaskAlertEventResult.Dropped => RuntimeTaskAlertEventResult.Dropped,
                         TaskAlertEventResult.Ignored => RuntimeTaskAlertEventResult.Ignored,
                         TaskAlertEventResult.Suppressed => RuntimeTaskAlertEventResult.Suppressed,
+                        TaskAlertEventResult.Deferred => RuntimeTaskAlertEventResult.Deferred,
                         _ => throw new ArgumentOutOfRangeException(nameof(item.Result)),
                     },
                     item.Workspace))

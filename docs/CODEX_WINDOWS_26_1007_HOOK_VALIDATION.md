@@ -27,6 +27,14 @@ function-name matching and the `UserPromptSubmit`, `PreToolUse` and `PostToolUse
 
 ## Correction
 
+The current source policy retires prior question alerts on any new user turn in the same chat,
+or acknowledges displayed questions when a Joydex task control successfully opens that chat.
+Normal turn-end cleanup on matching Stop or Desktop completion is optional and defaults off.
+A partial or unknown question-card reply still begins a user turn. This changes only Joydex attention, without
+answering or removing Codex question cards. The original package behavior and attended evidence
+below describe the earlier retention policy; they do not establish deployment of this change.
+See ADR 0016 for late-hook safeguards and the limits of missing turn identities.
+
 The previous matcher omitted the async tool and the relay mapped only blocking user-input calls.
 Adding the async tool to that blocking path would falsely treat acceptance as an answer.
 
@@ -35,7 +43,7 @@ question events only after an accepted acknowledgment, hashes each session/call/
 resolves matching reply IDs from `UserPromptSubmit`. Failed calls do not create orphan attention.
 Blocking question and approval correlation keep their existing behavior.
 
-Task alerts keep the attention color while any async question is pending, including while the
+The original package kept the attention color while any async question was pending, including while the
 agent continues work or completes its turn. Duplicate acknowledgments are idempotent; other tool
 completions and ordinary prompts cannot dismiss the question. Partial answers resolve only their
 matching question. Restart snapshots add an optional `pendingAsyncQuestions` hash array; existing

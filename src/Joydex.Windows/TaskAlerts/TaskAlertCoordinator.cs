@@ -12,7 +12,8 @@ public sealed record TaskAlertSnapshot(
     bool BankAutomaticallyDetected = false,
     IReadOnlyList<TaskAlertEventTrace>? RecentEvents = null,
     IReadOnlyList<TaskAlertSuppressionRule>? Suppressions = null,
-    TaskAlertLedOptions? LedOutput = null)
+    TaskAlertLedOptions? LedOutput = null,
+    bool ClearQuestionsOnTurnEnd = false)
 {
     public TaskAlertLedOptions EffectiveLedOutput =>
         (LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize();
@@ -26,6 +27,7 @@ public enum TaskAlertEventResult
     Dropped,
     Ignored,
     Suppressed,
+    Deferred,
 }
 
 public sealed record TaskAlertEventTrace(
@@ -37,6 +39,9 @@ public sealed record TaskAlertEventTrace(
     TaskAlertState? State,
     TaskAlertEventResult Result,
     string? Workspace = null);
+
+/// <summary>Captures the event watermark and tracked tasks before an asynchronous Desktop read.</summary>
+public sealed record TaskAlertReconciliationCheckpoint(long Revision, long AuthorityVersion, string[] KnownTaskIds);
 
 public sealed class TaskAlertCoordinator : IAsyncDisposable
 {
@@ -59,6 +64,11 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
     private readonly Task _reducerTask;
     private TaskAlertPreferences _preferences;
     private int? _detectedBank;
+    private long _reconciliationRevision;
+    private long _reconciliationAuthorityVersion;
+    private readonly Dictionary<string, long> _sessionRevisions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _pendingEventCounts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string? TurnId, DateTimeOffset At)> _acknowledgedTurns = new(StringComparer.Ordinal);
 
     public TaskAlertCoordinator(
         string preferencesPath,
@@ -89,7 +99,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         _statePath = statePath ?? Path.Combine(preferencesDirectory, "task-alert-state.json");
         _log = log ?? (_ => { });
         _preferences = activePreferences.Normalize();
-        _pool = new TaskAlertPool();
+        _pool = new TaskAlertPool { ClearQuestionsOnTurnEnd = _preferences.ClearQuestionsOnTurnEnd };
         if (!_preferences.Enabled)
         {
             _pool.SetEnabled(false);
@@ -109,6 +119,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
     public bool TryPublish(TaskAlertEvent taskEvent)
     {
         ArgumentNullException.ThrowIfNull(taskEvent);
+        if (string.IsNullOrWhiteSpace(taskEvent.SessionId)) return false;
         bool written;
         lock (_sync)
         {
@@ -122,6 +133,11 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             }
 
             written = _events.Writer.TryWrite(taskEvent);
+            if (written)
+            {
+                _sessionRevisions[taskEvent.SessionId] = ++_reconciliationRevision;
+                _pendingEventCounts[taskEvent.SessionId] = _pendingEventCounts.GetValueOrDefault(taskEvent.SessionId) + 1;
+            }
         }
 
         if (!written)
@@ -148,11 +164,13 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         {
             if (_pool.SetEnabled(enabled))
             {
+                _reconciliationAuthorityVersion++;
                 if (!enabled)
                 {
                     while (_events.Reader.TryRead(out _))
                     {
                     }
+                    _pendingEventCounts.Clear();
                 }
 
                 _preferences = _preferences with { Enabled = enabled };
@@ -162,6 +180,23 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             }
         }
 
+        RaiseChanged(snapshot);
+    }
+
+    /// <summary>Persists the normal turn-end question policy without changing hook registration.</summary>
+    public void SetClearQuestionsOnTurnEnd(bool enabled)
+    {
+        TaskAlertSnapshot snapshot;
+        lock (_sync)
+        {
+            if (_preferences.ClearQuestionsOnTurnEnd == enabled) return;
+            var updated = _preferences with { ClearQuestionsOnTurnEnd = enabled };
+            TaskAlertPreferencesStore.Save(_preferencesPath, updated);
+            _preferences = updated;
+            _pool.ClearQuestionsOnTurnEnd = enabled;
+            _reconciliationAuthorityVersion++;
+            snapshot = SnapshotUnsafe();
+        }
         RaiseChanged(snapshot);
     }
 
@@ -194,6 +229,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         TaskAlertSnapshot snapshot;
         lock (_sync)
         {
+            _reconciliationAuthorityVersion++;
             _internallySuppressedTaskIds = taskIds
                 .Where(taskId => !string.IsNullOrWhiteSpace(taskId))
                 .Select(taskId => taskId.Trim())
@@ -254,6 +290,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             var updated = _preferences with { Suppressions = [.. current, rule] };
             TaskAlertPreferencesStore.Save(_preferencesPath, updated);
             _preferences = updated.Normalize();
+            _reconciliationAuthorityVersion++;
             _pool.RemoveAssignments(assignment => IsSuppressedUnsafe(
                 assignment.SessionId,
                 assignment.WorkspaceKey), DateTimeOffset.UtcNow);
@@ -289,6 +326,7 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             var updated = _preferences with { Suppressions = updatedRules };
             TaskAlertPreferencesStore.Save(_preferencesPath, updated);
             _preferences = updated.Normalize();
+            _reconciliationAuthorityVersion++;
             snapshot = SnapshotUnsafe();
         }
 
@@ -301,8 +339,11 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         TaskAlertSnapshot? snapshot = null;
         lock (_sync)
         {
+            var acknowledged = _pool.Assignments.FirstOrDefault(item => item.Slot == slot && item.SessionId == sessionId);
             if (_pool.AcknowledgeTerminal(slot, sessionId, DateTimeOffset.UtcNow))
             {
+                _acknowledgedTurns[sessionId] = (acknowledged!.TurnId, acknowledged.UpdatedAt);
+                _sessionRevisions[sessionId] = ++_reconciliationRevision;
                 TrySaveStateUnsafe();
                 snapshot = SnapshotUnsafe();
             }
@@ -320,12 +361,73 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         {
             if (_pool.DismissQuestions(slot, sessionId, questionKeys, DateTimeOffset.UtcNow))
             {
+                _sessionRevisions[sessionId] = ++_reconciliationRevision;
                 TrySaveStateUnsafe();
                 snapshot = SnapshotUnsafe();
             }
         }
         RaiseChanged(snapshot);
         return snapshot is not null;
+    }
+
+    /// <summary>Starts a read-only scan; subsequent hook receipts and user actions supersede it.</summary>
+    public TaskAlertReconciliationCheckpoint CaptureReconciliationCheckpoint()
+    {
+        lock (_sync)
+            return new(_reconciliationRevision, _reconciliationAuthorityVersion,
+                _pool.Assignments.Select(item => item.SessionId)
+                    .Concat(_sessionRevisions.OrderByDescending(item => item.Value).Select(item => item.Key))
+                    .Where(id => Guid.TryParse(id, out _)).Distinct(StringComparer.Ordinal)
+                    .Take(TaskAlertSlots.All.Length).ToArray());
+    }
+
+    /// <summary>Applies observations only when neither newer hooks nor user actions changed their task.</summary>
+    public int Reconcile(TaskAlertReconciliationCheckpoint checkpoint, TaskAlertDesktopSnapshot desktop)
+    {
+        TaskAlertSnapshot? snapshot = null;
+        var visibleChanges = 0;
+        var applied = false;
+        lock (_sync)
+        {
+            if (!_pool.Enabled || checkpoint.AuthorityVersion != _reconciliationAuthorityVersion) return 0;
+            foreach (var observation in desktop.Tasks)
+            {
+                if (_sessionRevisions.GetValueOrDefault(observation.SessionId) > checkpoint.Revision
+                    || _pendingEventCounts.GetValueOrDefault(observation.SessionId) > 0
+                    || _internallySuppressedTaskIds.Contains(observation.SessionId)) continue;
+                var before = _pool.Assignments.FirstOrDefault(item => item.SessionId == observation.SessionId);
+                var workspace = TaskAlertSuppression.NormalizeWorkspace(observation.Workspace);
+                var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace)
+                    ?? (TaskAlertSuppression.IsWorkspaceKey(observation.WorkspaceKey) ? observation.WorkspaceKey : before?.WorkspaceKey);
+                if (IsSuppressedUnsafe(observation.SessionId, workspaceKey))
+                {
+                    // A legacy hook may have omitted cwd. A fresh Desktop observation can
+                    // reveal that its existing light belongs to an ignored workspace.
+                    if (before is not null && _pool.Reconcile(observation, DateTimeOffset.UtcNow))
+                    {
+                        _pool.RemoveAssignments(item => item.SessionId == observation.SessionId, DateTimeOffset.UtcNow);
+                        _sessionRevisions[observation.SessionId] = ++_reconciliationRevision;
+                        applied = true;
+                        visibleChanges++;
+                    }
+                    continue;
+                }
+                if (before is null && (workspaceKey is null || _acknowledgedTurns.TryGetValue(observation.SessionId, out var acknowledged)
+                        && (acknowledged.TurnId == observation.TurnId
+                            || observation.StartedAt.ToUnixTimeSeconds() < acknowledged.At.ToUnixTimeSeconds()))) continue;
+                if (!_pool.Reconcile(observation, DateTimeOffset.UtcNow)) continue;
+                applied = true;
+                _sessionRevisions[observation.SessionId] = ++_reconciliationRevision;
+                var after = _pool.Assignments.First(item => item.SessionId == observation.SessionId);
+                if (before is null || before.State != after.State || before.TurnId != after.TurnId
+                    || before.Workspace != after.Workspace || before.CompleteAfter != after.CompleteAfter)
+                    visibleChanges++;
+            }
+            if (applied) TrySaveStateUnsafe();
+            if (visibleChanges > 0) snapshot = SnapshotUnsafe();
+        }
+        RaiseChanged(snapshot);
+        return visibleChanges;
     }
 
     public async ValueTask DisposeAsync()
@@ -363,6 +465,9 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
             {
                 lock (_sync)
                 {
+                    var remaining = _pendingEventCounts.GetValueOrDefault(taskEvent.SessionId) - 1;
+                    if (remaining <= 0) _pendingEventCounts.Remove(taskEvent.SessionId);
+                    else _pendingEventCounts[taskEvent.SessionId] = remaining;
                     if (_internallySuppressedTaskIds.Contains(taskEvent.SessionId))
                     {
                         continue;
@@ -429,6 +534,9 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
                             ? TaskAlertEventResult.Dropped
                             : !applied
                                 ? TaskAlertEventResult.Ignored
+                                : taskEvent.Event == CodexLifecycleEvent.AsyncUserInputRequest
+                                    && assignment?.TurnId != taskEvent.TurnId
+                                    ? TaskAlertEventResult.Deferred
                                 : taskEvent.Event == CodexLifecycleEvent.Stop
                                     ? TaskAlertEventResult.StopGrace
                                     : existing is null
@@ -469,7 +577,8 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         _detectedBank is not null,
         [.. _recentEvents],
         [.. (_preferences.Suppressions ?? [])],
-        (_preferences.LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize());
+        (_preferences.LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize(),
+        _preferences.ClearQuestionsOnTurnEnd);
 
     private void RestoreStateUnsafe()
     {

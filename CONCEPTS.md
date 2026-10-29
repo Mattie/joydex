@@ -4,12 +4,30 @@ Joydex connects physical controls and room devices to explicit Codex actions. It
 
 ## Language
 
+**Task Alert Reconciliation**:
+A periodic, read-only comparison of task lights with explicit Codex Desktop turn metadata.
+The task-alert runtime shares the Desktop Task Bridge independently of Room Voice. Once a
+local hook supplies a real task identity, a bounded scan can recover missed starts and retire
+confirmed completed, failed or interrupted turns. Unknown or contradictory observations leave
+lights unchanged. Hooks, ignores, question dismissals and terminal acknowledgments retain
+authority over older scans; generic Desktop waiting flags do not create questions. Scans renew
+active-task leases separately from hook timestamps, so long-running tasks remain visible without
+making delayed hook events appear obsolete. See ADR 0016 for recovery boundaries.
+_Avoid_: Synthetic hook, task writer, transcript watcher
+
 **Pending Async Question**:
-A question Codex has successfully sent through `request_user_input_async` and the user has not
-resolved through its question-card reply. The agent may keep working, but the task still
-needs attention. Its task-alert LED remains in the attention state across tool completion, turn
-completion, unrelated prompts and Joydex restart. Each reply resolves only its original call and
-question index. If a question is obsolete or was handled in ordinary chat, the user can select
+A question Codex has successfully sent through `request_user_input_async` during the current
+activity in a chat. The agent may keep working while its task-alert LED requests attention.
+Any new user turn in that chat retires prior question alerts, including partial or unknown
+question-card replies. Successfully opening that chat with a Joydex task button acknowledges
+the questions displayed when navigation began. Questions arriving during navigation remain
+pending. Normal turn completion preserves unanswered questions by default; the Task Alerts
+setting **Clear questions when the turn finishes** opts into cleanup on matching Stop hooks and
+confirmed Desktop completion. This clears Joydex attention without answering or removing
+question cards in Codex. Ordinary tool completion does not clear a question; restart preserves
+unacknowledged questions.
+New questions received after a user prompt remain pending even if that prompt's hook arrives
+late. If a question is obsolete or was handled in ordinary chat, the user can select
 the task in Task Alerts and choose **Dismiss questions**. This dismisses only the displayed
 question hashes; newer questions and blocking permissions remain pending. Dismissal changes
 Joydex's alert without answering or removing the question in Codex. Joydex stores hashes of

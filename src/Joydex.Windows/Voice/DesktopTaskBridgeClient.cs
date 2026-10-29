@@ -1,6 +1,7 @@
 using System.IO.Pipes;
 using System.Text.Json;
 using Joydex.Core.Voice;
+using Joydex.Core.TaskAlerts;
 
 namespace Joydex.Windows.Voice;
 
@@ -101,6 +102,21 @@ public sealed class DesktopTaskBridgeClient(
             .ThenByDescending(task => task.UpdatedAt)
             .ToArray();
         return new DesktopTaskCatalog(filtered);
+    }
+
+    /// <summary>Reads bounded local metadata using a task identity already observed by Joydex.</summary>
+    public async Task<TaskAlertDesktopSnapshot> ReadTaskAlertSnapshotAsync(
+        IReadOnlyList<string> knownTaskIds, CancellationToken cancellationToken = default)
+    {
+        if (knownTaskIds.Count == 0)
+            throw new InvalidOperationException("Task-alert reconciliation is waiting for a local task hook identity.");
+        var result = await RequestAsync(DesktopTaskBridgeProtocol.TaskAlertSnapshotMethod,
+            knownTaskIds[0], new { knownTaskIds }, TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
+        var snapshot = result.Deserialize<TaskAlertDesktopSnapshot>(JsonOptions);
+        if (snapshot?.Tasks is null || snapshot.Tasks.Length > 60 || snapshot.Tasks.Any(item => item is null)
+            || snapshot.UnavailableCount < 0)
+            throw new InvalidDataException("Desktop task bridge returned an invalid task-alert snapshot.");
+        return snapshot;
     }
 
     public async Task<DesktopTaskSummary> ResolveTaskAsync(

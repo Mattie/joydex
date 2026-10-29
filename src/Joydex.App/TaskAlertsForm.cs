@@ -16,10 +16,12 @@ internal sealed class TaskAlertsForm : ThemedForm
     private readonly string _linkToolProfilePath;
     private readonly Func<TaskAlertSnapshot> _getSnapshot;
     private readonly Func<bool, Guid, Task> _setEnabled;
+    private readonly Func<bool, Guid, Task> _setClearQuestionsOnTurnEnd;
     private readonly Func<TaskAlertLedOptions, Guid, Task> _setLedOutput;
     private readonly Func<TaskAlertSuppressionScope, string, Guid, Task<bool>> _addSuppression;
     private readonly Func<RuntimeTaskAlertQuestionDismissal, Guid, Task> _dismissQuestions;
     private readonly CheckBox _enabled;
+    private readonly CheckBox _clearQuestionsOnTurnEnd;
     private readonly Label _bank;
     private readonly Label _dropped;
     private readonly Label _telemetry;
@@ -84,6 +86,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         _linkToolProfilePath = services.LinkToolProfilePath;
         _getSnapshot = services.GetSnapshot;
         _setEnabled = services.SetEnabled;
+        _setClearQuestionsOnTurnEnd = services.SetClearQuestionsOnTurnEnd;
         _setLedOutput = services.SetLedOutput;
         _addSuppression = services.AddSuppression;
         _dismissQuestions = services.DismissQuestions;
@@ -137,6 +140,32 @@ internal sealed class TaskAlertsForm : ThemedForm
             }
         };
 
+        _clearQuestionsOnTurnEnd = new CheckBox
+        {
+            Text = "Clear questions when the turn finishes",
+            AccessibleName = "Clear questions when the turn finishes",
+            AutoSize = true,
+            Margin = new Padding(0, 4, 0, 0),
+        };
+        _clearQuestionsOnTurnEnd.CheckedChanged += async (_, _) =>
+        {
+            if (_updating) return;
+            _clearQuestionsOnTurnEnd.Enabled = false;
+            try
+            {
+                await _setClearQuestionsOnTurnEnd(_clearQuestionsOnTurnEnd.Checked, Guid.NewGuid());
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(exception.Message, "Joydex task alerts", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                _clearQuestionsOnTurnEnd.Enabled = true;
+                UpdateSnapshot(_getSnapshot());
+            }
+        };
+
         var summaryCard = new CardPanel
         {
             AutoSize = true,
@@ -150,12 +179,14 @@ internal sealed class TaskAlertsForm : ThemedForm
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
             Dock = DockStyle.Top,
-            RowCount = 3,
+            RowCount = 4,
         };
         summaryLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         summaryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         summaryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         summaryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        summaryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        summaryLayout.Controls.Add(_clearQuestionsOnTurnEnd, 0, 3);
 
         var summaryHeader = new TableLayoutPanel
         {
@@ -773,6 +804,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         try
         {
             _enabled.Checked = snapshot.Enabled;
+            _clearQuestionsOnTurnEnd.Checked = snapshot.ClearQuestionsOnTurnEnd;
             _bank.Text = snapshot.BankAutomaticallyDetected
                 ? $"M{snapshot.Bank} (automatic)"
                 : $"M{snapshot.Bank} (fallback)";
@@ -1276,6 +1308,11 @@ internal sealed class TaskAlertsForm : ThemedForm
             {
                 coordinator.DismissQuestions(selection.Slot, selection.SessionId, selection.QuestionKeys);
                 return Task.CompletedTask;
+            },
+            (enabled, _) =>
+            {
+                coordinator.SetClearQuestionsOnTurnEnd(enabled);
+                return Task.CompletedTask;
             });
     }
 
@@ -1325,6 +1362,13 @@ internal sealed class TaskAlertsForm : ThemedForm
                     .ConfigureAwait(true);
                 EnsureSuccessful(await runtimeServices.DismissQuestionsAsync(selection, operationId)
                     .ConfigureAwait(true));
+            },
+            async (enabled, operationId) =>
+            {
+                await RuntimeTaskAlertsRecoveryPolicy.ReconcileBeforeNewActionAsync(runtimeServices)
+                    .ConfigureAwait(true);
+                EnsureSuccessful(await runtimeServices.SetClearQuestionsOnTurnEndAsync(enabled, operationId)
+                    .ConfigureAwait(true));
             });
     }
 
@@ -1359,7 +1403,8 @@ internal sealed class TaskAlertsForm : ThemedForm
         Func<bool, Guid, Task> SetEnabled,
         Func<TaskAlertLedOptions, Guid, Task> SetLedOutput,
         Func<TaskAlertSuppressionScope, string, Guid, Task<bool>> AddSuppression,
-        Func<RuntimeTaskAlertQuestionDismissal, Guid, Task> DismissQuestions);
+        Func<RuntimeTaskAlertQuestionDismissal, Guid, Task> DismissQuestions,
+        Func<bool, Guid, Task> SetClearQuestionsOnTurnEnd);
 
     private sealed record SuppressionTarget(string SessionId, string? Workspace);
 }

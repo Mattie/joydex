@@ -65,6 +65,7 @@ public enum RuntimeTaskAlertEventResult
     Dropped,
     Ignored,
     Suppressed,
+    Deferred,
 }
 
 public sealed record RuntimeTaskAlertEventTrace(

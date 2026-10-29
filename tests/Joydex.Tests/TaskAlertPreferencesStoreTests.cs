@@ -14,6 +14,7 @@ public sealed class TaskAlertPreferencesStoreTests : IDisposable
         var preferences = TaskAlertPreferencesStore.LoadOrCreate(path);
 
         Assert.True(preferences.Enabled);
+        Assert.False(preferences.ClearQuestionsOnTurnEnd);
         Assert.Equal(2, preferences.Bank);
         Assert.Empty(preferences.Suppressions!);
         Assert.Equal(TaskAlertLedOutputMode.LinkTool, preferences.LedOutput!.Mode);
@@ -74,6 +75,17 @@ public sealed class TaskAlertPreferencesStoreTests : IDisposable
 
         Assert.False(loaded.Enabled);
         Assert.Equal(3, loaded.Bank);
+        Assert.False(loaded.ClearQuestionsOnTurnEnd);
+    }
+
+    [Fact]
+    public void PersistsTheOptionalNormalTurnEndQuestionPolicy()
+    {
+        var path = Path.Combine(_directory, "question-policy.json");
+        TaskAlertPreferencesStore.Save(path, TaskAlertPreferences.Default with { ClearQuestionsOnTurnEnd = true });
+        Assert.True(TaskAlertPreferencesStore.LoadOrCreate(path).ClearQuestionsOnTurnEnd);
+        TaskAlertPreferencesStore.Save(path, TaskAlertPreferences.Default);
+        Assert.False(TaskAlertPreferencesStore.LoadOrCreate(path).ClearQuestionsOnTurnEnd);
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Diagnostics;
 using Microsoft.Win32.SafeHandles;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -41,26 +42,33 @@ internal static partial class HookRelay
         return 0;
     }
 
-    private static void TrySend(string pipeName, IReadOnlyList<TaskAlertEvent> events)
+    internal static void TrySend(string pipeName, IReadOnlyList<TaskAlertEvent> events,
+        TimeSpan? connectionBudget = null)
     {
         try
         {
-            var handle = CreateFile(
-                $"\\\\.\\pipe\\{pipeName}",
-                genericWrite: 0x40000000,
-                shareMode: 0,
-                securityAttributes: IntPtr.Zero,
-                creationDisposition: 3,
-                flagsAndAttributes: 0,
-                templateFile: IntPtr.Zero);
-            if (handle.IsInvalid)
+            var deadline = Stopwatch.StartNew();
+            var budget = connectionBudget ?? TimeSpan.FromMilliseconds(250);
+            SafeFileHandle handle;
+            while (true)
             {
+                handle = CreateFile(
+                    $"\\\\.\\pipe\\{pipeName}",
+                    genericWrite: 0x40000000,
+                    shareMode: 0,
+                    securityAttributes: IntPtr.Zero,
+                    creationDisposition: 3,
+                    flagsAndAttributes: 0,
+                    templateFile: IntPtr.Zero);
+                if (!handle.IsInvalid) break;
+                var error = Marshal.GetLastPInvokeError();
                 handle.Dispose();
-                return;
+                // Retry only before a connection exists. Never replay a possibly written hook.
+                // This covers the receiver's next-instance gap without consuming the hook timeout.
+                if (error is not (2 or 231) || deadline.Elapsed >= budget) return;
+                Thread.Sleep(10);
             }
 
-            // CreateFile performs one immediate open. ERROR_FILE_NOT_FOUND and
-            // ERROR_PIPE_BUSY both drop inside the 20 ms connection budget.
             using var pipe = new FileStream(handle, FileAccess.Write, bufferSize: 4096, isAsync: false);
             using var writer = new Utf8JsonWriter(pipe);
             // One hook uses one connection. Immediate, best-effort opens could otherwise drop
@@ -82,7 +90,7 @@ internal static partial class HookRelay
         }
         catch (Exception exception) when (exception is IOException or TimeoutException)
         {
-            // Joydex is optional. Do not retry when it is absent or busy.
+            // Joydex is optional; a failed write must not fail the Codex hook or be replayed.
         }
     }
 

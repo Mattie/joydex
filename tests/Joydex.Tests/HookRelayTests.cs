@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.IO.Pipes;
+using System.Diagnostics;
 using Joydex.Core.TaskAlerts;
 
 namespace Joydex.Tests;
@@ -6,7 +8,43 @@ namespace Joydex.Tests;
 public sealed class HookRelayTests
 {
     [Fact]
-    public void AsyncQuestionsRemainAttentionUntilEachReplyIncludingAfterStopAndRestart()
+    public async Task RelayRecoversWhenTheListenerAppearsDuringItsConnectionBudget()
+    {
+        var name = $"Joydex.Tests.{Guid.NewGuid():N}";
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var receivedAt = DateTimeOffset.UtcNow;
+        var send = Task.Run(() =>
+        {
+            started.SetResult();
+            // Exercise the real delayed pipe without requiring a loaded runner to schedule
+            // this test's continuation inside the production 250 ms window. The default
+            // budget is checked separately below.
+            HookRelay.TrySend(name, [new(CodexLifecycleEvent.UserPromptSubmit, "fixture", "turn", receivedAt)],
+                connectionBudget: TimeSpan.FromSeconds(10));
+        });
+        await started.Task;
+        await Task.Delay(50);
+        await using var listener = new NamedPipeServerStream(name, PipeDirection.In, 1,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        await listener.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        using var reader = new StreamReader(listener);
+        using var document = JsonDocument.Parse(await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(15)));
+        await send;
+        Assert.Equal("UserPromptSubmit", document.RootElement.GetProperty("event").GetString());
+        Assert.Equal(receivedAt.ToUnixTimeMilliseconds(), document.RootElement.GetProperty("receivedAtUnixMs").GetInt64());
+    }
+
+    [Fact]
+    public void MissingOptionalListenerReturnsWithinTheHookTimeout()
+    {
+        var elapsed = Stopwatch.StartNew();
+        HookRelay.TrySend($"Joydex.Tests.{Guid.NewGuid():N}",
+            [new(CodexLifecycleEvent.UserPromptSubmit, "fixture", "turn", DateTimeOffset.UtcNow)]);
+        Assert.InRange(elapsed.Elapsed, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void QuestionsSurviveActiveRestartThenClearOnAnyReplyPromptOrOptedInStop()
     {
         var now = DateTimeOffset.UtcNow;
         var sent = new HookInput("PostToolUse", "session", "turn", null, @"C:\fixture\rollout.jsonl",
@@ -14,7 +52,7 @@ public sealed class HookRelayTests
             {
                 new { title = "First private fixture question" }, new { title = "Second private fixture question" },
             } }), ToolUseId: "call-fixture", ToolResponse: JsonSerializer.SerializeToElement("{\"accepted\":true}"));
-        var pool = new TaskAlertPool();
+        var pool = new TaskAlertPool { ClearQuestionsOnTurnEnd = true };
         Assert.Empty(HookRelay.BuildEvents(sent with { HookEventName = "PreToolUse" }, now));
         foreach (var item in HookRelay.BuildEvents(sent, now)) pool.Apply(item);
         Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
@@ -25,8 +63,6 @@ public sealed class HookRelayTests
         foreach (var item in HookRelay.BuildEvents(sent, now.AddSeconds(1))) pool.Apply(item);
         Assert.Equal(2, pool.CaptureState().Assignments.Single().PendingAsyncQuestions!.Length);
         Assert.False(pool.Apply(new(CodexLifecycleEvent.ToolCompleted, "session", "turn", now.AddSeconds(2), pending[0])));
-        pool.Apply(new(CodexLifecycleEvent.Stop, "session", "turn", now.AddSeconds(3)));
-        pool.Advance(now.AddSeconds(5));
         Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
 
         var directory = Path.Combine(Path.GetTempPath(), "joydex-async-hook", Guid.NewGuid().ToString("N"));
@@ -35,22 +71,29 @@ public sealed class HookRelayTests
         {
             TaskAlertStateStore.Save(path, pool.CaptureState());
             Assert.DoesNotContain("private fixture question", File.ReadAllText(path));
-            var restored = new TaskAlertPool();
+            var restored = new TaskAlertPool { ClearQuestionsOnTurnEnd = true };
             restored.Restore(TaskAlertStateStore.Load(path));
             Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
             foreach (var item in HookRelay.BuildEvents(Reply(sent, "call-fixture", 0), now.AddSeconds(6))) restored.Apply(item);
-            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
-            Assert.Single(restored.CaptureState().Assignments.Single().PendingAsyncQuestions!);
+            Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
+            Assert.Empty(restored.CaptureState().Assignments.Single().PendingAsyncQuestions!);
 
-            // An unknown reply and an ordinary new prompt cannot dismiss the outstanding card.
+            // A new question in the resumed turn can relight; an unknown reply is still a new user turn.
+            foreach (var item in HookRelay.BuildEvents(sent with { TurnId = "answer-turn", ToolUseId = "second-call" }, now.AddSeconds(6.5)))
+                restored.Apply(item);
+            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
             foreach (var item in HookRelay.BuildEvents(Reply(sent, "other-call", 1), now.AddSeconds(7))) restored.Apply(item);
+            Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
             foreach (var item in HookRelay.BuildEvents(sent with
                 { HookEventName = "UserPromptSubmit", ToolName = null, Prompt = "Another request" }, now.AddSeconds(8)))
                 restored.Apply(item);
-            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
+            Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
             foreach (var item in HookRelay.BuildEvents(Reply(sent, "call-fixture", 1), now.AddSeconds(9))) restored.Apply(item);
             Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
             Assert.Empty(restored.CaptureState().Assignments.Single().PendingAsyncQuestions!);
+            foreach (var item in HookRelay.BuildEvents(sent with { TurnId = "answer-turn", ToolUseId = "last-call" }, now.AddSeconds(9.5)))
+                restored.Apply(item);
+            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
             restored.Apply(new(CodexLifecycleEvent.Stop, "session", "answer-turn", now.AddSeconds(10)));
             restored.Advance(now.AddSeconds(12));
             Assert.Equal(TaskAlertState.Completed, Assert.Single(restored.Assignments).State);

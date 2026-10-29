@@ -151,7 +151,7 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
         CancellationToken cancellationToken)
     {
         var navigation = CreateDesktopTaskNavigationRequest(request);
-        var navigator = new TaskDeepLinkNavigator(activeSettings.Companion.Safety, WriteLog);
+        var navigator = CreateTaskAlertNavigator(activeSettings.Companion);
         if (!await navigator.NavigateAsync(navigation, cancellationToken)
             .ConfigureAwait(false))
         {

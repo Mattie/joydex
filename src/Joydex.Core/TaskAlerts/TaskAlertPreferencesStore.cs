@@ -16,7 +16,8 @@ public sealed record TaskAlertPreferences(
     bool Enabled = true,
     int Bank = 2,
     TaskAlertSuppressionRule[]? Suppressions = null,
-    TaskAlertLedOptions? LedOutput = null)
+    TaskAlertLedOptions? LedOutput = null,
+    bool ClearQuestionsOnTurnEnd = false)
 {
     public static TaskAlertPreferences Default { get; } = new(
         Suppressions: [],

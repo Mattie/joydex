@@ -806,6 +806,15 @@ internal sealed class DesktopTaskBridgePipeServer(
             await nativeClient.EnsureRequiredToolsAsync(cancellationToken).ConfigureAwait(false);
             result = JsonSerializer.SerializeToElement(new { available = true });
         }
+        else if (request.Method == DesktopTaskBridgeProtocol.TaskAlertSnapshotMethod)
+        {
+            var ids = request.Arguments.GetProperty("knownTaskIds").Deserialize<string[]>()
+                ?? throw new InvalidDataException("Missing task-alert scan selection.");
+            result = JsonSerializer.SerializeToElement(await TaskAlertDesktopReader.ReadAsync(ids,
+                (tool, arguments, token) => nativeClient.CallToolAsync(tool, request.SourceThreadId,
+                    request.Id, arguments, token), cancellationToken).ConfigureAwait(false),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
         else if (request.Method == DesktopTaskBridgeProtocol.ReleaseTaskMethod)
         {
             var content = await ReleaseTaskAsync(nativeClient, request, cancellationToken)
