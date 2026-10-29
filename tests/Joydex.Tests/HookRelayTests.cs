@@ -44,7 +44,7 @@ public sealed class HookRelayTests
     }
 
     [Fact]
-    public void AsyncQuestionsRemainAttentionUntilEachReplyIncludingAfterStopAndRestart()
+    public void QuestionsSurviveActiveRestartThenClearOnAnyReplyPromptOrStop()
     {
         var now = DateTimeOffset.UtcNow;
         var sent = new HookInput("PostToolUse", "session", "turn", null, @"C:\fixture\rollout.jsonl",
@@ -63,8 +63,6 @@ public sealed class HookRelayTests
         foreach (var item in HookRelay.BuildEvents(sent, now.AddSeconds(1))) pool.Apply(item);
         Assert.Equal(2, pool.CaptureState().Assignments.Single().PendingAsyncQuestions!.Length);
         Assert.False(pool.Apply(new(CodexLifecycleEvent.ToolCompleted, "session", "turn", now.AddSeconds(2), pending[0])));
-        pool.Apply(new(CodexLifecycleEvent.Stop, "session", "turn", now.AddSeconds(3)));
-        pool.Advance(now.AddSeconds(5));
         Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
 
         var directory = Path.Combine(Path.GetTempPath(), "joydex-async-hook", Guid.NewGuid().ToString("N"));
@@ -77,18 +75,25 @@ public sealed class HookRelayTests
             restored.Restore(TaskAlertStateStore.Load(path));
             Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
             foreach (var item in HookRelay.BuildEvents(Reply(sent, "call-fixture", 0), now.AddSeconds(6))) restored.Apply(item);
-            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
-            Assert.Single(restored.CaptureState().Assignments.Single().PendingAsyncQuestions!);
+            Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
+            Assert.Empty(restored.CaptureState().Assignments.Single().PendingAsyncQuestions!);
 
-            // An unknown reply and an ordinary new prompt cannot dismiss the outstanding card.
+            // A new question in the resumed turn can relight; an unknown reply is still a new user turn.
+            foreach (var item in HookRelay.BuildEvents(sent with { TurnId = "answer-turn", ToolUseId = "second-call" }, now.AddSeconds(6.5)))
+                restored.Apply(item);
+            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
             foreach (var item in HookRelay.BuildEvents(Reply(sent, "other-call", 1), now.AddSeconds(7))) restored.Apply(item);
+            Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
             foreach (var item in HookRelay.BuildEvents(sent with
                 { HookEventName = "UserPromptSubmit", ToolName = null, Prompt = "Another request" }, now.AddSeconds(8)))
                 restored.Apply(item);
-            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
+            Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
             foreach (var item in HookRelay.BuildEvents(Reply(sent, "call-fixture", 1), now.AddSeconds(9))) restored.Apply(item);
             Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
             Assert.Empty(restored.CaptureState().Assignments.Single().PendingAsyncQuestions!);
+            foreach (var item in HookRelay.BuildEvents(sent with { TurnId = "answer-turn", ToolUseId = "last-call" }, now.AddSeconds(9.5)))
+                restored.Apply(item);
+            Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
             restored.Apply(new(CodexLifecycleEvent.Stop, "session", "answer-turn", now.AddSeconds(10)));
             restored.Advance(now.AddSeconds(12));
             Assert.Equal(TaskAlertState.Completed, Assert.Single(restored.Assignments).State);

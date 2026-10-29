@@ -214,7 +214,7 @@ public sealed class TaskAlertPipeServerTests
     }
 
     [Fact]
-    public async Task AsyncQuestionSurvivesStopAndClearsThroughTheProductionPipe()
+    public async Task AsyncQuestionClearsAtStopThroughTheProductionPipe()
     {
         var directory = Path.Combine(Path.GetTempPath(), "joydex-pipe-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -238,10 +238,10 @@ public sealed class TaskAlertPipeServerTests
                 @event = "Stop", sessionId = "session", turnId = "turn",
                 receivedAtUnixMs = now.AddMilliseconds(1).ToUnixTimeMilliseconds(),
             }));
-            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.CompleteAfter is not null,
+            await WaitUntilAsync(() => coordinator.GetSnapshot().Assignments.SingleOrDefault()?.State == TaskAlertState.Completed,
                 AsyncTimeout);
-            await Task.Delay(TaskAlertPool.StopGrace + TimeSpan.FromMilliseconds(100));
-            Assert.Equal(TaskAlertState.Approval, Assert.Single(coordinator.GetSnapshot().Assignments).State);
+            Assert.Equal(TaskAlertState.Completed, Assert.Single(coordinator.GetSnapshot().Assignments).State);
+            Assert.Null(Assert.Single(coordinator.GetSnapshot().Assignments).PendingAsyncQuestions);
             await SendPayloadAsync(pipeName, JsonSerializer.Serialize(new
             {
                 @event = "AsyncUserInputAnswered", sessionId = "session", turnId = "answer-turn",

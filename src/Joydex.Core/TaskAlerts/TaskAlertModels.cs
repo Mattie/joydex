@@ -38,7 +38,11 @@ public sealed record TaskAlertAssignment(
     string? WorkspaceKey = null,
     string? Workspace = null,
     string[]? PendingAsyncQuestions = null,
-    DateTimeOffset? ObservedActiveAt = null);
+    DateTimeOffset? ObservedActiveAt = null,
+    DateTimeOffset? TurnBoundaryAt = null);
+
+/// <summary>Restart-safe question identity and receipt time, without question or answer content.</summary>
+public sealed record TaskAlertQuestionOrigin(string Key, string? TurnId, DateTimeOffset? RequestedAt = null);
 
 /// <summary>
 /// Captures the task assignments and pending approval correlations that must
@@ -61,7 +65,10 @@ public sealed record TaskAlertStoredAssignment(
     int UncorrelatedAttentionCount,
     string? WorkspaceKey = null,
     string[]? PendingAsyncQuestions = null,
-    DateTimeOffset? ObservedActiveAt = null);
+    DateTimeOffset? ObservedActiveAt = null,
+    TaskAlertQuestionOrigin[]? QuestionOrigins = null,
+    TaskAlertQuestionOrigin[]? DeferredQuestions = null,
+    DateTimeOffset? TurnBoundaryAt = null);
 
 /// <summary>Stores one privacy-preserving correlation hash and its pending count.</summary>
 public sealed record TaskAlertCorrelationCount(string Key, int Count);

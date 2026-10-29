@@ -16,11 +16,14 @@ making delayed hook events appear obsolete. See ADR 0016 for recovery boundaries
 _Avoid_: Synthetic hook, task writer, transcript watcher
 
 **Pending Async Question**:
-A question Codex has successfully sent through `request_user_input_async` and the user has not
-resolved through its question-card reply. The agent may keep working, but the task still
-needs attention. Its task-alert LED remains in the attention state across tool completion, turn
-completion, unrelated prompts and Joydex restart. Each reply resolves only its original call and
-question index. If a question is obsolete or was handled in ordinary chat, the user can select
+A question Codex has successfully sent through `request_user_input_async` during the current
+activity in a chat. The agent may keep working while its task-alert LED requests attention.
+Any new user turn in that chat retires prior question alerts, including partial or unknown
+question-card replies. A matching Stop hook or confirmed terminal Desktop turn also retires them.
+This clears Joydex attention without answering or removing question cards in Codex. Ordinary tool
+completion does not clear a question; restart preserves questions while the turn is active.
+New questions received after a user prompt remain pending even if that prompt's hook arrives
+late. If a question is obsolete or was handled in ordinary chat, the user can select
 the task in Task Alerts and choose **Dismiss questions**. This dismisses only the displayed
 question hashes; newer questions and blocking permissions remain pending. Dismissal changes
 Joydex's alert without answering or removing the question in Codex. Joydex stores hashes of

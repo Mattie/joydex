@@ -1023,6 +1023,18 @@ public sealed class ProductionRuntimeCompositionTests
     }
 
     [Fact]
+    public void DeferredQuestionDiagnosticsReachTheRuntimeSnapshot()
+    {
+        var projector = new ProductionRuntimeUiProjector();
+        projector.PublishTaskAlerts(new Joydex.Windows.TaskAlerts.TaskAlertSnapshot(true, [], 0, RecentEvents:
+            [new(DateTimeOffset.UtcNow, CodexLifecycleEvent.AsyncUserInputRequest, "fixture", "unconfirmed", 1,
+                TaskAlertState.Running, Joydex.Windows.TaskAlerts.TaskAlertEventResult.Deferred)]),
+            new RuntimeTaskAlertHookStatus(RuntimeTaskAlertHookState.Installed));
+        Assert.Equal(RuntimeTaskAlertEventResult.Deferred,
+            Assert.Single(projector.GetSnapshot().TaskAlerts!.RecentEvents).Result);
+    }
+
+    [Fact]
     public void OversizedTaskAlertUpdatePublishesResynchronizationAndRetainsSnapshot()
     {
         var projector = new ProductionRuntimeUiProjector();

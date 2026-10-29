@@ -28,8 +28,11 @@ public sealed class RuntimeTaskAlertsConnectionServicesTests
         Assert.Equal(selection, sent.Arguments!.TaskAlertQuestions);
     }
 
-    [Fact]
-    public void ProjectsRuntimeStateAndUsesCompleteDesiredSuppressions()
+    [Theory]
+    [InlineData(RuntimeTaskAlertEventResult.Updated, TaskAlertEventResult.Updated)]
+    [InlineData(RuntimeTaskAlertEventResult.Deferred, TaskAlertEventResult.Deferred)]
+    public void ProjectsRuntimeStateAndUsesCompleteDesiredSuppressions(
+        RuntimeTaskAlertEventResult runtimeResult, TaskAlertEventResult expectedResult)
     {
         var firstRule = new TaskAlertSuppressionRule(
             TaskAlertSuppressionScope.Task,
@@ -65,7 +68,7 @@ public sealed class RuntimeTaskAlertsConnectionServicesTests
                     assignment.TurnId,
                     assignment.Slot,
                     assignment.State,
-                    RuntimeTaskAlertEventResult.Updated,
+                    runtimeResult,
                     assignment.Workspace),
             ]);
         using var services = new RuntimeTaskAlertsConnectionServices(
@@ -84,7 +87,7 @@ public sealed class RuntimeTaskAlertsConnectionServicesTests
         Assert.Equal(3, current.Snapshot.Bank);
         Assert.Equal(TaskAlertLedOutputMode.DirectHid, current.Snapshot.EffectiveLedOutput.Mode);
         Assert.Equal(assignment, Assert.Single(current.Snapshot.Assignments));
-        Assert.Equal(TaskAlertEventResult.Updated, Assert.Single(current.Snapshot.RecentEvents!).Result);
+        Assert.Equal(expectedResult, Assert.Single(current.Snapshot.RecentEvents!).Result);
         Assert.Equal([firstRule, secondRule], current.Snapshot.Suppressions);
     }
 

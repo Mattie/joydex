@@ -26,6 +26,7 @@ public enum TaskAlertEventResult
     Dropped,
     Ignored,
     Suppressed,
+    Deferred,
 }
 
 public sealed record TaskAlertEventTrace(
@@ -515,6 +516,9 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
                             ? TaskAlertEventResult.Dropped
                             : !applied
                                 ? TaskAlertEventResult.Ignored
+                                : taskEvent.Event == CodexLifecycleEvent.AsyncUserInputRequest
+                                    && assignment?.TurnId != taskEvent.TurnId
+                                    ? TaskAlertEventResult.Deferred
                                 : taskEvent.Event == CodexLifecycleEvent.Stop
                                     ? TaskAlertEventResult.StopGrace
                                     : existing is null

@@ -815,6 +815,7 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
             RuntimeTaskAlertEventResult.Dropped => TaskAlertEventResult.Dropped,
             RuntimeTaskAlertEventResult.Ignored => TaskAlertEventResult.Ignored,
             RuntimeTaskAlertEventResult.Suppressed => TaskAlertEventResult.Suppressed,
+            RuntimeTaskAlertEventResult.Deferred => TaskAlertEventResult.Deferred,
             _ => throw new InvalidDataException("The runtime returned an unknown Task Alerts event result."),
         },
         trace.Workspace);

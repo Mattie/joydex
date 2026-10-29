@@ -15,11 +15,28 @@ tasks remain outside this recovery path.
 
 An active task with an in-progress latest turn can recover Running. An idle or not-loaded task
 with a confirmed completed, failed or interrupted latest turn can retire an existing assignment.
-Completed turns retain unresolved async questions; failed and interrupted turns clear their
-attention and become Fault. Terminal observations never allocate historical idle tasks. Missing,
+Completed, failed and interrupted turns clear question attention; failed and interrupted turns
+become Fault. A positive new-turn observation also retires the prior turn's questions.
+Terminal observations never allocate historical idle tasks. Missing,
 unavailable, contradictory or unfamiliar states preserve the existing assignment. A legacy hook
 without a turn ID requires an observed turn spanning that hook's timestamp. Generic waiting
 flags cannot identify questions or user dismissals and do not create attention.
+Any UserPromptSubmit hook retires questions that preceded it, including question-card replies
+and hooks with missing or unchanged turn IDs. A matching Stop hook retires question attention
+and retains the normal completion grace. A known turn's late question cannot reopen it after
+Stop, and a mismatched or missing Stop turn ID cannot close a different known turn; positive
+Desktop terminal confirmation supplies that fallback. Question hashes, originating turn IDs and
+receipt times survive restart without storing their text. Receipt times let a delayed prompt
+retire old questions while preserving a question already received after that prompt. Relay receipt
+time is not native event time: missing or contradictory identities remain a compatibility gap,
+rather than proof that a different turn ended.
+Questions arriving for a different known turn wait without changing its light or event watermark.
+At most 32 content-free question origins are deferred per assigned chat, matching one hook batch;
+overflow is counted as dropped. This bounded state survives restart. A matching prompt or active
+Desktop observation promotes the questions; terminal confirmation drops them. The event trace
+labels these receipts Deferred rather than presenting them as a visible question update.
+The accepted turn boundary is persisted separately from generic hook receipt time. A late Stop
+for the previous turn therefore cannot make a genuinely newer prompt or native turn look older.
 Cross-turn timestamp ordering uses whole seconds, matching Desktop metadata precision, so a
 fast next turn is not rejected solely because the prior hook had a millisecond timestamp.
 

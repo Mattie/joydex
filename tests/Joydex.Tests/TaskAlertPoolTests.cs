@@ -25,12 +25,10 @@ public sealed class TaskAlertPoolTests
     }
 
     [Fact]
-    public void DismissedQuestionCompletesStoppedTaskAndStaysDismissedAfterRestore()
+    public void DismissedQuestionStaysDismissedAfterRestoreAndANewTurnCanAskAgain()
     {
         var pool = new TaskAlertPool();
         pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "session", "turn", Start, AttentionKeyA));
-        pool.Apply(new(CodexLifecycleEvent.Stop, "session", "turn", Start.AddSeconds(1)));
-        pool.Advance(Start.AddSeconds(3));
         var selection = Assert.Single(pool.Assignments);
         Assert.Equal(TaskAlertState.Approval, selection.State);
         Assert.Equal([AttentionKeyA], selection.PendingAsyncQuestions!);
@@ -39,8 +37,9 @@ public sealed class TaskAlertPoolTests
             selection.PendingAsyncQuestions!, Start.AddSeconds(4)));
         var restored = new TaskAlertPool();
         restored.Restore(pool.CaptureState());
-        Assert.Equal(TaskAlertState.Completed, Assert.Single(restored.Assignments).State);
+        Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
         Assert.Null(Assert.Single(restored.Assignments).PendingAsyncQuestions);
+        restored.Apply(new(CodexLifecycleEvent.UserPromptSubmit, "session", "next", Start.AddSeconds(5)));
         restored.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, "session", "next", Start.AddSeconds(5), AttentionKeyB));
         Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
     }
@@ -459,13 +458,15 @@ public sealed class TaskAlertPoolTests
     }
 
     [Fact]
-    public void LateConcurrentEventCannotReplaceNewerState()
+    public void DelayedPromptKeepsTheNewerBlockingPermissionAndEventWatermark()
     {
         var pool = new TaskAlertPool();
         pool.Apply(Event(CodexLifecycleEvent.PermissionRequest, "session-a", Start.AddSeconds(2)));
 
-        Assert.False(pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-a", Start)));
+        pool.Apply(Event(CodexLifecycleEvent.UserPromptSubmit, "session-a", Start));
         Assert.Equal(TaskAlertState.Approval, Assert.Single(pool.Assignments).State);
+        Assert.Equal(Start.AddSeconds(2), Assert.Single(pool.Assignments).UpdatedAt);
+        Assert.Equal(Start, Assert.Single(pool.Assignments).TurnBoundaryAt);
     }
 
     [Fact]

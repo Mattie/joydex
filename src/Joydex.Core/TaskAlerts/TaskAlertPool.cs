@@ -11,6 +11,11 @@ public sealed class TaskAlertPool
     private readonly Dictionary<int, DateTimeOffset> _backfillAfter = [];
     private readonly Dictionary<string, PendingAttention> _pendingAttention =
         new(StringComparer.Ordinal);
+    // One hook batch contains at most 32 questions. Foreign-turn questions wait for
+    // a prompt or Desktop observation to establish their owner before lighting it.
+    private const int MaximumDeferredQuestions = 32;
+    private readonly Dictionary<string, Dictionary<string, TaskAlertQuestionOrigin>> _deferredQuestions =
+        new(StringComparer.Ordinal);
 
     public bool Enabled { get; private set; } = true;
 
@@ -40,7 +45,10 @@ public sealed class TaskAlertPool
                     pending?.CaptureCorrelated() ?? [],
                     pending?.UncorrelatedCount ?? 0,
                     assignment.WorkspaceKey,
-                    pending?.CaptureAsyncQuestions() ?? [], assignment.ObservedActiveAt);
+                    pending?.CaptureAsyncQuestions() ?? [], assignment.ObservedActiveAt,
+                    pending?.CaptureQuestionOrigins() ?? [],
+                    _deferredQuestions.GetValueOrDefault(assignment.SessionId)?.Values.ToArray() ?? [],
+                    assignment.TurnBoundaryAt);
             })
             .ToArray());
 
@@ -57,6 +65,7 @@ public sealed class TaskAlertPool
 
         var restoredAssignments = new Dictionary<int, TaskAlertAssignment>();
         var restoredPending = new Dictionary<string, PendingAttention>(StringComparer.Ordinal);
+        var restoredDeferred = new Dictionary<string, Dictionary<string, TaskAlertQuestionOrigin>>(StringComparer.Ordinal);
         var sessions = new HashSet<string>(StringComparer.Ordinal);
         foreach (var stored in state.Assignments)
         {
@@ -66,6 +75,7 @@ public sealed class TaskAlertPool
                 || !Enum.IsDefined(stored.State)
                 || stored.UpdatedAt == default
                 || stored.ObservedActiveAt == default(DateTimeOffset)
+                || stored.TurnBoundaryAt == default(DateTimeOffset)
                 || stored.WorkspaceKey is not null
                     && !TaskAlertSuppression.IsWorkspaceKey(stored.WorkspaceKey)
                 || stored.CompleteAfter is { } completeAfter
@@ -80,7 +90,7 @@ public sealed class TaskAlertPool
                         stored.State,
                         stored.UpdatedAt,
                         stored.CompleteAfter,
-                        stored.WorkspaceKey, ObservedActiveAt: stored.ObservedActiveAt))
+                        stored.WorkspaceKey, ObservedActiveAt: stored.ObservedActiveAt, TurnBoundaryAt: stored.TurnBoundaryAt))
                 || !sessions.Add(stored.SessionId))
             {
                 throw new InvalidDataException("The task-alert state contains an invalid assignment.");
@@ -89,7 +99,7 @@ public sealed class TaskAlertPool
             var pending = PendingAttention.Restore(
                 stored.CorrelatedAttention,
                 stored.UncorrelatedAttentionCount,
-                stored.PendingAsyncQuestions);
+                stored.PendingAsyncQuestions, stored.QuestionOrigins);
             if (pending.Any)
             {
                 if (stored.State != TaskAlertState.Approval)
@@ -100,6 +110,21 @@ public sealed class TaskAlertPool
 
                 restoredPending.Add(stored.SessionId, pending);
             }
+            if (stored.DeferredQuestions is { Length: > 0 } deferred)
+            {
+                if (deferred.Length > MaximumDeferredQuestions)
+                    throw new InvalidDataException("Too many deferred task-alert questions.");
+                var questions = new Dictionary<string, TaskAlertQuestionOrigin>(StringComparer.Ordinal);
+                foreach (var question in deferred)
+                {
+                    if (question is null || !PendingAttention.IsSha256Hash(question.Key)
+                        || string.IsNullOrWhiteSpace(question.TurnId) || question.TurnId.Length > 512
+                        || question.RequestedAt is null || question.RequestedAt == default(DateTimeOffset)
+                        || !questions.TryAdd(question.Key, question))
+                        throw new InvalidDataException("Invalid deferred task-alert question.");
+                }
+                restoredDeferred.Add(stored.SessionId, questions);
+            }
         }
 
         _assignments.Clear();
@@ -109,6 +134,8 @@ public sealed class TaskAlertPool
         }
 
         _pendingAttention.Clear();
+        _deferredQuestions.Clear();
+        foreach (var pair in restoredDeferred) _deferredQuestions.Add(pair.Key, pair.Value);
         foreach (var pair in restoredPending)
         {
             _pendingAttention.Add(pair.Key, pair.Value);
@@ -134,6 +161,32 @@ public sealed class TaskAlertPool
         var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace);
         var existing = _assignments.Values.FirstOrDefault(candidate =>
             string.Equals(candidate.SessionId, taskEvent.SessionId, StringComparison.Ordinal));
+        var isPrompt = taskEvent.Event == CodexLifecycleEvent.UserPromptSubmit;
+        if (isPrompt && existing?.TurnBoundaryAt > taskEvent.ReceivedAt) return false;
+        var establishesTurn = isPrompt && existing is not null && existing.TurnId != taskEvent.TurnId
+            && (existing.TurnBoundaryAt is null || taskEvent.ReceivedAt > existing.TurnBoundaryAt);
+        if (existing is not null && taskEvent.Event == CodexLifecycleEvent.UserPromptSubmit
+            && taskEvent.ReceivedAt < existing.UpdatedAt && !establishesTurn)
+        {
+            // Independent hook connections may deliver a prompt after a newer question.
+            // Retire only questions predating that prompt, without rewinding the newer state.
+            if (_pendingAttention.TryGetValue(taskEvent.SessionId, out var pending)
+                && pending.ClearQuestionsBefore(taskEvent.ReceivedAt, taskEvent.TurnId))
+                UpdateAfterAsyncQuestions(existing, pending, existing.UpdatedAt, updateEventTimestamp: false);
+            _assignments[existing.Slot] = _assignments[existing.Slot] with { TurnBoundaryAt = taskEvent.ReceivedAt };
+            PromoteDeferredQuestions(_assignments[existing.Slot], taskEvent.ReceivedAt);
+            return true;
+        }
+        if (existing is not null && taskEvent.Event is CodexLifecycleEvent.Stop or CodexLifecycleEvent.AsyncUserInputRequest)
+        {
+            // Receipt time alone cannot make an old turn authoritative over a known current turn.
+            if (existing.TurnId is not null && existing.TurnId != taskEvent.TurnId)
+                return taskEvent.Event == CodexLifecycleEvent.AsyncUserInputRequest
+                    && DeferQuestion(taskEvent);
+            if (taskEvent.Event == CodexLifecycleEvent.AsyncUserInputRequest
+                && (existing.CompleteAfter is not null || existing.State is TaskAlertState.Completed or TaskAlertState.Fault)
+                && existing.TurnId == taskEvent.TurnId) return false;
+        }
         if (taskEvent.Event is CodexLifecycleEvent.ToolCompleted or CodexLifecycleEvent.AsyncUserInputAnswered)
         {
             if (existing is null || taskEvent.ReceivedAt < existing.UpdatedAt)
@@ -184,10 +237,14 @@ public sealed class TaskAlertPool
                 WorkspaceKey: workspaceKey,
                 Workspace: workspace);
         }
-        else if (taskEvent.ReceivedAt < existing.UpdatedAt)
+        else if (taskEvent.ReceivedAt < existing.UpdatedAt && !establishesTurn)
         {
             return false;
         }
+
+        if (taskEvent.Event == CodexLifecycleEvent.UserPromptSubmit)
+            if (_pendingAttention.TryGetValue(taskEvent.SessionId, out var oldQuestions))
+                oldQuestions.ClearQuestionsBefore(taskEvent.ReceivedAt, taskEvent.TurnId);
 
         if (taskEvent.Event is CodexLifecycleEvent.PermissionRequest
                 or CodexLifecycleEvent.UserInputRequest
@@ -202,7 +259,8 @@ public sealed class TaskAlertPool
             {
                 TurnId = taskEvent.TurnId,
                 State = HasAsyncQuestions(taskEvent.SessionId) ? TaskAlertState.Approval : TaskAlertState.Running,
-                UpdatedAt = taskEvent.ReceivedAt,
+                UpdatedAt = taskEvent.ReceivedAt > existing.UpdatedAt ? taskEvent.ReceivedAt : existing.UpdatedAt,
+                TurnBoundaryAt = taskEvent.ReceivedAt,
                 CompleteAfter = null,
             },
             CodexLifecycleEvent.PermissionRequest or CodexLifecycleEvent.UserInputRequest
@@ -216,6 +274,7 @@ public sealed class TaskAlertPool
             CodexLifecycleEvent.Stop => existing with
             {
                 TurnId = taskEvent.TurnId,
+                State = TaskAlertState.Running,
                 UpdatedAt = taskEvent.ReceivedAt,
                 CompleteAfter = taskEvent.ReceivedAt + StopGrace,
             },
@@ -245,11 +304,16 @@ public sealed class TaskAlertPool
         }
         else if (taskEvent.Event == CodexLifecycleEvent.AsyncUserInputRequest)
         {
-            GetPendingAttention(taskEvent.SessionId).AddAsyncQuestion(taskEvent.AttentionKey!);
+            GetPendingAttention(taskEvent.SessionId).AddAsyncQuestion(taskEvent.AttentionKey!, taskEvent.TurnId, taskEvent.ReceivedAt);
+            if (_deferredQuestions.TryGetValue(taskEvent.SessionId, out var deferred))
+            {
+                deferred.Remove(taskEvent.AttentionKey!);
+                if (deferred.Count == 0) _deferredQuestions.Remove(taskEvent.SessionId);
+            }
         }
         else if (taskEvent.Event == CodexLifecycleEvent.Stop)
         {
-            ClearBlockingAttention(taskEvent.SessionId);
+            _pendingAttention.Remove(taskEvent.SessionId);
         }
         else if (taskEvent.Event == CodexLifecycleEvent.Fault)
         {
@@ -257,6 +321,10 @@ public sealed class TaskAlertPool
         }
 
         _assignments[updated.Slot] = updated;
+        if (taskEvent.Event == CodexLifecycleEvent.UserPromptSubmit)
+            PromoteDeferredQuestions(updated, taskEvent.ReceivedAt);
+        else if (taskEvent.Event is CodexLifecycleEvent.Stop or CodexLifecycleEvent.Fault)
+            RemoveDeferredTurn(taskEvent.SessionId, taskEvent.TurnId);
         return true;
     }
 
@@ -287,6 +355,7 @@ public sealed class TaskAlertPool
             {
                 _assignments.Remove(pair.Key);
                 _pendingAttention.Remove(assignment.SessionId);
+                _deferredQuestions.Remove(assignment.SessionId);
                 if (TaskAlertSlots.Page(pair.Key) == TaskAlertPage.Primary)
                 {
                     vacatedPrimarySlots.Add(pair.Key);
@@ -333,6 +402,7 @@ public sealed class TaskAlertPool
         }
 
         _pendingAttention.Remove(assignment.SessionId);
+        _deferredQuestions.Remove(assignment.SessionId);
         _assignments.Remove(slot);
         TrimBackfillReservations();
         if (TaskAlertSlots.Page(slot) == TaskAlertPage.Primary)
@@ -388,7 +458,7 @@ public sealed class TaskAlertPool
         // Desktop timestamps have whole-second precision; millisecond hook receipts in
         // that same second cannot establish that the observed latest turn is older.
         if (existing is not null && !sameTurn
-            && observation.StartedAt.ToUnixTimeSeconds() < existing.UpdatedAt.ToUnixTimeSeconds()) return false;
+            && observation.StartedAt.ToUnixTimeSeconds() < (existing.TurnBoundaryAt ?? existing.UpdatedAt).ToUnixTimeSeconds()) return false;
         if (active && sameTurn && (existing!.CompleteAfter is not null
             || existing.State is TaskAlertState.Completed or TaskAlertState.Fault)) return false;
         if (existing is null)
@@ -398,8 +468,7 @@ public sealed class TaskAlertPool
             if (slot == 0) return false;
             existing = new(slot, observation.SessionId, observation.TurnId, observation.State, observation.StartedAt);
         }
-        if (!active || !sameTurn) ClearBlockingAttention(observation.SessionId);
-        if (observation.State == TaskAlertState.Fault) _pendingAttention.Remove(observation.SessionId);
+        if (!active || !sameTurn) _pendingAttention.Remove(observation.SessionId);
         var workspace = TaskAlertSuppression.NormalizeWorkspace(observation.Workspace);
         var workspaceKey = TaskAlertSuppression.CreateWorkspaceKey(workspace)
             ?? (TaskAlertSuppression.IsWorkspaceKey(observation.WorkspaceKey) ? observation.WorkspaceKey : existing.WorkspaceKey);
@@ -414,11 +483,14 @@ public sealed class TaskAlertPool
             TurnId = observation.TurnId,
             State = state,
             UpdatedAt = eventTime,
-            CompleteAfter = !active && state == TaskAlertState.Approval ? observation.CompletedAt : null,
+            CompleteAfter = null,
             Workspace = workspace,
             WorkspaceKey = workspaceKey,
             ObservedActiveAt = active ? observedAt : null,
+            TurnBoundaryAt = sameTurn ? existing.TurnBoundaryAt ?? observation.StartedAt : observation.StartedAt,
         };
+        if (active) PromoteDeferredQuestions(_assignments[existing.Slot], observation.StartedAt);
+        else RemoveDeferredTurn(observation.SessionId, observation.TurnId);
         return true;
     }
 
@@ -433,6 +505,7 @@ public sealed class TaskAlertPool
         _assignments.Clear();
         _backfillAfter.Clear();
         _pendingAttention.Clear();
+        _deferredQuestions.Clear();
         return true;
     }
 
@@ -460,6 +533,7 @@ public sealed class TaskAlertPool
             _assignments.Remove(pair.Key);
             _backfillAfter.Remove(pair.Key);
             _pendingAttention.Remove(pair.Value.SessionId);
+            _deferredQuestions.Remove(pair.Value.SessionId);
             if (TaskAlertSlots.Page(pair.Key) == TaskAlertPage.Primary)
             {
                 primaryVacancies.Add(pair.Key);
@@ -530,6 +604,55 @@ public sealed class TaskAlertPool
 
     private bool HasAsyncQuestions(string sessionId) =>
         _pendingAttention.TryGetValue(sessionId, out var pending) && pending.HasAsyncQuestions;
+
+    private bool DeferQuestion(TaskAlertEvent taskEvent)
+    {
+        if (!PendingAttention.IsSha256Hash(taskEvent.AttentionKey)
+            || string.IsNullOrWhiteSpace(taskEvent.TurnId) || taskEvent.TurnId.Length > 512) return false;
+        if (!_deferredQuestions.TryGetValue(taskEvent.SessionId, out var questions))
+            _deferredQuestions.Add(taskEvent.SessionId, questions = new(StringComparer.Ordinal));
+        if (questions.ContainsKey(taskEvent.AttentionKey!)) return false;
+        if (questions.Count >= MaximumDeferredQuestions)
+        {
+            DroppedEventCount++;
+            return false;
+        }
+        questions.Add(taskEvent.AttentionKey!, new(taskEvent.AttentionKey!, taskEvent.TurnId, taskEvent.ReceivedAt));
+        return true;
+    }
+
+    private void PromoteDeferredQuestions(TaskAlertAssignment assignment, DateTimeOffset startedAt)
+    {
+        if (!_deferredQuestions.TryGetValue(assignment.SessionId, out var questions)) return;
+        var updated = assignment;
+        foreach (var question in questions.Values.OrderBy(item => item.RequestedAt).ToArray())
+        {
+            if (question.TurnId == assignment.TurnId)
+            {
+                if (question.RequestedAt >= startedAt)
+                {
+                    GetPendingAttention(assignment.SessionId).AddAsyncQuestion(question.Key, question.TurnId, question.RequestedAt!.Value);
+                    updated = updated with
+                    {
+                        State = TaskAlertState.Approval,
+                        UpdatedAt = question.RequestedAt > updated.UpdatedAt ? question.RequestedAt.Value : updated.UpdatedAt,
+                    };
+                }
+                questions.Remove(question.Key);
+            }
+            else if (question.RequestedAt < startedAt) questions.Remove(question.Key);
+        }
+        _assignments[assignment.Slot] = updated;
+        if (questions.Count == 0) _deferredQuestions.Remove(assignment.SessionId);
+    }
+
+    private void RemoveDeferredTurn(string sessionId, string? turnId)
+    {
+        if (!_deferredQuestions.TryGetValue(sessionId, out var questions)) return;
+        foreach (var question in questions.Values.Where(item => item.TurnId == turnId).ToArray())
+            questions.Remove(question.Key);
+        if (questions.Count == 0) _deferredQuestions.Remove(sessionId);
+    }
 
     private void ClearBlockingAttention(string sessionId)
     {
@@ -658,16 +781,30 @@ public sealed class TaskAlertPool
     private sealed class PendingAttention
     {
         private readonly Dictionary<string, int> _correlated = new(StringComparer.Ordinal);
-        private readonly HashSet<string> _asyncQuestions = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, TaskAlertQuestionOrigin> _asyncQuestions = new(StringComparer.Ordinal);
         private int _uncorrelated;
 
         public bool Any => _uncorrelated > 0 || _correlated.Count > 0 || HasAsyncQuestions;
         public bool HasAsyncQuestions => _asyncQuestions.Count > 0;
 
-        public string[] CaptureAsyncQuestions() => _asyncQuestions.Order(StringComparer.Ordinal).ToArray();
+        public string[] CaptureAsyncQuestions() => _asyncQuestions.Keys.Order(StringComparer.Ordinal).ToArray();
 
-        public void AddAsyncQuestion(string key) => _asyncQuestions.Add(key);
+        public TaskAlertQuestionOrigin[] CaptureQuestionOrigins() => _asyncQuestions.Values
+            .OrderBy(question => question.Key, StringComparer.Ordinal).ToArray();
+
+        public void AddAsyncQuestion(string key, string? turnId, DateTimeOffset requestedAt) =>
+            _asyncQuestions.TryAdd(key, new(key, turnId, requestedAt));
         public bool CompleteAsyncQuestion(string key) => _asyncQuestions.Remove(key);
+
+        public bool ClearQuestionsBefore(DateTimeOffset promptAt, string? promptTurnId)
+        {
+            var removed = false;
+            foreach (var question in _asyncQuestions.Values.ToArray())
+                if (question.RequestedAt is null || question.RequestedAt < promptAt
+                    || question.RequestedAt == promptAt && (promptTurnId is null || question.TurnId != promptTurnId))
+                    removed |= _asyncQuestions.Remove(question.Key);
+            return removed;
+        }
 
         public void ClearBlocking()
         {
@@ -685,7 +822,7 @@ public sealed class TaskAlertPool
         public static PendingAttention Restore(
             TaskAlertCorrelationCount[] correlations,
             int uncorrelatedCount,
-            string[]? asyncQuestions)
+            string[]? asyncQuestions, TaskAlertQuestionOrigin[]? questionOrigins)
         {
             if (correlations is null || uncorrelatedCount < 0)
             {
@@ -695,8 +832,16 @@ public sealed class TaskAlertPool
             var pending = new PendingAttention { _uncorrelated = uncorrelatedCount };
             foreach (var key in asyncQuestions ?? [])
             {
-                if (!IsSha256Hash(key) || !pending._asyncQuestions.Add(key))
+                if (!IsSha256Hash(key) || !pending._asyncQuestions.TryAdd(key, new(key, null)))
                     throw new InvalidDataException("The task-alert state contains an invalid async question key.");
+            }
+            var origins = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var origin in questionOrigins ?? [])
+            {
+                if (origin is null || !IsSha256Hash(origin.Key) || !origins.Add(origin.Key) || !pending._asyncQuestions.ContainsKey(origin.Key)
+                    || origin.TurnId?.Length > 512 || origin.RequestedAt == default(DateTimeOffset))
+                    throw new InvalidDataException("The task-alert state contains an invalid question origin.");
+                pending._asyncQuestions[origin.Key] = origin;
             }
             foreach (var correlation in correlations)
             {

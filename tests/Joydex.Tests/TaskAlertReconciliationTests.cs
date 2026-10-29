@@ -200,16 +200,18 @@ public sealed class TaskAlertReconciliationTests
             Now.AddMinutes(-3), Now.AddMinutes(-1)), Now));
     }
 
-    [Fact]
-    public void NormalCompletionRetainsQuestionsButFailedTurnsRetireTheirAttention()
+    [Theory]
+    [InlineData(TaskAlertState.Completed)]
+    [InlineData(TaskAlertState.Fault)]
+    public void ConfirmedTerminalTurnsRetireQuestionAttention(TaskAlertState terminal)
     {
         var pool = new TaskAlertPool();
         pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, Session, "turn", Now.AddMinutes(-2), QuestionKey));
-        pool.Reconcile(new(Session, "turn", TaskAlertState.Completed, Now.AddMinutes(-3), Now.AddMinutes(-1)), Now);
+        pool.Reconcile(new(Session, "turn", terminal, Now.AddMinutes(-3), Now.AddMinutes(-1)), Now);
         var assignment = Assert.Single(pool.Assignments);
-        Assert.Equal(TaskAlertState.Approval, assignment.State);
-        Assert.True(pool.DismissQuestions(assignment.Slot, Session, [QuestionKey], Now));
-        Assert.Equal(TaskAlertState.Completed, Assert.Single(pool.Assignments).State);
+        Assert.Equal(terminal, assignment.State);
+        Assert.Null(assignment.PendingAsyncQuestions);
+        pool.Apply(new(CodexLifecycleEvent.UserPromptSubmit, Session, "next", Now));
         pool.Apply(new(CodexLifecycleEvent.AsyncUserInputRequest, Session, "next", Now, QuestionKey));
         pool.Reconcile(new(Session, "next", TaskAlertState.Fault, Now, Now.AddSeconds(1)), Now.AddSeconds(2));
         Assert.Equal(TaskAlertState.Fault, Assert.Single(pool.Assignments).State);
