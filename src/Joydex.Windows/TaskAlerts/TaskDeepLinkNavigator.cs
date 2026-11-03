@@ -14,10 +14,12 @@ public sealed class TaskDeepLinkNavigator(
     SafetyOptions safety,
     Action<string> log,
     IForegroundProcessGuard? foregroundGuard = null,
-    Func<ProcessStartInfo, Process?>? startProcess = null) : ITaskAlertNavigator
+    Func<ProcessStartInfo, Process?>? startProcess = null,
+    Func<string?>? resolveT3Executable = null) : ITaskAlertNavigator
 {
     private readonly IForegroundProcessGuard _foregroundGuard = foregroundGuard ?? new ForegroundProcessGuard();
     private readonly Func<ProcessStartInfo, Process?> _startProcess = startProcess ?? Process.Start;
+    private readonly Func<string?> _resolveT3Executable = resolveT3Executable ?? InstalledT3ForegroundResolver.FindInstalledExecutable;
 
     public Task<bool> NavigateAsync(TaskAlertNavigationRequest request, CancellationToken cancellationToken)
     {
@@ -55,7 +57,19 @@ public sealed class TaskDeepLinkNavigator(
         try
         {
             var target = BuildUri(request.TaskIdentity);
-            _startProcess(new ProcessStartInfo(target) { UseShellExecute = true });
+            var startInfo = new ProcessStartInfo(target) { UseShellExecute = true };
+            if (request.TaskIdentity.Backend == TaskAlertBackend.RemoteT3)
+            {
+                var executable = _resolveT3Executable();
+                if (string.IsNullOrWhiteSpace(executable))
+                {
+                    log("BLOCKED task alert navigation; the installed T3 Desktop executable could not be verified.");
+                    return Task.FromResult(false);
+                }
+                startInfo.FileName = executable;
+                startInfo.ArgumentList.Add(target);
+            }
+            _startProcess(startInfo);
             log($"EXECUTED task alert M{request.Bank} B{request.Button} slot={request.Slot}; session={request.SessionId}; target={target}");
             return Task.FromResult(true);
         }

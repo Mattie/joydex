@@ -38,7 +38,10 @@ Titles, projects and optional provider/model labels live in a bounded private me
 separate from alert restart state. Prompts, previews, messages and credentials are excluded.
 Codex labels use its existing Desktop bridge catalog independently of lifecycle reconciliation.
 
-Task navigation preserves the assigned identity and dispatches a Codex or T3 desktop URI.
+Task navigation preserves the assigned identity. Codex uses its desktop URI association;
+T3 launches the verified installed executable with its desktop URI as a single argument.
+This avoids a Windows application chooser when protocol dispatch fails despite an existing
+T3 registration. An unverified executable or failed launch acknowledges no question alerts.
 Shared physical New/Previous/Next/Stop actions inspect the foreground app. T3 dispatch requires
 verified executable, exact window, active environment, effective bindings and applicable context;
 foreground is checked again immediately before input. Codex-specific actions cannot fall back

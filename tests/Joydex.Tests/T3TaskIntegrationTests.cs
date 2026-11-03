@@ -155,16 +155,20 @@ public sealed class T3TaskIntegrationTests
     }
 
     [Fact]
-    public async Task EveryNavigationRequestRetainsEncodedSourceAndDispatchesOnlyTheExpectedUri()
+    public async Task EveryNavigationRequestRetainsEncodedSourceAndPassesTheUriToTheVerifiedExecutable()
     {
         var identity = TaskAlertIdentity.RemoteT3("env/A", "thread?B");
         var request = new TaskAlertNavigationRequest(1, 2, 1, identity.PoolKey);
         Assert.Equal(identity, request.TaskIdentity);
         string? started = null;
+        string? argument = null;
+        const string executable = @"C:\Apps\T3 Code (Beta).exe";
         var navigator = new TaskDeepLinkNavigator(new SafetyOptions { DryRun = false }, _ => { },
-            new AllowedGuard(), start => { started = start.FileName; return null; });
+            new AllowedGuard(), start => { started = start.FileName; argument = Assert.Single(start.ArgumentList); return null; },
+            () => executable);
         Assert.True(await navigator.NavigateAsync(request, default));
-        Assert.Equal("t3code://threads/env%2FA/thread%3FB", started);
+        Assert.Equal(executable, started);
+        Assert.Equal("t3code://threads/env%2FA/thread%3FB", argument);
         Assert.Equal("codex://threads/native", TaskDeepLinkNavigator.BuildUri(TaskAlertIdentity.LocalCodex("native")));
     }
 

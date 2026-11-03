@@ -17,8 +17,11 @@ is copied into Joydex's metadata cache. Failed or partial reads preserve pending
 mark retained observations unavailable; local Codex continues independently.
 
 Task Alerts shows each task's title, project, application/environment and provider/model when
-available. Task buttons open the assigned chat in its desktop app. A successful visit acknowledges
-the async questions already displayed by Joydex. Newer questions and blocking permissions stay
+available. T3 task buttons launch the verified installed desktop executable with its native
+chat URI as one argument, avoiding Windows' custom-protocol association lookup. If the
+executable cannot be verified, navigation fails without acknowledging question alerts.
+A successful visit acknowledges the async questions already displayed by Joydex.
+Newer questions and blocking permissions stay
 pending. This does not answer or remove the application's question cards.
 
 **Add missing shortcuts** and **Remove Joydex shortcuts** are explicit, reversible operations.

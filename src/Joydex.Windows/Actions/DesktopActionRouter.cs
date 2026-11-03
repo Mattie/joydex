@@ -167,7 +167,7 @@ public sealed partial class InstalledT3ForegroundResolver : IDesktopActionForegr
             && string.Equals(current.ExecutablePath, foreground.ExecutablePath, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string? FindInstalledExecutable()
+    internal static string? FindInstalledExecutable()
     {
         try
         {

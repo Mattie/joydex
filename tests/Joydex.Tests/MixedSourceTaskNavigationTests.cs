@@ -8,15 +8,47 @@ namespace Joydex.Tests;
 
 public sealed class MixedSourceTaskNavigationTests
 {
-    [Fact]
-    public async Task RemoteNavigationUsesExactEnvironmentAndNativeCaseThroughItsOwnUriScheme()
+    [Theory]
+    [InlineData("environment/a", "Thread/Case? #", "t3code://threads/environment%2Fa/Thread%2FCase%3F%20%23")]
+    [InlineData("Environment/a", "thread/Case? #", "t3code://threads/Environment%2Fa/thread%2FCase%3F%20%23")]
+    public async Task RemoteNavigationPassesTheExactEscapedTargetToTheVerifiedExecutable(string environment, string thread, string expectedUri)
     {
-        var identity = TaskAlertIdentity.RemoteT3("environment/a", "Thread/Case? #");
+        const string executable = @"C:\Apps\T3 Code (Beta)\T3 Code (Beta).exe";
+        var identity = TaskAlertIdentity.RemoteT3(environment, thread);
         ProcessStartInfo? started = null;
-        var navigator = new TaskDeepLinkNavigator(new() { DryRun = false }, _ => { }, new Guard(), info => { started = info; return null; });
+        var navigator = new TaskDeepLinkNavigator(new() { DryRun = false }, _ => { }, new Guard(),
+            info => { started = info; return null; }, () => executable);
         Assert.True(await navigator.NavigateAsync(new(2, 2, 3, identity.PoolKey, identity), default));
-        Assert.Equal("t3code://threads/environment%2Fa/Thread%2FCase%3F%20%23", started!.FileName);
+        Assert.Equal(executable, started!.FileName);
+        Assert.Equal(expectedUri, Assert.Single(started.ArgumentList));
+        Assert.Empty(started.Arguments);
         Assert.True(started.UseShellExecute);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnverifiedExecutableOrLaunchFailureDoesNotNavigateOrAcknowledgeQuestions(bool launchFails)
+    {
+        var identity = TaskAlertIdentity.RemoteT3("environment", "thread");
+        var question = new string('A', 64);
+        var assignment = new TaskAlertAssignment(1, identity.PoolKey, "run", TaskAlertState.Approval,
+            DateTimeOffset.UtcNow, PendingAsyncQuestions: [question], Identity: identity);
+        var launches = 0;
+        var acknowledged = false;
+        var log = new List<string>();
+        var deepLink = new TaskDeepLinkNavigator(new() { DryRun = false }, log.Add, new Guard(), _ =>
+        {
+            launches++;
+            throw new InvalidOperationException("Synthetic launcher failure.");
+        }, () => launchFails ? @"C:\Apps\T3 Code (Beta).exe" : null);
+        var wrapper = new QuestionAcknowledgingTaskNavigator(deepLink,
+            () => new TaskAlertSnapshot(true, [assignment], 0), (_, _, _) => acknowledged = true, log.Add);
+
+        Assert.False(await wrapper.NavigateAsync(new(1, 2, 1, identity.PoolKey, identity), default));
+        Assert.False(acknowledged);
+        Assert.Equal(launchFails ? 1 : 0, launches);
+        Assert.Contains(log, entry => entry.Contains(launchFails ? "Synthetic launcher failure" : "executable could not be verified", StringComparison.Ordinal));
     }
 
     [Fact]
