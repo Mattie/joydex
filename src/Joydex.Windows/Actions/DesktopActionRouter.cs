@@ -202,7 +202,13 @@ public sealed partial class InstalledT3ForegroundResolver : IDesktopActionForegr
     {
         var userStatus = OpenStatus(new IntPtr(unchecked((int)0x80000001)), @"Software\Classes\t3code\shell\open\command");
         var classesStatus = OpenStatus(new IntPtr(unchecked((int)0x80000000)), @"t3code\shell\open\command");
-        return "LocalCliRegistrationMissing:hkcu=" + userStatus + ":hkcr=" + classesStatus;
+        var currentStatus = RegOpenCurrentUser(0x20019, out var currentUser);
+        if (currentStatus == 0)
+        {
+            try { currentStatus = OpenStatus(currentUser, @"Software\Classes\t3code\shell\open\command"); }
+            finally { if (currentUser != IntPtr.Zero) RegCloseKey(currentUser); }
+        }
+        return "LocalCliRegistrationMissing:hkcu=" + userStatus + ":hkcr=" + classesStatus + ":current=" + currentStatus;
     }
 
     private static int OpenStatus(IntPtr root, string path)
@@ -212,19 +218,22 @@ public sealed partial class InstalledT3ForegroundResolver : IDesktopActionForegr
         return status;
     }
 
-    internal static bool TryParseMissingRegistrationDiagnostic(string? value, out int userStatus, out int classesStatus)
+    internal static bool TryParseMissingRegistrationDiagnostic(string? value, out int userStatus, out int classesStatus, out int currentStatus)
     {
-        userStatus = classesStatus = 0;
+        userStatus = classesStatus = currentStatus = 0;
         if (value is null || value.Length > 90) return false;
         var parts = value.Split(':');
-        return parts.Length == 3 && parts[0] == "LocalCliRegistrationMissing"
+        return parts.Length == 4 && parts[0] == "LocalCliRegistrationMissing"
             && parts[1].StartsWith("hkcu=", StringComparison.Ordinal) && parts[2].StartsWith("hkcr=", StringComparison.Ordinal)
+            && parts[3].StartsWith("current=", StringComparison.Ordinal)
             && int.TryParse(parts[1].AsSpan(5), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out userStatus)
-            && int.TryParse(parts[2].AsSpan(5), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out classesStatus);
+            && int.TryParse(parts[2].AsSpan(5), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out classesStatus)
+            && int.TryParse(parts[3].AsSpan(8), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out currentStatus);
     }
 
     [DllImport("advapi32.dll", EntryPoint = "RegOpenKeyExW", CharSet = CharSet.Unicode)]
     private static extern int RegOpenKeyEx(IntPtr root, string subKey, int options, int desiredAccess, out IntPtr opened);
+    [DllImport("advapi32.dll")] private static extern int RegOpenCurrentUser(int desiredAccess, out IntPtr opened);
     [DllImport("advapi32.dll")] private static extern int RegCloseKey(IntPtr key);
 
     internal static string? VerifyProtocolRegistration(bool userKeyPresent, string? userCommand, string? mergedCommand,

@@ -9,12 +9,13 @@ public sealed class T3ReaderTests
     [Fact]
     public async Task RegistrationStatusDiagnosticsRetainOnlyCanonicalNumbersAndNeverPrivateReason()
     {
-        var raw = JsonSerializer.Serialize(new { success = false, errorClass = "LocalCliRegistrationMissing:hkcu=0:hkcr=2", reason = "PRIVATE REGISTRY VALUE" });
+        var raw = JsonSerializer.Serialize(new { success = false, errorClass = "LocalCliRegistrationMissing:hkcu=0:hkcr=2:current=0", reason = "PRIVATE REGISTRY VALUE" });
         var result = await new T3Reader(new FakeTransport(raw)).ReadAsync(Options, []);
-        Assert.Equal("LocalCliRegistrationMissing:hkcu=0:hkcr=2", result.ErrorClass);
+        Assert.Equal("LocalCliRegistrationMissing:hkcu=0:hkcr=2:current=0", result.ErrorClass);
         Assert.Contains("HKCU status 0; HKCR status 2", result.Reason);
+        Assert.Contains("fresh current-user status 0", result.Reason);
         Assert.DoesNotContain("PRIVATE REGISTRY VALUE", JsonSerializer.Serialize(result));
-        raw = JsonSerializer.Serialize(new { success = false, errorClass = "LocalCliRegistrationMissing:hkcu=PRIVATE:hkcr=2" });
+        raw = JsonSerializer.Serialize(new { success = false, errorClass = "LocalCliRegistrationMissing:hkcu=PRIVATE:hkcr=2:current=0" });
         result = await new T3Reader(new FakeTransport(raw)).ReadAsync(Options, []);
         Assert.Equal("ReadFailed", result.ErrorClass);
         Assert.DoesNotContain("PRIVATE", JsonSerializer.Serialize(result));
