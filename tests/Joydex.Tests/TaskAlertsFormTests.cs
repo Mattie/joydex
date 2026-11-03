@@ -145,9 +145,9 @@ public sealed class TaskAlertsFormTests
 
             var grid = FindControl<DataGridView>(form, "Current task-alert assignments");
             var currentStateTab = FindControl<PageTabButton>(form, "Current state page");
-            var ignoreSelected = FindControl<RoundedButton>(form, "Choose ignore scope for selected Codex task source");
+            var ignoreSelected = FindControl<RoundedButton>(form, "Choose ignore scope for selected task source");
             var selectedSource = FindControl<Label>(form, "Selected task alert source");
-            var ignoredSources = FindControl<RoundedButton>(form, "Manage 0 ignored Codex task status sources");
+            var ignoredSources = FindControl<RoundedButton>(form, "Manage 0 ignored task status sources");
             Assert.Empty(grid.SelectedRows.Cast<DataGridViewRow>());
             Assert.False(ignoreSelected.Enabled);
             Assert.Equal("Ignore selected ▾", ignoreSelected.Text);
@@ -265,6 +265,49 @@ public sealed class TaskAlertsFormTests
         }
         finally
         {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RemoteSourceUsesFriendlyLabelsAndShowsShortcutLimitsWithoutOpeningTheForm()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"joydex-task-source-form-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var originalContext = SynchronizationContext.Current;
+        try
+        {
+            await using var coordinator = new TaskAlertCoordinator(Path.Combine(directory, "task-alerts.json"));
+            using var form = new TaskAlertsForm(coordinator, new CodexHookManager(Path.Combine(directory, "hooks.json")),
+                Path.Combine(directory, "Joydex.HookRelay.exe"), Path.Combine(directory, "profile.json"), _ => Task.CompletedTask);
+            var identity = TaskAlertIdentity.RemoteT3("environment-pin", "native-thread");
+            var now = DateTimeOffset.UtcNow;
+            var task = new TaskAlertAssignment(1, identity.PoolKey, "run", TaskAlertState.Running, now,
+                Identity: identity, Metadata: new("Readable title"));
+            var status = new Joydex.Core.T3.T3ReadResult
+                { Success = true, EnvironmentId = identity.EnvironmentId, DisplayName = "Remote workstation", CapturedAt = now, IsComplete = false };
+            form.SetSnapshotForDocumentation(new(true, [task], 0, T3Status: status));
+            var grid = FindControl<DataGridView>(form, "Current task-alert assignments");
+            Assert.Equal("T3 / Remote workstation", grid.Rows[0].Cells["Source"].Value);
+            Assert.Equal(identity.EnvironmentId, grid.Rows[0].Cells["Source"].ToolTipText);
+            form.SelectAssignmentForDocumentation(identity.PoolKey);
+            var selected = FindControl<Label>(form, "Selected task alert source");
+            Assert.Contains("Remote workstation", selected.Text);
+            Assert.Contains("Readable title", selected.Text);
+            Assert.DoesNotContain(identity.PoolKey, selected.Text);
+            var sourceStatus = FindControl<Label>(form, "T3 source and shortcut status");
+            Assert.Contains("connected (partial)", sourceStatus.Text);
+            Assert.Contains("Shared shortcuts unavailable", sourceStatus.Text);
+            Assert.Contains("desktop context unverified", sourceStatus.Text);
+            form.SetSnapshotForDocumentation(new(true, [task with { SourceUnavailable = true }], 0,
+                T3Status: status with { Success = false }));
+            Assert.Contains("unavailable", sourceStatus.Text);
+            Assert.False(form.Visible);
+            Assert.Contains("native-thread", TaskAlertsForm.DescribeTaskSource(identity.PoolKey));
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(originalContext);
             Directory.Delete(directory, recursive: true);
         }
     }

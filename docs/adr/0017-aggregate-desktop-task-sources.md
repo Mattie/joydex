@@ -1,0 +1,67 @@
+# Aggregate desktop task sources in the existing task pool
+
+## Decision
+
+Local Codex and one optional T3 environment share the existing coordinator, primary/overflow
+slots, retention and hardware owner. No additional production owner or server daemon is added.
+T3 is disabled until explicitly configured and connection-tested. Monitoring never changes
+keybindings, hooks, hosting or approvals.
+
+Identity is `(backend, environment, native thread)`. Legacy Codex keys retain their spelling,
+comparison and slots. T3 components remain ordinal through a canonical encoded pool key that
+cannot collide with legacy hook IDs. State schema 2 migrates schema 1 to local Codex while
+retaining a recoverable `.v1.bak` file. Runtime protocol 1.4 advertises `aggregate-tasks.v1`;
+older clients receive only local assignments and cannot modify a configured T3 source or
+issue remote navigation/dismissal commands.
+
+Each source carries connection generation, snapshot sequence, capture time and completeness.
+Tracked T3 threads missing from the shell catalog are read directly. Detailed runtime requests
+supplement its single pending-request summary. Missing fields, partial lists and timeouts
+cannot establish completion or retire an async question. Unavailable sources retain their
+last state and cease renewing the existing 12-hour Running and 24-hour Attention leases.
+Restored T3 observations start unavailable until positively refreshed.
+
+Question acknowledgements persist with task, run and request identity in a bounded collection.
+A positive ordinary user-turn timestamp or explicit request resolution retires the matching
+question. A successful Joydex visit acknowledges only the questions captured before navigation;
+newer questions and blocking permissions remain pending. Turn-end cleanup remains opt-in and
+defaults off. Generic update timestamps and catalog absence are not user engagement evidence.
+
+The packaged Python projector runs through a configured current-user SSH alias. Each finite
+sample issues a short-lived, read-only orchestration grant, reads loopback APIs and revokes
+the grant before returning whitelisted metadata. Credentials stay remote. Five-minute expiry
+bounds a grant whose cleanup is interrupted. Samples do not overlap: the next starts five
+seconds after a successful sample finishes, with bounded deadlines, payloads and failure
+backoff. Source identity is pinned, independently of its display name.
+
+Titles, projects and optional provider/model labels live in a bounded private metadata cache,
+separate from alert restart state. Prompts, previews, messages and credentials are excluded.
+Codex labels use its existing Desktop bridge catalog independently of lifecycle reconciliation.
+
+Task navigation preserves the assigned identity and dispatches a Codex or T3 desktop URI.
+Shared physical New/Previous/Next/Stop actions inspect the foreground app. T3 dispatch requires
+verified executable, exact window, active environment, effective bindings and applicable context;
+foreground is checked again immediately before input. Codex-specific actions cannot fall back
+to Codex when T3 is foreground. Held-key cleanup and internal device actions retain precedence.
+Room Voice and prompt-picker submission remain Codex-owned.
+
+Stock T3 exposes no verified external active-environment/keymap context. Its common actions
+therefore remain unavailable. The semantic `stop-task` action preserves older action IDs but
+has no invented Codex command or shortcut; Codex Stop is unavailable until independently verified.
+Newer versions receive capability checks rather than a version-only rejection.
+
+Explicit shortcut setup reads the effective server keybindings before writing. Adding a custom
+rule can replace all defaults for that command, so setup preserves those resolved default rules,
+skips already customized commands and rejects a candidate that changes another rule's winner.
+It preserves order, journals additions, detects intervening edits, verifies the resulting profile
+and removes only unchanged Joydex additions. If the effective profile cannot be proven, setup
+returns an unsupported preview without writing. A successful setup does not enable desktop
+dispatch without active-context proof.
+
+## Acceptance boundary
+
+Offline state, projection, protocol, navigation and input-fake tests establish software behavior.
+Actual desktop arrival, physical lights/buttons and every enabled action require separate attended
+acceptance after an explicitly authorized installation. Unavailable stock-client actions are
+limitations, not passing acceptance. CI and completed GitHub reviews precede human integration;
+this decision does not authorize a merge or live rollout.

@@ -39,7 +39,15 @@ public sealed record TaskAlertAssignment(
     string? Workspace = null,
     string[]? PendingAsyncQuestions = null,
     DateTimeOffset? ObservedActiveAt = null,
-    DateTimeOffset? TurnBoundaryAt = null);
+    DateTimeOffset? TurnBoundaryAt = null,
+    TaskAlertIdentity? Identity = null,
+    bool SourceUnavailable = false,
+    TaskAlertMetadata? Metadata = null,
+    DateTimeOffset? LatestHumanUserTurnAt = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public TaskAlertIdentity TaskIdentity => Identity ?? TaskAlertIdentity.LocalCodex(SessionId);
+}
 
 /// <summary>Restart-safe question identity and receipt time, without question or answer content.</summary>
 public sealed record TaskAlertQuestionOrigin(string Key, string? TurnId, DateTimeOffset? RequestedAt = null);
@@ -48,7 +56,8 @@ public sealed record TaskAlertQuestionOrigin(string Key, string? TurnId, DateTim
 /// Captures the task assignments and pending approval correlations that must
 /// survive a Joydex restart.
 /// </summary>
-public sealed record TaskAlertPoolState(TaskAlertStoredAssignment[] Assignments)
+public sealed record TaskAlertPoolState(TaskAlertStoredAssignment[] Assignments,
+    TaskAlertSourceAcknowledgement[]? SourceAcknowledgements = null)
 {
     public static TaskAlertPoolState Empty { get; } = new([]);
 }
@@ -68,7 +77,9 @@ public sealed record TaskAlertStoredAssignment(
     DateTimeOffset? ObservedActiveAt = null,
     TaskAlertQuestionOrigin[]? QuestionOrigins = null,
     TaskAlertQuestionOrigin[]? DeferredQuestions = null,
-    DateTimeOffset? TurnBoundaryAt = null);
+    DateTimeOffset? TurnBoundaryAt = null,
+    TaskAlertIdentity? Identity = null,
+    DateTimeOffset? LatestHumanUserTurnAt = null);
 
 /// <summary>Stores one privacy-preserving correlation hash and its pending count.</summary>
 public sealed record TaskAlertCorrelationCount(string Key, int Count);

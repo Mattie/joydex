@@ -199,6 +199,8 @@ public sealed class TaskAlertCoordinatorTests
                     "completeAfter",
                     "correlatedAttention",
                     "deferredQuestions",
+                    "identity",
+                    "latestHumanUserTurnAt",
                     "observedActiveAt",
                     "pendingAsyncQuestions",
                     "questionOrigins",
@@ -225,7 +227,7 @@ public sealed class TaskAlertCoordinatorTests
 
     [Theory]
     [InlineData("{")]
-    [InlineData("{\"schemaVersion\":2,\"assignments\":[]}")]
+    [InlineData("{\"schemaVersion\":3,\"assignments\":[]}")]
     [InlineData("{\"schemaVersion\":1,\"assignments\":[{\"slot\":0,\"sessionId\":\"bad\",\"state\":\"running\",\"updatedAt\":\"2026-07-20T12:00:00Z\",\"correlatedAttention\":[],\"uncorrelatedAttentionCount\":0}]}")]
     public async Task QuarantinesInvalidStateAndStartsEmpty(string invalidJson)
     {

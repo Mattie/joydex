@@ -4,6 +4,7 @@ using Joydex.Core.TaskAlerts;
 using Joydex.Core.Voice;
 using Joydex.Windows.TaskAlerts;
 using Joydex.Windows.Voice;
+using Joydex.Windows.T3;
 
 namespace Joydex.RuntimeHost.Production;
 
@@ -18,6 +19,9 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
         {
             return request.Kind switch
             {
+                RuntimeCommandKind.TestT3Connection => await TestT3ConnectionAsync(request, cancellationToken).ConfigureAwait(false),
+                RuntimeCommandKind.SetupT3Shortcuts or RuntimeCommandKind.RemoveT3Shortcuts =>
+                    await ChangeT3ShortcutsAsync(request, cancellationToken).ConfigureAwait(false),
                 RuntimeCommandKind.ListVoiceProjects => await ListVoiceProjectsAsync(request, cancellationToken)
                     .ConfigureAwait(false),
                 RuntimeCommandKind.ProvisionVoiceWorkspace => await ProvisionVoiceWorkspaceAsync(request, cancellationToken)
@@ -165,6 +169,14 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
     {
         ArgumentNullException.ThrowIfNull(request);
         var requested = request.Arguments?.Task;
+        requested?.Identity?.Validate();
+        if (requested?.Identity is { Backend: TaskAlertBackend.RemoteT3 } identity)
+        {
+            identity.Validate();
+            if (identity.NativeThreadId != requested.TaskId || identity.EnvironmentId != requested.HostId)
+                throw new InvalidDataException("The task source identity does not match the requested target.");
+            return new TaskAlertNavigationRequest(0, 0, 0, identity.PoolKey, identity);
+        }
         if (requested is null
             || !string.Equals(requested.HostId, "local", StringComparison.OrdinalIgnoreCase)
             || !CodexTaskReference.TryParse(requested.TaskId, out var taskId))
@@ -172,7 +184,27 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory
             throw new InvalidDataException("A valid local Desktop task target is required.");
         }
 
+        if (requested.Identity is { } localIdentity
+            && (!CodexTaskReference.TryParse(localIdentity.NativeThreadId, out var identityTaskId) || identityTaskId != taskId))
+            throw new InvalidDataException("The task source identity does not match the requested target.");
+
         return new TaskAlertNavigationRequest(0, 0, 0, taskId);
+    }
+
+    private static async Task<RuntimeCommandResult> TestT3ConnectionAsync(RuntimeCommandRequest request, CancellationToken token)
+    {
+        var result = await new T3Reader().TestConnectionAsync(request.Arguments!.T3Connection!, token).ConfigureAwait(false);
+        return new(request.OperationId, request.Kind, result.Success ? RuntimeCommandStatus.Completed : RuntimeCommandStatus.Rejected,
+            result.Success ? "T3 connection verified. Save the environment identity before enabling monitoring." : result.Reason,
+            new RuntimeCommandPayload(T3Connection: result));
+    }
+
+    private static async Task<RuntimeCommandResult> ChangeT3ShortcutsAsync(RuntimeCommandRequest request, CancellationToken token)
+    {
+        var result = await new T3Reader().SetupShortcutsAsync(request.Arguments!.T3Connection!,
+            request.Kind == RuntimeCommandKind.RemoveT3Shortcuts, token).ConfigureAwait(false);
+        return new(request.OperationId, request.Kind, result.Success ? RuntimeCommandStatus.Completed : RuntimeCommandStatus.Rejected,
+            result.Reason ?? result.ContextDiagnostic, new RuntimeCommandPayload(T3Shortcuts: result));
     }
 
     private static async Task<RuntimeCommandResult> ReadVoiceWakeTuningAsync(

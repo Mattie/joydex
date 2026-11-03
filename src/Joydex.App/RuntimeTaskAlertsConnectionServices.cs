@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Joydex.Contracts;
 using Joydex.Core.TaskAlerts;
+using Joydex.Core.T3;
 using Joydex.Windows.TaskAlerts;
 
 namespace Joydex.App;
@@ -16,6 +17,10 @@ internal enum RuntimeTaskAlertsActionKind
     RemoveHooks,
     DismissQuestions,
     SetClearQuestionsOnTurnEnd,
+    SetT3Connection,
+    TestT3Connection,
+    SetupT3Shortcuts,
+    RemoveT3Shortcuts,
 }
 
 internal enum RuntimeTaskAlertsActionOutcome
@@ -34,7 +39,8 @@ internal sealed record RuntimeTaskAlertsActionResult(
     RuntimeTaskAlertsActionKind Kind,
     RuntimeTaskAlertsActionOutcome Outcome,
     Guid OperationId,
-    string Detail)
+    string Detail,
+    RuntimeCommandPayload? Payload = null)
 {
     public bool Succeeded => Outcome is RuntimeTaskAlertsActionOutcome.NoChanges
         or RuntimeTaskAlertsActionOutcome.Applied
@@ -231,6 +237,26 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
                 LedOutput: options.Normalize()),
             operationId,
             cancellationToken);
+    }
+
+    public Task<RuntimeTaskAlertsActionResult> SetT3ConnectionAsync(T3ConnectionOptions options, Guid operationId,
+        CancellationToken cancellationToken = default) => ApplySettingsAsync(
+            new SettingsIntent(RuntimeTaskAlertsActionKind.SetT3Connection, T3: options.Normalize()), operationId, cancellationToken);
+
+    public async Task<T3ReadResult> TestT3ConnectionAsync(T3ConnectionOptions options, CancellationToken token = default)
+    {
+        var action = await ExecuteCommandAsync(RuntimeTaskAlertsActionKind.TestT3Connection, RuntimeCommandKind.TestT3Connection,
+            Guid.NewGuid(), token, new RuntimeCommandArguments(T3Connection: options.Normalize())).ConfigureAwait(false);
+        return action.Payload?.T3Connection ?? new() { ErrorClass = action.Outcome.ToString(), Reason = action.Detail };
+    }
+
+    public async Task<T3ShortcutSetupResult> ChangeT3ShortcutsAsync(T3ConnectionOptions options, bool remove,
+        CancellationToken token = default)
+    {
+        var action = await ExecuteCommandAsync(remove ? RuntimeTaskAlertsActionKind.RemoveT3Shortcuts : RuntimeTaskAlertsActionKind.SetupT3Shortcuts,
+            remove ? RuntimeCommandKind.RemoveT3Shortcuts : RuntimeCommandKind.SetupT3Shortcuts,
+            Guid.NewGuid(), token, new RuntimeCommandArguments(T3Connection: options.Normalize())).ConfigureAwait(false);
+        return action.Payload?.T3Shortcuts ?? new() { ErrorClass = action.Outcome.ToString(), Reason = action.Detail };
     }
 
     public Task<RuntimeTaskAlertsActionResult> AddSuppressionAsync(
@@ -694,7 +720,7 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
             _ => RuntimeTaskAlertsActionOutcome.Failed,
         };
         if (outcome == RuntimeTaskAlertsActionOutcome.Applied
-            && pending.ActionKind != RuntimeTaskAlertsActionKind.DismissQuestions
+            && pending.ActionKind is RuntimeTaskAlertsActionKind.InspectHooks or RuntimeTaskAlertsActionKind.InstallHooks or RuntimeTaskAlertsActionKind.RemoveHooks
             && result.Payload?.TaskAlertHooks is not { } hooks)
         {
             return PublishCommandState(
@@ -704,12 +730,29 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
                 "The runtime omitted the Task Alerts hook status.");
         }
 
+        var isConnectionTest = pending.ActionKind == RuntimeTaskAlertsActionKind.TestT3Connection;
+        var isShortcutChange = pending.ActionKind is RuntimeTaskAlertsActionKind.SetupT3Shortcuts or RuntimeTaskAlertsActionKind.RemoveT3Shortcuts;
+        var payloadSuccess = isConnectionTest ? result.Payload?.T3Connection?.Success
+            : isShortcutChange ? result.Payload?.T3Shortcuts?.Success : null;
+        if ((isConnectionTest || isShortcutChange)
+            && (result.Status == RuntimeCommandStatus.Completed && payloadSuccess is not true
+                || result.Status != RuntimeCommandStatus.Completed && payloadSuccess is true))
+            return PublishCommandState(connection, pending, RuntimeTaskAlertsActionOutcome.Uncertain,
+                "The runtime omitted the T3 result or returned a contradictory T3 command outcome.");
+        if (isConnectionTest && result.Payload?.T3Connection is { Success: true } tested
+            && (string.IsNullOrWhiteSpace(tested.EnvironmentId) || tested.EnvironmentId.Length > 512
+                || tested.EnvironmentId.Any(char.IsControl)
+                || pending.Arguments?.T3Connection?.EnvironmentId is { Length: > 0 } expectedEnvironment
+                    && tested.EnvironmentId != expectedEnvironment))
+            return PublishCommandState(connection, pending, RuntimeTaskAlertsActionOutcome.Uncertain,
+                "The runtime returned a missing or mismatched T3 environment identity.");
         return PublishCommandState(
             connection,
             pending,
             outcome,
             result.Detail ?? DefaultDetail(pending.ActionKind),
-            result.Payload?.TaskAlertHooks);
+            result.Payload?.TaskAlertHooks,
+            result.Payload);
     }
 
     private RuntimeTaskAlertsActionResult PublishCommandState(
@@ -717,13 +760,15 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
         PendingCommandAction pending,
         RuntimeTaskAlertsActionOutcome outcome,
         string detail,
-        RuntimeTaskAlertHookStatus? hooks = null)
+        RuntimeTaskAlertHookStatus? hooks = null,
+        RuntimeCommandPayload? payload = null)
     {
         var action = new RuntimeTaskAlertsActionResult(
             pending.ActionKind,
             outcome,
             pending.OperationId,
-            detail);
+            detail,
+            payload);
         var schedule = false;
         lock (_gate)
         {
@@ -810,7 +855,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
             snapshot.RecentEvents.Select(ToEventTrace).ToArray(),
             completeSuppressions,
             snapshot.LedOutput.Normalize(),
-            active.ClearQuestionsOnTurnEnd);
+            active.ClearQuestionsOnTurnEnd,
+            snapshot.T3Status);
     }
 
     private static TaskAlertEventTrace ToEventTrace(RuntimeTaskAlertEventTrace trace) => new(
@@ -840,6 +886,7 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
         var normalized = current.Normalize();
         return intent.Kind switch
         {
+            RuntimeTaskAlertsActionKind.SetT3Connection => normalized with { T3 = intent.T3 ?? new T3ConnectionOptions() },
             RuntimeTaskAlertsActionKind.SetEnabled => normalized with
             {
                 Enabled = intent.Enabled
@@ -1051,6 +1098,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
     {
         var same = pending.Kind == requested.Kind
             && pending.Enabled == requested.Enabled
+            && pending.ClearQuestionsOnTurnEnd == requested.ClearQuestionsOnTurnEnd
+            && Equals(pending.T3, requested.T3)
             && Equals(pending.LedOutput, requested.LedOutput)
             && RulesEqual(pending.Rule, requested.Rule);
         if (!same)
@@ -1125,7 +1174,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
         bool? Enabled = null,
         TaskAlertLedOptions? LedOutput = null,
         TaskAlertSuppressionRule? Rule = null,
-        bool? ClearQuestionsOnTurnEnd = null);
+        bool? ClearQuestionsOnTurnEnd = null,
+        T3ConnectionOptions? T3 = null);
 
     private sealed record PendingSettingsAction(Guid OperationId, SettingsIntent Intent);
 

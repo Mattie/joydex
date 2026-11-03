@@ -7,6 +7,7 @@ public static class TaskAlertSuppression
 {
     public const int MaximumRules = 100;
     public const int MaximumTaskIdLength = 512;
+    public const int MaximumEncodedTaskIdLength = 8192;
     public const int MaximumWorkspaceLength = 4096;
 
     public static IEqualityComparer<TaskAlertSuppressionRule> RuleComparer { get; } =
@@ -31,9 +32,14 @@ public static class TaskAlertSuppression
     public static string? NormalizeTaskId(string? sessionId)
     {
         var value = sessionId?.Trim();
-        return string.IsNullOrWhiteSpace(value) || value.Length > MaximumTaskIdLength
-            ? null
-            : value;
+        if (string.IsNullOrWhiteSpace(value) || value.Length > MaximumEncodedTaskIdLength) return null;
+        if (TaskAlertIdentity.IsNativeId(value)) return value;
+        try
+        {
+            var identity = TaskAlertIdentity.FromPoolKey(value);
+            return identity.Backend == TaskAlertBackend.RemoteT3 && identity.PoolKey == value ? value : null;
+        }
+        catch (InvalidDataException) { return null; }
     }
 
     public static string? NormalizeWorkspace(string? workspace)

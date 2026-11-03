@@ -1,4 +1,6 @@
 using Joydex.Core.Voice;
+using Joydex.Core.T3;
+using Joydex.Core.TaskAlerts;
 
 namespace Joydex.Contracts;
 
@@ -44,6 +46,9 @@ public enum RuntimeCommandKind
     RestartPlugin,
     ReloadPluginConfiguration,
     DismissTaskAlertQuestions,
+    TestT3Connection,
+    SetupT3Shortcuts,
+    RemoveT3Shortcuts,
 }
 
 /// <summary>The exact displayed question alerts to dismiss; later questions are unaffected.</summary>
@@ -64,7 +69,8 @@ public sealed record RuntimeCommandArguments(
     VoicePeWakeTuning? VoiceWakeTuning = null,
     string? ContinuationToken = null,
     string? PluginId = null,
-    RuntimeTaskAlertQuestionDismissal? TaskAlertQuestions = null);
+    RuntimeTaskAlertQuestionDismissal? TaskAlertQuestions = null,
+    T3ConnectionOptions? T3Connection = null);
 
 public sealed record RuntimeCommandRequest(
     Guid OperationId,
@@ -116,10 +122,12 @@ public sealed record RuntimeCommandPayload(
     RuntimeVoiceConversationPage? VoiceConversation = null,
     RuntimeVoiceOutboxDelivery? VoiceOutboxDelivery = null,
     int? DeletedFileCount = null,
-    RuntimePluginSnapshot? Plugins = null);
+    RuntimePluginSnapshot? Plugins = null,
+    T3ReadResult? T3Connection = null,
+    T3ShortcutSetupResult? T3Shortcuts = null);
 
 /// <summary>A requested target. The host re-resolves its identity before acting on it.</summary>
-public sealed record RuntimeTaskReference(string TaskId, string HostId);
+public sealed record RuntimeTaskReference(string TaskId, string HostId, TaskAlertIdentity? Identity = null);
 
 public sealed record RuntimeVoiceProject(
     string ProjectId,

@@ -1,6 +1,7 @@
 using System.Threading.Channels;
 using System.Text.Json;
 using Joydex.Core.TaskAlerts;
+using Joydex.Core.T3;
 
 namespace Joydex.Windows.TaskAlerts;
 
@@ -13,7 +14,8 @@ public sealed record TaskAlertSnapshot(
     IReadOnlyList<TaskAlertEventTrace>? RecentEvents = null,
     IReadOnlyList<TaskAlertSuppressionRule>? Suppressions = null,
     TaskAlertLedOptions? LedOutput = null,
-    bool ClearQuestionsOnTurnEnd = false)
+    bool ClearQuestionsOnTurnEnd = false,
+    T3ReadResult? T3Status = null)
 {
     public TaskAlertLedOptions EffectiveLedOutput =>
         (LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize();
@@ -51,6 +53,8 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
     private readonly string _statePath;
     private readonly Action<string> _log;
     private readonly TaskAlertPool _pool;
+    private TaskAlertMetadataStore? _metadata;
+    private T3ReadResult? _t3Status;
     private readonly Channel<TaskAlertEvent> _events = Channel.CreateUnbounded<TaskAlertEvent>(new UnboundedChannelOptions
     {
         SingleReader = true,
@@ -155,6 +159,68 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         {
             return SnapshotUnsafe();
         }
+    }
+
+    /// <summary>Publishes positive remote observations without manufacturing local lifecycle hooks.</summary>
+    public void ApplySourceSnapshot(TaskAlertSourceSnapshot source, T3ReadResult status)
+    {
+        TaskAlertSnapshot snapshot;
+        lock (_sync)
+        {
+            var configured = _preferences.T3 ?? new T3ConnectionOptions();
+            if (!_pool.Enabled || !configured.Enabled || source.Source.Backend != TaskAlertBackend.RemoteT3
+                || source.Source.EnvironmentId != configured.EnvironmentId) return;
+            _t3Status = status with { Tasks = [], DisplayName = configured.DisplayName };
+            source = source with { Tasks = source.Tasks.Where(task => !IsSuppressedUnsafe(
+                TaskAlertIdentity.RemoteT3(source.Source.EnvironmentId, task.NativeThreadId).PoolKey, null)).ToArray() };
+            if (_pool.ApplySourceSnapshot(source)) TrySaveStateUnsafe();
+            var labelsChanged = false;
+            _metadata ??= new TaskAlertMetadataStore(_statePath + ".metadata.json");
+            foreach (var task in source.Tasks)
+                if (task.Metadata is not null)
+                    labelsChanged |= _metadata.Set(TaskAlertIdentity.RemoteT3(source.Source.EnvironmentId, task.NativeThreadId).PoolKey, task.Metadata);
+            if (labelsChanged) SaveMetadataUnsafe();
+            snapshot = SnapshotUnsafe();
+        }
+        RaiseChanged(snapshot);
+    }
+
+    public void SetSourceUnavailable(TaskAlertSourceIdentity source, T3ReadResult status)
+    {
+        TaskAlertSnapshot snapshot;
+        lock (_sync)
+        {
+            _pool.SetSourceUnavailable(source);
+            var configured = _preferences.T3;
+            _t3Status = status with
+            {
+                Tasks = [], EnvironmentId = source.EnvironmentId,
+                DisplayName = source.EnvironmentId == configured?.EnvironmentId ? configured.DisplayName : null,
+            };
+            snapshot = SnapshotUnsafe();
+        }
+        RaiseChanged(snapshot);
+    }
+
+    /// <summary>Refreshes labels only; catalog metadata never starts or ends a task.</summary>
+    public void SetTaskMetadata(IEnumerable<KeyValuePair<string, TaskAlertMetadata>> labels)
+    {
+        TaskAlertSnapshot? snapshot = null;
+        lock (_sync)
+        {
+            _metadata ??= new TaskAlertMetadataStore(_statePath + ".metadata.json");
+            var changed = false;
+            foreach (var pair in labels.Take(2048)) changed |= _metadata.Set(pair.Key, pair.Value);
+            if (changed) { SaveMetadataUnsafe(); snapshot = SnapshotUnsafe(); }
+        }
+        RaiseChanged(snapshot);
+    }
+
+    private void SaveMetadataUnsafe()
+    {
+        try { _metadata?.Save(); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { _log("Task display metadata could not be saved (" + error.GetType().Name + ")."); }
     }
 
     public void SetEnabled(bool enabled)
@@ -571,20 +637,27 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
 
     private TaskAlertSnapshot SnapshotUnsafe() => new(
         _pool.Enabled,
-        _pool.Assignments,
+        _pool.Assignments.Select(assignment => assignment with
+        {
+            Metadata = assignment.Metadata ?? (_metadata ??= new TaskAlertMetadataStore(_statePath + ".metadata.json")).Get(assignment.SessionId)
+        }).ToArray(),
         _pool.DroppedEventCount,
         _detectedBank ?? _preferences.Bank,
         _detectedBank is not null,
         [.. _recentEvents],
         [.. (_preferences.Suppressions ?? [])],
         (_preferences.LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize(),
-        _preferences.ClearQuestionsOnTurnEnd);
+        _preferences.ClearQuestionsOnTurnEnd,
+        _t3Status);
 
     private void RestoreStateUnsafe()
     {
         try
         {
             _pool.Restore(TaskAlertStateStore.Load(_statePath));
+            foreach (var source in _pool.Assignments.Select(task => task.TaskIdentity.Source)
+                .Where(source => source.Backend == TaskAlertBackend.RemoteT3).Distinct().ToArray())
+                _pool.SetSourceUnavailable(source);
             _pool.RemoveAssignments(assignment => IsSuppressedUnsafe(
                 assignment.SessionId,
                 assignment.WorkspaceKey), DateTimeOffset.UtcNow);

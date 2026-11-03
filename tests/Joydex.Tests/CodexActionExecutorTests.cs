@@ -91,6 +91,7 @@ public sealed class CodexActionExecutorTests
             CodexAction.ButtonMap,
             CodexAction.InAppPushToTalk,
             CodexAction.Dictation,
+            CodexAction.StopTask, // No verified Codex command exists for this semantic action.
         };
         var expected = Enum.GetValues<CodexAction>().Where(action => !rawActions.Contains(action)).Order().ToArray();
         var actual = CodexCommandCatalog.All.Select(descriptor => descriptor.Action).Order().ToArray();

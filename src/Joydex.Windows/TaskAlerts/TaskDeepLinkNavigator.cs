@@ -24,6 +24,21 @@ public sealed class TaskDeepLinkNavigator(
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
 
+        try
+        {
+            request.TaskIdentity.Validate();
+            if (request.Identity is not null && request.Identity.PoolKey != request.SessionId)
+            {
+                log("BLOCKED task alert navigation; the target identity does not match its assignment.");
+                return Task.FromResult(false);
+            }
+        }
+        catch (InvalidDataException)
+        {
+            log("BLOCKED task alert navigation; the target identity is invalid.");
+            return Task.FromResult(false);
+        }
+
         var foreground = _foregroundGuard.Check(safety, actionMayBringCodexForward: true);
         if (!foreground.Allowed)
         {
@@ -33,13 +48,13 @@ public sealed class TaskDeepLinkNavigator(
 
         if (safety.DryRun)
         {
-            log($"DRY RUN task alert M{request.Bank} B{request.Button} slot={request.Slot}; session={request.SessionId}; target={BuildUri(request.SessionId)}");
+            log($"DRY RUN task alert M{request.Bank} B{request.Button} slot={request.Slot}; target={BuildUri(request.TaskIdentity)}");
             return Task.FromResult(false);
         }
 
         try
         {
-            var target = BuildUri(request.SessionId);
+            var target = BuildUri(request.TaskIdentity);
             _startProcess(new ProcessStartInfo(target) { UseShellExecute = true });
             log($"EXECUTED task alert M{request.Bank} B{request.Button} slot={request.Slot}; session={request.SessionId}; target={target}");
             return Task.FromResult(true);
@@ -55,5 +70,13 @@ public sealed class TaskDeepLinkNavigator(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         return $"codex://threads/{Uri.EscapeDataString(sessionId)}";
+    }
+
+    public static string BuildUri(TaskAlertIdentity identity)
+    {
+        identity.Validate();
+        return identity.Backend == TaskAlertBackend.RemoteT3
+            ? $"t3code://threads/{Uri.EscapeDataString(identity.EnvironmentId)}/{Uri.EscapeDataString(identity.NativeThreadId)}"
+            : BuildUri(identity.NativeThreadId);
     }
 }

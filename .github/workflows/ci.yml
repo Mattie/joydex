@@ -28,6 +28,9 @@ jobs:
       - name: Test native Dot signaling without network access
         run: python -I .\tests\dot_signaling_test.py
 
+      - name: Test T3 metadata projection without network access
+        run: python -I .\tests\Joydex.Tests\T3ProjectorTests.py
+
       - name: Restore
         run: dotnet restore .\Joydex.sln
 

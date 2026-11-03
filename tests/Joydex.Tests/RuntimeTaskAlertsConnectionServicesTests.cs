@@ -4,11 +4,130 @@ using Joydex.Core.Config;
 using Joydex.Core.TaskAlerts;
 using Joydex.Core.Voice;
 using Joydex.Windows.TaskAlerts;
+using Joydex.Core.T3;
 
 namespace Joydex.Tests;
 
 public sealed class RuntimeTaskAlertsConnectionServicesTests
 {
+    [Fact]
+    public async Task ConnectionTestReturnsItsOwnPayloadWhenAnotherTestCompletesDuringNotification()
+    {
+        var runner = new FakeCommandRunner { ExecuteHandler = (request, _) => Task.FromResult(new RuntimeCommandResult(
+            request.OperationId, request.Kind, RuntimeCommandStatus.Completed, Payload: new(T3Connection: new()
+            { Success = true, EnvironmentId = request.Arguments!.T3Connection!.SshHost }))) };
+        using var services = new RuntimeTaskAlertsConnectionServices(new ImmediateSynchronizationContext());
+        services.BeginConnection(1, new FakeSettingsWriter(), runner, State(Snapshot(Settings(Preferences()), Alerts())));
+        T3ReadResult? second = null;
+        var nested = false;
+        services.Changed += (_, state) =>
+        {
+            if (nested || state.LastAction?.Kind != RuntimeTaskAlertsActionKind.TestT3Connection) return;
+            nested = true;
+            second = services.TestT3ConnectionAsync(new() { SshHost = "second" }).GetAwaiter().GetResult();
+        };
+        var first = await services.TestT3ConnectionAsync(new() { SshHost = "first" });
+        Assert.Equal("first", first.EnvironmentId);
+        Assert.Equal("second", second!.EnvironmentId);
+        Assert.Equal(2, runner.ExecuteRequests.Count);
+    }
+
+    [Fact]
+    public async Task ShortcutOperationReturnsItsOwnPayloadWhenAnotherActionCompletesDuringNotification()
+    {
+        var runner = new FakeCommandRunner { ExecuteHandler = (request, _) => Task.FromResult(new RuntimeCommandResult(
+            request.OperationId, request.Kind, RuntimeCommandStatus.Completed, Payload: new(T3Shortcuts: new()
+            { Success = true, BindingFingerprint = request.Kind.ToString() }))) };
+        using var services = new RuntimeTaskAlertsConnectionServices(new ImmediateSynchronizationContext());
+        services.BeginConnection(1, new FakeSettingsWriter(), runner, State(Snapshot(Settings(Preferences()), Alerts())));
+        T3ShortcutSetupResult? removed = null;
+        var nested = false;
+        services.Changed += (_, state) =>
+        {
+            if (nested || state.LastAction?.Kind != RuntimeTaskAlertsActionKind.SetupT3Shortcuts) return;
+            nested = true;
+            removed = services.ChangeT3ShortcutsAsync(new() { SshHost = "server", EnvironmentId = "environment" }, true)
+                .GetAwaiter().GetResult();
+        };
+        var added = await services.ChangeT3ShortcutsAsync(new() { SshHost = "server", EnvironmentId = "environment" }, false);
+        Assert.Equal(RuntimeCommandKind.SetupT3Shortcuts.ToString(), added.BindingFingerprint);
+        Assert.Equal(RuntimeCommandKind.RemoveT3Shortcuts.ToString(), removed!.BindingFingerprint);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingT3SuccessPayloadRemainsPendingAndRecoveryReturnsThatOperationsPayload(bool shortcuts)
+    {
+        var runner = new FakeCommandRunner { ExecuteHandler = (request, _) => Task.FromResult(new RuntimeCommandResult(
+            request.OperationId, request.Kind, RuntimeCommandStatus.Completed)) };
+        using var services = new RuntimeTaskAlertsConnectionServices(new ImmediateSynchronizationContext());
+        services.BeginConnection(1, new FakeSettingsWriter(), runner, State(Snapshot(Settings(Preferences()), Alerts())));
+        if (shortcuts)
+            Assert.False((await services.ChangeT3ShortcutsAsync(new() { SshHost = "server", EnvironmentId = "environment" }, false)).Success);
+        else Assert.False((await services.TestT3ConnectionAsync(new() { SshHost = "server" })).Success);
+        Assert.Equal(RuntimeTaskAlertsActionOutcome.Uncertain, services.Current.LastAction!.Outcome);
+        var submitted = Assert.Single(runner.ExecuteRequests);
+        var payload = shortcuts ? new RuntimeCommandPayload(T3Shortcuts: new() { Success = true, BindingFingerprint = "recovered" })
+            : new RuntimeCommandPayload(T3Connection: new() { Success = true, EnvironmentId = "environment" });
+        runner.LookupHandler = (id, _) => Task.FromResult(new RuntimeCommandOperationResult(id, RuntimeCommandOperationState.Completed,
+            new(id, submitted.Kind, RuntimeCommandStatus.Completed, Payload: payload)));
+        var recovered = Assert.Single(await services.RecoverPendingOperationsAsync());
+        Assert.True(recovered.Succeeded);
+        Assert.Same(payload, recovered.Payload);
+        Assert.Single(runner.ExecuteRequests);
+        Assert.Empty(await services.RecoverPendingOperationsAsync());
+    }
+
+    [Theory]
+    [InlineData(RuntimeCommandStatus.Completed, false, "environment")]
+    [InlineData(RuntimeCommandStatus.Rejected, true, "environment")]
+    [InlineData(RuntimeCommandStatus.Completed, true, "wrong-environment")]
+    public async Task ContradictoryOrMismatchedT3PayloadNeverReportsVerifiedSuccess(RuntimeCommandStatus status, bool success, string environment)
+    {
+        var runner = new FakeCommandRunner { ExecuteHandler = (request, _) => Task.FromResult(new RuntimeCommandResult(
+            request.OperationId, request.Kind, status, Payload: new(T3Connection: new() { Success = success, EnvironmentId = environment }))) };
+        using var services = new RuntimeTaskAlertsConnectionServices(new ImmediateSynchronizationContext());
+        services.BeginConnection(1, new FakeSettingsWriter(), runner, State(Snapshot(Settings(Preferences()), Alerts())));
+        var result = await services.TestT3ConnectionAsync(new() { SshHost = "server", EnvironmentId = "environment" });
+        Assert.False(result.Success);
+        Assert.Equal(RuntimeTaskAlertsActionOutcome.Uncertain, services.Current.LastAction!.Outcome);
+    }
+
+    [Fact]
+    public async Task T3ConnectionUsesTheSettingsAuthorityAndPreservesOtherTaskPreferences()
+    {
+        var original = Preferences(bank: 4) with { ClearQuestionsOnTurnEnd = true };
+        var settings = Settings(original, 10);
+        var writer = new FakeSettingsWriter { ApplyHandler = (_, patch, id, _) => Task.FromResult(Result(
+            RuntimeSettingsWriteOutcome.Applied, id, settings with { Revision = 11,
+                Desired = settings.Desired with { TaskAlerts = patch.TaskAlerts! }, Active = settings.Active with { TaskAlerts = patch.TaskAlerts! } }, "Saved")) };
+        var runner = new FakeCommandRunner();
+        using var services = new RuntimeTaskAlertsConnectionServices(new ImmediateSynchronizationContext());
+        services.BeginConnection(1, writer, runner, State(Snapshot(settings, Alerts())));
+        var options = new T3ConnectionOptions { Enabled = true, SshHost = " server ", EnvironmentId = " environment ", DisplayName = " source " };
+        Assert.True((await services.SetT3ConnectionAsync(options, Guid.NewGuid())).Succeeded);
+        var call = Assert.Single(writer.ApplyCalls);
+        Assert.Equal(10, call.BaseRevision);
+        Assert.Equal(options.Normalize(), call.Patch.TaskAlerts!.T3);
+        Assert.Equal(4, call.Patch.TaskAlerts.Bank);
+        Assert.True(call.Patch.TaskAlerts.ClearQuestionsOnTurnEnd);
+        Assert.Null(call.Patch.Companion); Assert.Null(call.Patch.Voice); Assert.Null(call.Patch.PebbleIndex);
+        Assert.Empty(runner.ExecuteRequests);
+    }
+
+    [Fact]
+    public void EnabledConfiguredSourceCanBeTestedWithoutRequiringOrTrustingItsSavedIdentity()
+    {
+        var discovery = T3TaskSourceSettingsForm.BuildOptions(true, " server ", " source ", "old-environment", true);
+        Assert.False(discovery.Enabled);
+        Assert.Equal("", discovery.EnvironmentId);
+        Assert.Equal("server", discovery.SshHost);
+        Assert.Throws<ArgumentException>(() => T3TaskSourceSettingsForm.BuildOptions(true, "server", "source", ""));
+        T3TaskSourceSettingsForm.ValidateTestedIdentity(" server ", "environment", "server");
+        Assert.Throws<InvalidOperationException>(() => T3TaskSourceSettingsForm.ValidateTestedIdentity("other", "environment", "server"));
+    }
+
     [Fact]
     public async Task TurnEndPolicyUsesDesiredSettingsAndShowsOnlyTheActivatedPolicy()
     {

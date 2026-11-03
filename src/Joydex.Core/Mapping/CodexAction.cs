@@ -38,6 +38,7 @@ public enum CodexAction
     ToggleVoiceChatMicrophone,
     Dictation,
     OpenWorkingDirectory,
+    StopTask,
 }
 
 public static class CodexActionCatalog
@@ -81,6 +82,7 @@ public static class CodexActionCatalog
             ["toggle-voice-mic"] = CodexAction.ToggleVoiceChatMicrophone,
             ["dictation"] = CodexAction.Dictation,
             ["open"] = CodexAction.OpenWorkingDirectory,
+            ["stop-task"] = CodexAction.StopTask,
         };
 
     public static IEnumerable<string> SupportedIds => Actions.Keys.Order(StringComparer.OrdinalIgnoreCase);

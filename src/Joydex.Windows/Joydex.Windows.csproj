@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Actions\Compatibility\CodexWindows261007.json" />
+    <EmbeddedResource Include="T3\t3-projector.py" />
     <Content Include="Voice\dot-signaling.py" Link="Assets\Voice\dot-signaling.py"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>

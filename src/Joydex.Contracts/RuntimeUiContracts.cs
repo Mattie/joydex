@@ -98,7 +98,8 @@ public sealed record RuntimeTaskAlertSnapshot(
     RuntimeTaskAlertEventTrace[] RecentEvents,
     TaskAlertSuppressionRule[] Suppressions,
     TaskAlertLedOptions LedOutput,
-    RuntimeTaskAlertHookStatus Hooks);
+    RuntimeTaskAlertHookStatus Hooks,
+    Joydex.Core.T3.T3ReadResult? T3Status = null);
 
 public sealed record RuntimeVoiceUiSnapshot(
     RuntimeVoiceSnapshot Session,

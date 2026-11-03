@@ -4,6 +4,29 @@ Joydex connects physical controls and room devices to explicit Codex actions. It
 
 ## Language
 
+**Aggregate Task Pool**:
+One assignment pool and hardware owner for local Codex chats and one opt-in T3 desktop
+environment. A task identity includes backend, environment and native thread ID. Legacy
+Codex hooks keep their local meaning and assigned slots; opaque T3 IDs compare ordinally.
+Historical completed chats do not allocate lights. Source failures preserve observations
+without renewing their existing Running or Attention leases.
+_Avoid_: Separate T3 lights, global thread ID
+
+**Task Display Metadata**:
+Private, bounded title, project, provider and model labels stored separately from lifecycle
+state. Codex labels come from its Desktop Task Bridge catalog; T3 labels come from the remote
+metadata projector. A title or generic update timestamp never proves activity, a user turn or
+question resolution. See [ADR 0017](docs/adr/0017-aggregate-desktop-task-sources.md).
+_Avoid_: Transcript cache, lifecycle authority
+
+**Desktop Action Capability**:
+Proof that a shared task action can run in the current supported foreground desktop app.
+T3 requires the exact foreground window, active environment, effective binding and applicable
+task context. Shortcut setup alone supplies no active desktop context. Stock T3 currently
+leaves shared actions unavailable; task-button navigation uses its environment-specific URI.
+Room Voice remains local Codex only.
+_Avoid_: Installed means enabled, shortcut guessing
+
 **Task Alert Reconciliation**:
 A periodic, read-only comparison of task lights with explicit Codex Desktop turn metadata.
 The task-alert runtime shares the Desktop Task Bridge independently of Room Voice. Once a

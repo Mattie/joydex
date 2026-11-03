@@ -8,7 +8,9 @@ namespace Joydex.Core.TaskAlerts;
 /// </summary>
 public static class TaskAlertStateStore
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
+
+    public static string LegacyBackupPath(string path) => Path.GetFullPath(path) + ".v1.bak";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -33,7 +35,7 @@ public static class TaskAlertStateStore
             File.ReadAllText(path),
             JsonOptions)
             ?? throw new InvalidDataException("The task-alert state file was empty.");
-        if (document.SchemaVersion != CurrentSchemaVersion)
+        if (document.SchemaVersion is not (1 or CurrentSchemaVersion))
         {
             throw new InvalidDataException(
                 $"Unsupported task-alert state schema version {document.SchemaVersion}.");
@@ -44,7 +46,13 @@ public static class TaskAlertStateStore
             throw new InvalidDataException("The task-alert state has no assignment list.");
         }
 
-        return new TaskAlertPoolState(document.Assignments);
+        var assignments = document.SchemaVersion == 1
+            ? document.Assignments.Select(item => item is null
+                ? throw new InvalidDataException("The task-alert state contains an empty assignment.")
+                : item with { Identity = null }).ToArray()
+            : document.Assignments;
+        return new TaskAlertPoolState(assignments,
+            document.SchemaVersion == 1 ? null : document.SourceAcknowledgements);
     }
 
     /// <summary>Saves a complete task-alert state snapshot with atomic replacement.</summary>
@@ -71,12 +79,25 @@ public static class TaskAlertStateStore
                 {
                     SchemaVersion = CurrentSchemaVersion,
                     Assignments = state.Assignments,
+                    SourceAcknowledgements = state.SourceAcknowledgements,
                 };
                 JsonSerializer.Serialize(stream, document, JsonOptions);
                 stream.Flush(flushToDisk: true);
             }
 
-            File.Move(temporaryPath, fullPath, overwrite: true);
+            var legacy = false;
+            if (File.Exists(fullPath))
+            {
+                using var existing = JsonDocument.Parse(File.ReadAllText(fullPath));
+                if (existing.RootElement.ValueKind != JsonValueKind.Object
+                    || !existing.RootElement.TryGetProperty("schemaVersion", out var version)
+                    || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var schema))
+                    throw new InvalidDataException("The existing task-alert state has no valid schema version.");
+                legacy = schema == 1;
+            }
+            if (legacy && !File.Exists(LegacyBackupPath(fullPath)))
+                File.Replace(temporaryPath, fullPath, LegacyBackupPath(fullPath));
+            else File.Move(temporaryPath, fullPath, overwrite: true);
         }
         finally
         {
@@ -120,5 +141,8 @@ public static class TaskAlertStateStore
         public int SchemaVersion { get; init; }
 
         public TaskAlertStoredAssignment[]? Assignments { get; init; }
+
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public TaskAlertSourceAcknowledgement[]? SourceAcknowledgements { get; init; }
     }
 }
