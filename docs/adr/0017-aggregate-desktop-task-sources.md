@@ -2,10 +2,17 @@
 
 ## Decision
 
-Local Codex and one optional T3 environment share the existing coordinator, primary/overflow
+Local Codex and optional T3 environments share the existing coordinator, primary/overflow
 slots, retention and hardware owner. No additional production owner or server daemon is added.
 T3 is disabled until explicitly configured and connection-tested. Monitoring never changes
 keybindings, hooks, hosting or approvals.
+
+Desktop-following mode discovers the local T3 server and the desktop app's enabled remote
+environments. Native environment identity deduplicates routes; connection IDs are route
+metadata, never task identity. Disabled sources are not read. Every discovered environment has
+independent health, freshness and failure backoff. Discovery failures and unsupported routes
+are visible and preserve retained observations. A successful local read cannot certify a remote
+source. The existing pinned single-SSH-source mode remains supported.
 
 Identity is `(backend, environment, native thread)`. Legacy Codex keys retain their spelling,
 comparison and slots. T3 components remain ordinal through a canonical encoded pool key that
@@ -13,6 +20,9 @@ cannot collide with legacy hook IDs. State schema 2 migrates schema 1 to local C
 retaining a recoverable `.v1.bak` file. Runtime protocol 1.4 advertises `aggregate-tasks.v1`;
 older clients receive only local assignments and cannot modify a configured T3 source or
 issue remote navigation/dismissal commands.
+Protocol 1.5 adds `t3-desktop-sources.v1` and per-environment health. Older settings clients
+cannot replace Task Alerts preferences while desktop-following mode is configured, which
+prevents a full-object update from silently erasing the discovery setting.
 
 Each source carries connection generation, snapshot sequence, capture time and completeness.
 Tracked T3 threads missing from the shell catalog are read directly. Detailed runtime requests
@@ -37,6 +47,11 @@ backoff. Source identity is pinned, independently of its display name.
 Titles, projects and optional provider/model labels live in a bounded private metadata cache,
 separate from alert restart state. Prompts, previews, messages and credentials are excluded.
 Codex labels use its existing Desktop bridge catalog independently of lifecycle reconciliation.
+
+Completed history does not allocate new slots at startup. Consecutive complete observations
+from the same source generation can recover a run that both starts and finishes between polls,
+using its native run identity and timestamps. Partial reads, outages and source restarts reset
+that recovery baseline; a generic update timestamp never establishes new work.
 
 Task navigation preserves the assigned identity. Codex uses its desktop URI association;
 T3 launches the verified installed executable with its desktop URI as a single argument.

@@ -742,7 +742,7 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
         if (isConnectionTest && result.Payload?.T3Connection is { Success: true } tested
             && (string.IsNullOrWhiteSpace(tested.EnvironmentId) || tested.EnvironmentId.Length > 512
                 || tested.EnvironmentId.Any(char.IsControl)
-                || pending.Arguments?.T3Connection?.EnvironmentId is { Length: > 0 } expectedEnvironment
+                || pending.Arguments?.T3Connection is { FollowDesktop: false, EnvironmentId: { Length: > 0 } expectedEnvironment }
                     && tested.EnvironmentId != expectedEnvironment))
             return PublishCommandState(connection, pending, RuntimeTaskAlertsActionOutcome.Uncertain,
                 "The runtime returned a missing or mismatched T3 environment identity.");
@@ -856,7 +856,8 @@ internal sealed class RuntimeTaskAlertsConnectionServices : IDisposable
             completeSuppressions,
             snapshot.LedOutput.Normalize(),
             active.ClearQuestionsOnTurnEnd,
-            snapshot.T3Status);
+            snapshot.T3Status,
+            snapshot.T3Statuses);
     }
 
     private static TaskAlertEventTrace ToEventTrace(RuntimeTaskAlertEventTrace trace) => new(

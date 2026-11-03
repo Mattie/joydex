@@ -187,12 +187,15 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
     {
         EnsureAttached();
         ArgumentNullException.ThrowIfNull(request);
-        if (_negotiatedProtocolMinor < 4 && request.Patch?.TaskAlerts is { } taskAlerts)
+        if (_negotiatedProtocolMinor < 5 && request.Patch?.TaskAlerts is { } taskAlerts)
         {
             var current = await _engine.GetSettingsSnapshotAsync(ConnectionId, cancellationToken).ConfigureAwait(false);
-            if (HasT3Configuration(current.Desired.TaskAlerts) || HasT3Configuration(current.Active.TaskAlerts)
-                || HasT3Configuration(taskAlerts))
+            if (_negotiatedProtocolMinor < 4 && (HasT3Configuration(current.Desired.TaskAlerts) || HasT3Configuration(current.Active.TaskAlerts)
+                || HasT3Configuration(taskAlerts)))
                 throw new InvalidOperationException("The negotiated runtime protocol cannot update Task Alerts while T3 is configured. Reconnect with an aggregate-tasks capable settings client.");
+            if (current.Desired.TaskAlerts.T3?.FollowDesktop is true || current.Active.TaskAlerts.T3?.FollowDesktop is true
+                || taskAlerts.T3?.FollowDesktop is true)
+                throw new InvalidOperationException("The negotiated runtime protocol cannot update Task Alerts while following T3 desktop environments. Reconnect with a desktop-sources capable settings client.");
         }
         return await _engine.PrepareSettingsAsync(ConnectionId, request, cancellationToken).ConfigureAwait(false);
     }
@@ -439,10 +442,12 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
         snapshot with { TaskAlerts = FilterAlerts(snapshot.TaskAlerts) };
 
     private RuntimeTaskAlertSnapshot? FilterAlerts(RuntimeTaskAlertSnapshot? snapshot) =>
-        snapshot is null || _negotiatedProtocolMinor >= 4 ? snapshot : snapshot with
+        snapshot is null || _negotiatedProtocolMinor >= 5 ? snapshot : snapshot with
         {
-            Assignments = snapshot.Assignments.Where(task => task.TaskIdentity.Backend == TaskAlertBackend.LocalCodex).ToArray(),
-            T3Status = null,
+            Assignments = _negotiatedProtocolMinor >= 4 ? snapshot.Assignments
+                : snapshot.Assignments.Where(task => task.TaskIdentity.Backend == TaskAlertBackend.LocalCodex).ToArray(),
+            T3Status = _negotiatedProtocolMinor >= 4 ? snapshot.T3Status : null,
+            T3Statuses = null,
         };
 
     private static bool IsUiEvent(RuntimeEventKind kind) => kind is
@@ -508,6 +513,8 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
     private void ValidateCommandAuthorization(RuntimeCommandRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (_negotiatedProtocolMinor < 5 && request.Arguments?.T3Connection?.FollowDesktop is true)
+            throw new InvalidOperationException("The negotiated runtime protocol does not support T3 desktop environment discovery.");
         if (_negotiatedProtocolMinor < 4
             && (request.Kind is RuntimeCommandKind.TestT3Connection or RuntimeCommandKind.SetupT3Shortcuts
                     or RuntimeCommandKind.RemoveT3Shortcuts
@@ -532,7 +539,7 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
     }
 
     private static bool HasT3Configuration(TaskAlertPreferences preferences) => preferences.T3 is { } t3
-        && (t3.Enabled || !string.IsNullOrWhiteSpace(t3.SshHost) || !string.IsNullOrWhiteSpace(t3.EnvironmentId)
+        && (t3.Enabled || t3.FollowDesktop || !string.IsNullOrWhiteSpace(t3.SshHost) || !string.IsNullOrWhiteSpace(t3.EnvironmentId)
             || !string.IsNullOrWhiteSpace(t3.DisplayName));
 
     private static bool IsRemoteTaskKey(string? key)

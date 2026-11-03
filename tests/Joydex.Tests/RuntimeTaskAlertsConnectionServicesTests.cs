@@ -95,6 +95,23 @@ public sealed class RuntimeTaskAlertsConnectionServicesTests
     }
 
     [Fact]
+    public async Task FollowingDesktopTestsTheLocalIdentityWithoutUsingDormantManualPin()
+    {
+        var runner = new FakeCommandRunner { ExecuteHandler = (request, _) => Task.FromResult(new RuntimeCommandResult(
+            request.OperationId, request.Kind, RuntimeCommandStatus.Completed,
+            Payload: new(T3Connection: new() { Success = true, EnvironmentId = "local-environment" }))) };
+        using var services = new RuntimeTaskAlertsConnectionServices(new ImmediateSynchronizationContext());
+        services.BeginConnection(1, new FakeSettingsWriter(), runner, State(Snapshot(Settings(Preferences()), Alerts())));
+        var result = await services.TestT3ConnectionAsync(new()
+        {
+            FollowDesktop = true, SshHost = "saved-server", EnvironmentId = "saved-remote-environment",
+        });
+        Assert.True(result.Success);
+        Assert.Equal("local-environment", result.EnvironmentId);
+        Assert.Equal(RuntimeTaskAlertsActionOutcome.Applied, services.Current.LastAction!.Outcome);
+    }
+
+    [Fact]
     public async Task T3ConnectionUsesTheSettingsAuthorityAndPreservesOtherTaskPreferences()
     {
         var original = Preferences(bank: 4) with { ClearQuestionsOnTurnEnd = true };
@@ -126,6 +143,36 @@ public sealed class RuntimeTaskAlertsConnectionServicesTests
         Assert.Throws<ArgumentException>(() => T3TaskSourceSettingsForm.BuildOptions(true, "server", "source", ""));
         T3TaskSourceSettingsForm.ValidateTestedIdentity(" server ", "environment", "server");
         Assert.Throws<InvalidOperationException>(() => T3TaskSourceSettingsForm.ValidateTestedIdentity("other", "environment", "server"));
+    }
+
+    [Fact]
+    public void FollowingDesktopDoesNotRequireAChosenSshEnvironmentAndKeepsManualFallback()
+    {
+        var automatic = T3TaskSourceSettingsForm.BuildOptions(true, "", "", "", followDesktop: true);
+        Assert.True(automatic.Enabled);
+        Assert.True(automatic.FollowDesktop);
+        var saved = T3TaskSourceSettingsForm.BuildOptions(true, " server ", " source ", "saved-environment", followDesktop: true);
+        Assert.Equal("server", saved.SshHost);
+        Assert.Equal("saved-environment", saved.EnvironmentId);
+        var discovery = T3TaskSourceSettingsForm.BuildOptions(true, "server", "source", "saved-environment", true, true);
+        Assert.False(discovery.Enabled);
+        Assert.Equal("", discovery.EnvironmentId);
+    }
+
+    [Fact]
+    public void DesktopSourceStatusNamesEveryEnvironmentAndShowsIndividualFailures()
+    {
+        var description = T3TaskSourceSettingsForm.DescribeSourceStatuses([
+            new() { DisplayName = "Local workstation", Success = true, IsComplete = true },
+            new() { DisplayName = "Remote build host", ErrorClass = "Timeout", Reason = "Connection timed out." },
+            new() { DisplayName = "Other host", Success = true, IsComplete = false },
+            new() { DisplayName = "Paused host", Enabled = false },
+        ]);
+        Assert.Contains("Local workstation: connected", description);
+        Assert.Contains("Remote build host: unavailable", description);
+        Assert.Contains("Connection timed out.", description);
+        Assert.Contains("Other host: partial", description);
+        Assert.Contains("Paused host: disabled", description);
     }
 
     [Fact]

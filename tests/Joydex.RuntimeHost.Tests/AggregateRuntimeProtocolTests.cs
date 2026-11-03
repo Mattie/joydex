@@ -15,6 +15,7 @@ public sealed class AggregateRuntimeProtocolTests
     [InlineData(0)]
     [InlineData(3)]
     [InlineData(4)]
+    [InlineData(5)]
     public async Task AttachFreshReplayAndLiveEventsHonorNegotiatedTaskCapabilities(int minor)
     {
         using var fixture = new Fixture();
@@ -25,6 +26,7 @@ public sealed class AggregateRuntimeProtocolTests
         await using var session = engine.CreateSession("projection", RuntimeClientKind.Settings, client, CancellationToken.None);
         var attached = await Attach(engine, session, minor, previousEpoch: engine.EngineEpoch, afterSequence: 0);
         Assert.Equal(minor >= 4, attached.Capabilities.Contains(RuntimeProtocol.AggregateTasksCapability));
+        Assert.Equal(minor >= 5, attached.Capabilities.Contains(RuntimeProtocol.T3DesktopSourcesCapability));
         Assert.Equal(minor >= 1, attached.Capabilities.Contains(RuntimeProtocol.RuntimeUiCapability));
         CheckSnapshot(attached.Snapshot, minor);
         CheckSnapshot(await session.GetSnapshotAsync(CancellationToken.None), minor);
@@ -152,6 +154,36 @@ public sealed class AggregateRuntimeProtocolTests
     }
 
     [Fact]
+    public async Task MinorFourCannotEraseOrIntroduceFollowDesktopSettings()
+    {
+        using var fixture = new Fixture();
+        fixture.SeedT3(new() { Enabled = true, FollowDesktop = true });
+        await using var engine = await fixture.StartAsync();
+        await using var session = engine.CreateSession("old-automatic", RuntimeClientKind.Settings, new Client(), CancellationToken.None);
+        var attached = await Attach(engine, session, 4);
+        var patch = attached.Snapshot.Settings.Desired.TaskAlerts with { T3 = new(), Bank = 3 };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.PrepareSettingsAsync(
+            new(attached.Snapshot.Settings.Revision, new(TaskAlerts: patch)), CancellationToken.None));
+        Assert.True((await session.GetSnapshotAsync(CancellationToken.None)).Settings.Desired.TaskAlerts.T3!.FollowDesktop);
+        var request = new RuntimeCommandRequest(Guid.NewGuid(), RuntimeCommandKind.TestT3Connection,
+            new(T3Connection: new() { Enabled = true, FollowDesktop = true }));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.ExecuteCommandAsync(request, CancellationToken.None));
+        Assert.Empty(fixture.Composition.Commands);
+    }
+
+    [Fact]
+    public async Task MinorFourCannotIntroduceAutomaticDiscoveryIntoManualSettings()
+    {
+        using var fixture = new Fixture();
+        await using var engine = await fixture.StartAsync();
+        await using var session = engine.CreateSession("introduce-automatic", RuntimeClientKind.Settings, new Client(), CancellationToken.None);
+        var attached = await Attach(engine, session, 4);
+        var patch = attached.Snapshot.Settings.Desired.TaskAlerts with { T3 = new() { Enabled = true, FollowDesktop = true } };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => session.PrepareSettingsAsync(
+            new(attached.Snapshot.Settings.Revision, new(TaskAlerts: patch)), CancellationToken.None));
+    }
+
+    [Fact]
     public async Task LegacyPeerCannotIntroduceT3ConfigurationThroughSettings()
     {
         using var fixture = new Fixture();
@@ -168,10 +200,12 @@ public sealed class AggregateRuntimeProtocolTests
     [InlineData(0)]
     [InlineData(3)]
     [InlineData(4)]
+    [InlineData(5)]
     public async Task LegacyCodexOnlySettingsAndCurrentAggregateSettingsRemainWritable(int minor)
     {
         using var fixture = new Fixture();
         if (minor == 4) fixture.SeedT3(new() { Enabled = true, SshHost = "server", EnvironmentId = "environment" });
+        if (minor == 5) fixture.SeedT3(new() { Enabled = true, FollowDesktop = true });
         await using var engine = await fixture.StartAsync();
         await using var session = engine.CreateSession("writable", RuntimeClientKind.Settings, new Client(), CancellationToken.None);
         var attached = await Attach(engine, session, minor);
@@ -228,6 +262,8 @@ public sealed class AggregateRuntimeProtocolTests
         Assert.Contains(alerts.Assignments, task => task.SessionId == "local-thread");
         Assert.Equal(minor >= 4, alerts.Assignments.Any(task => task.TaskIdentity.Backend == TaskAlertBackend.RemoteT3));
         Assert.Equal(minor >= 4, alerts.T3Status is not null);
+        if (minor >= 5) Assert.Equal(2, alerts.T3Statuses!.Length);
+        else Assert.Null(alerts.T3Statuses);
     }
     private static Task<RuntimeAttachResult> Attach(RuntimeEngine engine, RuntimeRpcSession session, int minor,
         Guid? previousEpoch = null, long? afterSequence = null) => session.AttachAsync(new(RuntimeProtocol.MajorVersion,
@@ -258,7 +294,9 @@ public sealed class AggregateRuntimeProtocolTests
             [new(1, "local-thread", "run", TaskAlertState.Running, DateTimeOffset.UtcNow),
                 new(2, Remote.PoolKey, "run", TaskAlertState.Running, DateTimeOffset.UtcNow, Identity: Remote)],
             0, 2, false, [], [], TaskAlertLedOptions.CreateDefault(), new(RuntimeTaskAlertHookState.NotInstalled),
-            new() { Success = true, EnvironmentId = "environment" });
+            new() { Success = true, EnvironmentId = "environment" },
+            [new() { Success = true, EnvironmentId = "local", TransportKind = "local" },
+                new() { Success = false, EnvironmentId = "remote", TransportKind = "ssh" }]);
         public RuntimeInputSource[] Refresh(SettingsBundle activeSettings) => _inner.Refresh(activeSettings);
         public bool ObserveForCapture(Guid captureId, string sourceId) => _inner.ObserveForCapture(captureId, sourceId);
         public void ReleaseCaptureObservation(Guid captureId) => _inner.ReleaseCaptureObservation(captureId);

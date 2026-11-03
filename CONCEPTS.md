@@ -5,8 +5,11 @@ Joydex connects physical controls and room devices to explicit Codex actions. It
 ## Language
 
 **Aggregate Task Pool**:
-One assignment pool and hardware owner for local Codex chats and one opt-in T3 desktop
-environment. A task identity includes backend, environment and native thread ID. Legacy
+One assignment pool and hardware owner for local Codex chats and opt-in T3 desktop
+environments. Desktop discovery follows the local T3 app's enabled environments, including
+its local server. Each environment has independent connection health and freshness;
+discovery does not imply that every route is supported or reachable.
+A task identity includes backend, environment and native thread ID. Legacy
 Codex hooks keep their local meaning and assigned slots; opaque T3 IDs compare ordinally.
 Historical completed chats do not allocate lights. Source failures preserve observations
 without renewing their existing Running or Attention leases.

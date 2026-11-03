@@ -535,6 +535,7 @@ public sealed partial class TaskAlertPool
         }
 
         Enabled = enabled;
+        _sourceCursors.Clear();
         _assignments.Clear();
         _backfillAfter.Clear();
         _pendingAttention.Clear();

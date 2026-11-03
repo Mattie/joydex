@@ -4,7 +4,7 @@ public sealed partial class TaskAlertPool
 {
     private const int MaximumSourceAcknowledgements = 2048;
     private readonly List<TaskAlertSourceAcknowledgement> _sourceAcknowledgements = [];
-    private readonly Dictionary<TaskAlertSourceIdentity, (long Generation, long Sequence, DateTimeOffset CapturedAt)> _sourceCursors = [];
+    private readonly Dictionary<TaskAlertSourceIdentity, (long Generation, long Sequence, DateTimeOffset CapturedAt, bool Complete)> _sourceCursors = [];
 
     /// <summary>Applies positive native observations directly, without synthesizing Codex hooks.</summary>
     public bool ApplySourceSnapshot(TaskAlertSourceSnapshot snapshot)
@@ -19,11 +19,14 @@ public sealed partial class TaskAlertPool
                 || snapshot.CapturedAt < cursor.CapturedAt
                 || snapshot.Generation == cursor.Generation && snapshot.Sequence == cursor.Sequence
                     && snapshot.CapturedAt == cursor.CapturedAt)) return false;
-        _sourceCursors[snapshot.Source] = (snapshot.Generation, snapshot.Sequence, snapshot.CapturedAt);
+        var complete = snapshot.IsComplete && snapshot.Tasks.All(task => task is { ReadComplete: true });
+        DateTimeOffset? terminalBaseline = cursor.Complete && complete && cursor.Generation == snapshot.Generation
+            && snapshot.Sequence > cursor.Sequence ? cursor.CapturedAt : null;
+        _sourceCursors[snapshot.Source] = (snapshot.Generation, snapshot.Sequence, snapshot.CapturedAt, complete);
         // A partial catalog cannot certify retained tasks that were not read.
         var changed = snapshot.IsComplete && SetSourceUnavailable(snapshot.Source, false);
         foreach (var observation in snapshot.Tasks)
-            if (observation is not null) changed |= ApplySourceObservation(snapshot, observation);
+            if (observation is not null) changed |= ApplySourceObservation(snapshot, observation, terminalBaseline);
         return changed;
     }
 
@@ -31,6 +34,8 @@ public sealed partial class TaskAlertPool
     public bool SetSourceUnavailable(TaskAlertSourceIdentity source, bool unavailable = true)
     {
         ArgumentNullException.ThrowIfNull(source);
+        if (unavailable && _sourceCursors.TryGetValue(source, out var cursor))
+            _sourceCursors[source] = cursor with { Complete = false };
         var changed = false;
         foreach (var assignment in _assignments.Values.ToArray())
             if (assignment.TaskIdentity.Source == source && assignment.SourceUnavailable != unavailable)
@@ -41,7 +46,7 @@ public sealed partial class TaskAlertPool
         return changed;
     }
 
-    private bool ApplySourceObservation(TaskAlertSourceSnapshot snapshot, TaskAlertSourceObservation observation)
+    private bool ApplySourceObservation(TaskAlertSourceSnapshot snapshot, TaskAlertSourceObservation observation, DateTimeOffset? terminalBaseline)
     {
         if (!TaskAlertIdentity.IsNativeId(observation.NativeThreadId)
             || observation.RunId is { } run && !TaskAlertIdentity.IsNativeId(run)
@@ -70,7 +75,11 @@ public sealed partial class TaskAlertPool
         if (IsSourceAcknowledged(identity, observation.RunId, null)) return false;
         if (existing is null)
         {
-            if (!active && !attention) return false;
+            var newlyFinished = snapshot.Source.Backend == TaskAlertBackend.RemoteT3 && terminalBaseline is { } baseline
+                && observation.ReadComplete && observation.RunId is not null && observation.StartedAt >= baseline
+                && observation.CompletedAt >= observation.StartedAt && observation.CompletedAt is not null
+                && observation.State is TaskAlertState.Completed or TaskAlertState.Fault;
+            if (!active && !attention && !newlyFinished) return false;
             var slot = TaskAlertSlots.All.FirstOrDefault(candidate => !_assignments.ContainsKey(candidate)
                 && !_backfillAfter.ContainsKey(candidate));
             if (slot == 0) { DroppedEventCount++; return false; }

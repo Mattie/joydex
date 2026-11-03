@@ -7,13 +7,15 @@ namespace Joydex.Windows.TaskAlerts;
 /// <summary>One finite SSH sample at a time; remote failure never becomes task completion.</summary>
 public sealed class T3TaskAlertMonitor(
     TaskAlertCoordinator coordinator, T3ConnectionOptions options, Action<string> log,
-    T3Reader? reader = null) : IAsyncDisposable
+    T3Reader? reader = null,
+    Func<IReadOnlyCollection<string>, CancellationToken, Task<T3ReadResult>>? readEnvironment = null) : IAsyncDisposable
 {
     private readonly T3Reader _reader = reader ?? new T3Reader();
     private readonly CancellationTokenSource _stopping = new();
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task? _loop;
-    private long _generation = DateTimeOffset.UtcNow.UtcTicks;
+    private static long _nextGeneration = DateTimeOffset.UtcNow.UtcTicks;
+    private long _generation = Interlocked.Increment(ref _nextGeneration);
     private string? _epoch;
     private string? _lastError;
 
@@ -31,18 +33,21 @@ public sealed class T3TaskAlertMonitor(
         var known = snapshot.Assignments
             .Where(task => task.TaskIdentity.Source == source)
             .Select(task => task.TaskIdentity.NativeThreadId).ToArray();
-        var result = await _reader.ReadAsync(options, known, cancellationToken).ConfigureAwait(false);
+        var result = await (readEnvironment is null ? _reader.ReadAsync(options, known, cancellationToken)
+            : readEnvironment(known, cancellationToken)).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
+        if (result.Success && result.EnvironmentId != options.EnvironmentId)
+            result = new() { ErrorClass = "EnvironmentMismatch", Reason = "The metadata source does not match the desktop environment identity." };
         if (!result.Success)
         {
             coordinator.SetSourceUnavailable(source, result);
             if (_lastError != result.ErrorClass)
-                log("T3 task monitoring unavailable (" + result.ErrorClass + "); local Codex remains independent.");
+                log("T3 environment " + options.EnvironmentId + " task monitoring unavailable (" + result.ErrorClass + "); other sources remain independent.");
             _lastError = result.ErrorClass;
             return false;
         }
-        if (_epoch != result.SourceEpoch) { _epoch = result.SourceEpoch; _generation++; }
-        if (_lastError is not null) log("T3 task monitoring resumed.");
+        if (_epoch != result.SourceEpoch) { _epoch = result.SourceEpoch; _generation = Interlocked.Increment(ref _nextGeneration); }
+        if (_lastError is not null) log("T3 environment " + options.EnvironmentId + " task monitoring resumed.");
         _lastError = null;
         coordinator.ApplySourceSnapshot(new(source, _generation, result.Sequence,
             result.CapturedAt, result.IsComplete, result.Tasks.Select(task => Project(source, task)).ToArray()), result);
@@ -76,7 +81,7 @@ public sealed class T3TaskAlertMonitor(
             {
                 bool success;
                 try { success = await ReadOnceAsync(_stopping.Token).ConfigureAwait(false); }
-                catch (Exception error) when (error is IOException or InvalidDataException or InvalidOperationException)
+                catch (Exception error) when (error is not OperationCanceledException)
                 {
                     var source = new TaskAlertSourceIdentity(TaskAlertBackend.RemoteT3, options.EnvironmentId);
                     coordinator.SetSourceUnavailable(source, new() { ErrorClass = error.GetType().Name, Reason = "T3 metadata is unavailable." });
@@ -95,6 +100,7 @@ public sealed class T3TaskAlertMonitor(
     {
         _stopping.Cancel();
         if (_loop is not null) await _loop.ConfigureAwait(false);
+        _completion.TrySetResult();
         _stopping.Dispose();
     }
 }

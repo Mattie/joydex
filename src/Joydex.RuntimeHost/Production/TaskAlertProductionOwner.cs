@@ -17,6 +17,7 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
     private readonly VirpilProductionPlugin _virpil;
     private readonly TaskAlertReconciler _reconciler;
     private readonly T3TaskAlertMonitor? _t3Monitor;
+    private readonly T3DesktopTaskAlertMonitor? _t3DesktopMonitor;
     private ProductionDesktopBrokerLease? _desktopBrokerLease;
     private DateTimeOffset _nextMetadataRead;
     private readonly TaskCompletionSource _ownedCompletion =
@@ -40,9 +41,11 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
         _pipe = pipe;
         _virpil = virpil;
         _reconciler = new TaskAlertReconciler(coordinator, ReadDesktopAsync, factory.WriteLog);
-        if (t3 is { Enabled: true }) _t3Monitor = new(coordinator, t3, factory.WriteLog);
+        if (t3 is { Enabled: true, FollowDesktop: true }) _t3DesktopMonitor = new(coordinator, t3, factory.WriteLog);
+        else if (t3 is { Enabled: true }) _t3Monitor = new(coordinator, t3, factory.WriteLog);
         _completion = Task.WhenAny(_ownedCompletion.Task, windowsSta.Completion, pipe.Completion,
-            _reconciler.Completion, _t3Monitor?.Completion ?? _ownedCompletion.Task).Unwrap();
+            _reconciler.Completion, _t3Monitor?.Completion ?? _ownedCompletion.Task,
+            _t3DesktopMonitor?.Completion ?? _ownedCompletion.Task).Unwrap();
     }
 
     public SettingsAggregateId Aggregate => SettingsAggregateId.TaskAlerts;
@@ -95,6 +98,7 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
             pipe.Start();
             owner._reconciler.Start();
             owner._t3Monitor?.Start();
+            owner._t3DesktopMonitor?.Start();
             return owner;
         }
         catch (Exception startupFailure)
@@ -112,6 +116,8 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
             }
             if (owner is not null)
             {
+                try { owner._t3DesktopMonitor?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                catch (Exception exception) { cleanupFailures.Add(exception); }
                 try { owner._t3Monitor?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
                 catch (Exception exception) { cleanupFailures.Add(exception); }
                 try { owner._reconciler.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
@@ -160,6 +166,7 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
         _coordinator.Changed -= OnChanged;
         var failures = new List<Exception>();
         if (_t3Monitor is not null) await TryDisposeAsync(_t3Monitor, failures);
+        if (_t3DesktopMonitor is not null) await TryDisposeAsync(_t3DesktopMonitor, failures);
         await TryDisposeAsync(_reconciler, failures);
         if (_desktopBrokerLease is not null) await TryDisposeAsync(_desktopBrokerLease, failures);
         await TryDisposeAsync(_pipe, failures);

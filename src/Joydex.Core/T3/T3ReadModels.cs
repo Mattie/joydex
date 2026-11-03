@@ -8,6 +8,8 @@ public sealed record T3ReadResult
     public string? Reason { get; init; }
     public string EnvironmentId { get; init; } = "";
     public string? DisplayName { get; init; }
+    public string? TransportKind { get; init; }
+    public bool? Enabled { get; init; }
     public string SourceEpoch { get; init; } = "";
     public long Sequence { get; init; }
     public DateTimeOffset CapturedAt { get; init; }

@@ -831,9 +831,19 @@ internal sealed class TaskAlertsForm : ThemedForm
             _enabled.Checked = snapshot.Enabled;
             _clearQuestionsOnTurnEnd.Checked = snapshot.ClearQuestionsOnTurnEnd;
             var remoteTasks = snapshot.Assignments.Where(task => task.TaskIdentity.Backend == TaskAlertBackend.RemoteT3).ToArray();
-            var showT3Status = snapshot.T3Status is not null || remoteTasks.Length > 0;
+            var showT3Status = snapshot.T3Status is not null || snapshot.T3Statuses is { Count: > 0 } || remoteTasks.Length > 0;
             _t3SourceStatus.Visible = showT3Status;
-            if (showT3Status)
+            if (snapshot.T3Statuses is { Count: > 0 } sources)
+            {
+                _t3SourceStatus.Text = T3TaskSourceSettingsForm.DescribeSourceStatuses(sources.Take(4))
+                    + (sources.Count > 4 ? $"{Environment.NewLine}{sources.Count - 4} more environments · Open T3 desktop settings for details." : "");
+                _toolTips.SetToolTip(_t3SourceStatus, string.Join(Environment.NewLine, sources.Select(source =>
+                    (string.IsNullOrWhiteSpace(source.DisplayName) ? "T3" : source.DisplayName) + ": "
+                    + (source.CapturedAt > DateTimeOffset.UnixEpoch
+                        ? $"Last metadata read {source.CapturedAt.ToLocalTime():g}. " : "No current metadata read. ")
+                    + (source.Reason ?? "Shared shortcuts unavailable: desktop context unverified."))));
+            }
+            else if (showT3Status)
             {
                 var health = snapshot.T3Status is { Success: true } status
                     ? (!status.IsComplete || remoteTasks.Any(task => task.SourceUnavailable) ? "connected (partial)" : "connected")
@@ -1143,7 +1153,8 @@ internal sealed class TaskAlertsForm : ThemedForm
 
     private static string SourceDisplayName(TaskAlertSnapshot snapshot, TaskAlertIdentity identity) =>
         identity.Backend == TaskAlertBackend.LocalCodex ? "Codex / local"
-        : snapshot.T3Status is { } status && status.EnvironmentId == identity.EnvironmentId && !string.IsNullOrWhiteSpace(status.DisplayName)
+        : (snapshot.T3Statuses?.FirstOrDefault(source => source.EnvironmentId == identity.EnvironmentId)
+            ?? snapshot.T3Status) is { } status && status.EnvironmentId == identity.EnvironmentId && !string.IsNullOrWhiteSpace(status.DisplayName)
             ? "T3 / " + status.DisplayName : "T3 / " + identity.EnvironmentId;
 
     private static string DisplayWorkspace(string? workspace)

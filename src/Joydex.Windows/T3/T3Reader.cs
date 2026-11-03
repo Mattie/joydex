@@ -5,7 +5,7 @@ using Joydex.Core.T3;
 
 namespace Joydex.Windows.T3;
 
-public sealed class T3Reader(IT3SshTransport? transport = null)
+public sealed partial class T3Reader(IT3SshTransport? transport = null)
 {
     private const string UnknownContext = "Active Electron environment and keymap are not verified.";
     private static readonly HashSet<string> ShortcutCommands = new(StringComparer.Ordinal) { "chat.new", "thread.previous", "thread.next", "thread.stop" };
@@ -18,8 +18,39 @@ public sealed class T3Reader(IT3SshTransport? transport = null)
     public Task<T3ReadResult> ReadAsync(T3ConnectionOptions options, IReadOnlyCollection<string> knownThreadIds, CancellationToken cancellationToken = default)
         => ReadCoreAsync(options, knownThreadIds, "read", cancellationToken);
 
-    public Task<T3ReadResult> TestConnectionAsync(T3ConnectionOptions options, CancellationToken cancellationToken = default)
-        => ReadCoreAsync(options, [], "test", cancellationToken);
+    public async Task<T3ReadResult> TestConnectionAsync(T3ConnectionOptions options, CancellationToken cancellationToken = default)
+    {
+        if (!options.FollowDesktop) return await ReadCoreAsync(options, [], "test", cancellationToken).ConfigureAwait(false);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(40));
+        try { return await TestDesktopConnectionAsync(options, deadline.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return SanitizeFailure("Timeout"); }
+    }
+
+    private async Task<T3ReadResult> TestDesktopConnectionAsync(T3ConnectionOptions options, CancellationToken cancellationToken)
+    {
+        var discovery = await DiscoverDesktopAsync(cancellationToken).ConfigureAwait(false);
+        if (!discovery.Success)
+            return Failure("DiscoveryFailed", discovery.Error ?? "Desktop environment discovery is incomplete.");
+        var candidates = DesktopTestCandidates(discovery, options);
+        if (candidates.Length == 0) return Failure("UnsupportedRoute", "No enabled desktop environment has a supported independent metadata route.");
+        T3ReadResult? failure = null;
+        foreach (var candidate in candidates)
+        {
+            var result = await ReadDesktopEnvironmentAsync(candidate, [], cancellationToken).ConfigureAwait(false);
+            if (result.Success) return result;
+            failure = result;
+        }
+        return failure ?? Failure("ReadFailed", "No enabled desktop environment could be verified.");
+    }
+
+    internal static T3DesktopEnvironment[] DesktopTestCandidates(T3DesktopDiscoveryResult discovery, T3ConnectionOptions options) =>
+        discovery.Environments.Where(environment => environment.Enabled && ValidId(environment.EnvironmentId))
+            .Select(environment => environment.UnsupportedReason is not null && !environment.IsLocal
+                && environment.EnvironmentId == options.EnvironmentId && T3SshTransport.IsValidHost(options.SshHost)
+                ? environment with { SshHost = options.SshHost, UnsupportedReason = null, TransportKind = "ssh" } : environment)
+            .Where(environment => environment.UnsupportedReason is null)
+            .OrderByDescending(environment => environment.IsLocal).ToArray();
 
     private async Task<T3ReadResult> ReadCoreAsync(T3ConnectionOptions options, IReadOnlyCollection<string> knownThreadIds, string mode, CancellationToken cancellationToken)
     {
@@ -63,6 +94,8 @@ public sealed class T3Reader(IT3SshTransport? transport = null)
 
     public async Task<T3ShortcutSetupResult> SetupShortcutsAsync(T3ConnectionOptions options, bool remove = false, CancellationToken cancellationToken = default)
     {
+        if (options.FollowDesktop)
+            return new() { ErrorClass = "FollowDesktopReadOnly", Reason = "Desktop-following monitoring never changes environment shortcuts. Use an explicitly selected manual environment." };
         options = options.Normalize();
         if (!T3SshTransport.IsValidHost(options.SshHost) || string.IsNullOrEmpty(options.EnvironmentId))
             return new() { ErrorClass = "EnvironmentRequired", Reason = "Test the connection and save its identity before configuring shortcuts." };

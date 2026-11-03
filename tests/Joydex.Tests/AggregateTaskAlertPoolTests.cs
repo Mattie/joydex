@@ -233,6 +233,46 @@ public sealed class AggregateTaskAlertPoolTests
     }
 
     [Fact]
+    public void ConsecutiveCompleteSnapshotsRecognizeAFastRunWithoutBackfillingStartupHistory()
+    {
+        var pool = new TaskAlertPool();
+        var history = Running() with { NativeThreadId = "historical-thread", RunId = "history", State = TaskAlertState.Completed, CompletedAt = Start.AddSeconds(3) };
+        Assert.False(pool.ApplySourceSnapshot(Snapshot([history])));
+        Assert.Empty(pool.Assignments);
+        var fast = Running() with { RunId = "fast", State = TaskAlertState.Completed,
+            StartedAt = Start.AddSeconds(11), CompletedAt = Start.AddSeconds(12) };
+        Assert.True(pool.ApplySourceSnapshot(Snapshot([history, fast], 2, 13)));
+        var assigned = Assert.Single(pool.Assignments);
+        Assert.Equal("fast", assigned.TurnId);
+        Assert.Equal(TaskAlertState.Completed, assigned.State);
+        pool.AcknowledgeTerminal(assigned.Slot, assigned.SessionId, Start.AddSeconds(14));
+        pool.ApplySourceSnapshot(Snapshot([fast], 3, 15));
+        Assert.Empty(pool.Assignments);
+    }
+
+    [Theory]
+    [InlineData("partial")]
+    [InlineData("unavailable")]
+    [InlineData("generation")]
+    [InlineData("restart")]
+    [InlineData("disabled")]
+    [InlineData("same-sequence")]
+    public void FastCompletionRecoveryRequiresAnUninterruptedPositiveSourceBaseline(string interruption)
+    {
+        var pool = new TaskAlertPool();
+        pool.ApplySourceSnapshot(Snapshot([]));
+        if (interruption == "partial") pool.ApplySourceSnapshot(Snapshot([], 2, 11, complete: false));
+        if (interruption == "unavailable") pool.SetSourceUnavailable(Source);
+        if (interruption == "restart") { var state = pool.CaptureState(); pool = new(); pool.Restore(state); }
+        if (interruption == "disabled") { pool.SetEnabled(false); pool.SetEnabled(true); }
+        var fast = Running() with { RunId = "fast", State = TaskAlertState.Completed,
+            StartedAt = Start.AddSeconds(12), CompletedAt = Start.AddSeconds(13) };
+        pool.ApplySourceSnapshot(Snapshot([fast], interruption == "same-sequence" ? 1 : 3, 14,
+            interruption == "generation" ? 2 : 1));
+        Assert.Empty(pool.Assignments);
+    }
+
+    [Fact]
     public void HistoricalTerminalDoesNotAllocateAndFaultRemainsFaultAfterStaleRequestReplay()
     {
         var pool = new TaskAlertPool();
