@@ -78,8 +78,11 @@ public sealed partial class TaskAlertPool
                 observation.StartedAt ?? snapshot.CapturedAt, Identity: identity);
         }
         var sameRun = existing.TurnId == observation.RunId;
+        var establishesRunBoundary = observation.ReadComplete && observation.RunId is not null && observation.StartedAt is not null;
+        // Attention can allocate a slot before a read establishes its native run. Its
+        // UpdatedAt is then receipt time, not evidence that the eventual run started later.
         if (!sameRun && (!observation.ReadComplete || observation.RunId is null || observation.StartedAt is null
-            || observation.StartedAt < (existing.TurnBoundaryAt ?? existing.UpdatedAt))) return false;
+            || existing.TurnBoundaryAt is { } knownBoundary && observation.StartedAt < knownBoundary)) return false;
         // A delayed active observation cannot undo accepted completion of this run.
         if (active && sameRun && (existing.CompleteAfter is not null
             || existing.State is TaskAlertState.Completed or TaskAlertState.Fault)) active = false;
@@ -162,7 +165,9 @@ public sealed partial class TaskAlertPool
             Identity = identity, TurnId = observation.RunId ?? existing.TurnId, State = nextState,
             UpdatedAt = updatedAt, CompleteAfter = completeAfter,
             ObservedActiveAt = active || observedAttention ? snapshot.CapturedAt : terminal ? null : existing.ObservedActiveAt,
-            TurnBoundaryAt = !sameRun ? observation.StartedAt : existing.TurnBoundaryAt ?? observation.StartedAt,
+            TurnBoundaryAt = establishesRunBoundary
+                ? !sameRun ? observation.StartedAt : existing.TurnBoundaryAt ?? observation.StartedAt
+                : existing.TurnBoundaryAt,
             LatestHumanUserTurnAt = latestHumanTurn, Metadata = observation.Metadata ?? existing.Metadata,
             SourceUnavailable = !observation.ReadComplete,
         };

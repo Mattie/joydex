@@ -22,8 +22,13 @@ public sealed class T3TaskAlertMonitor(
 
     public async Task<bool> ReadOnceAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        var snapshot = coordinator.GetSnapshot();
+        // Disabled monitoring is an idle iteration, so the loop retains its normal
+        // five-second cadence without SSH, temporary grants or failure backoff.
+        if (!snapshot.Enabled) return true;
         var source = new TaskAlertSourceIdentity(TaskAlertBackend.RemoteT3, options.EnvironmentId);
-        var known = coordinator.GetSnapshot().Assignments
+        var known = snapshot.Assignments
             .Where(task => task.TaskIdentity.Source == source)
             .Select(task => task.TaskIdentity.NativeThreadId).ToArray();
         var result = await _reader.ReadAsync(options, known, cancellationToken).ConfigureAwait(false);

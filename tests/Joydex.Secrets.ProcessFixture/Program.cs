@@ -1,5 +1,8 @@
 using Joydex.Secrets;
 
+if (args is ["--t3-transport", var mode, var readinessPipe])
+    return await T3TransportFixture.RunAsync(mode, readinessPipe);
+
 // Headless synthetic owner used to test abrupt owner termination in a separate process.
 var root = Path.GetFullPath(args[0]);
 var source = Path.Combine(root, "synthetic.env");
@@ -15,3 +18,4 @@ var env = Environment.GetEnvironmentVariables().Cast<System.Collections.Dictiona
     .ToDictionary(p => (string)p.Key, p => (string)p.Value!, StringComparer.OrdinalIgnoreCase);
 await new SecretsExecLauncher(new(Path.Combine(root, "audit.jsonl")))
     .RunAsync(Guid.NewGuid(), "fixture", "fixture", "fixture", ["test"], operation, values, env, CancellationToken.None);
+return 0;

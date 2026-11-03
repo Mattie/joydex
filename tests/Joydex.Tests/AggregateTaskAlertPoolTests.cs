@@ -119,6 +119,90 @@ public sealed class AggregateTaskAlertPoolTests
         Assert.Equal(TaskAlertState.Running, Assert.Single(pool.Assignments).State);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CompleteRunCanEstablishUnknownPartialAssignmentThenResolveItsRequestAndComplete(bool blocking)
+    {
+        var question = Question("partial-question");
+        var pool = new TaskAlertPool();
+        var partial = new TaskAlertSourceObservation("thread", null, null, null,
+            ReadComplete: false, BlockingRequests: blocking ? [question] : [], AsyncQuestions: blocking ? [] : [question]);
+        Assert.True(pool.ApplySourceSnapshot(Snapshot([partial], complete: false)));
+        var assigned = Assert.Single(pool.Assignments);
+        Assert.Equal(TaskAlertState.Approval, assigned.State);
+        Assert.Null(assigned.TurnId);
+        Assert.Null(assigned.TurnBoundaryAt);
+        Assert.Equal(Start.AddSeconds(10), assigned.UpdatedAt);
+
+        Assert.True(pool.ApplySourceSnapshot(Snapshot([Running() with { RequestsComplete = true,
+            BlockingRequests = blocking ? [question] : [], AsyncQuestions = blocking ? [] : [question] }], 2, 12)));
+        assigned = Assert.Single(pool.Assignments);
+        Assert.Equal("run", assigned.TurnId);
+        Assert.Equal(Start, assigned.TurnBoundaryAt);
+        Assert.Equal(Start.AddSeconds(12), assigned.ObservedActiveAt);
+        Assert.Equal(TaskAlertState.Approval, assigned.State);
+        if (!blocking) Assert.Equal([question.Key], assigned.PendingAsyncQuestions!);
+
+        Assert.True(pool.ApplySourceSnapshot(Snapshot([Running() with
+            { RequestsComplete = true, ResolvedQuestions = blocking ? [] : [question] }], 3, 13)));
+        Assert.Equal(TaskAlertState.Running, Assert.Single(pool.Assignments).State);
+        Assert.Null(Assert.Single(pool.Assignments).PendingAsyncQuestions);
+        Assert.True(pool.ApplySourceSnapshot(Snapshot([Running() with
+            { State = TaskAlertState.Completed, CompletedAt = Start.AddSeconds(14), RequestsComplete = true }], 4, 15)));
+        Assert.Equal(TaskAlertState.Completed, Assert.Single(pool.Assignments).State);
+        Assert.Equal(Start, Assert.Single(pool.Assignments).TurnBoundaryAt);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void EstablishingRunAfterPartialReadPreservesRestartedDismissalAndNewQuestions(bool partialStartHint)
+    {
+        var dismissed = Question("dismissed");
+        var fresh = Question("fresh", 11);
+        var pool = new TaskAlertPool();
+        pool.ApplySourceSnapshot(Snapshot([new("thread", partialStartHint ? "unconfirmed-run" : null, null, partialStartHint ? Start.AddSeconds(9) : null,
+            ReadComplete: false, AsyncQuestions: [dismissed])], complete: false));
+        var assigned = Assert.Single(pool.Assignments);
+        Assert.Null(assigned.TurnBoundaryAt);
+        Assert.True(pool.DismissQuestions(assigned.Slot, assigned.SessionId, [dismissed.Key], Start.AddSeconds(10)));
+        var restored = new TaskAlertPool();
+        restored.Restore(pool.CaptureState());
+
+        Assert.True(restored.ApplySourceSnapshot(Snapshot([Running(dismissed, fresh) with { RequestsComplete = true }], second: 12)));
+        assigned = Assert.Single(restored.Assignments);
+        Assert.Equal("run", assigned.TurnId);
+        Assert.Equal(Start, assigned.TurnBoundaryAt);
+        Assert.Equal(TaskAlertState.Approval, assigned.State);
+        Assert.Equal([fresh.Key], assigned.PendingAsyncQuestions!);
+        restored.ApplySourceSnapshot(Snapshot([Running(dismissed, fresh) with { RequestsComplete = true }], 2, 13));
+        Assert.Equal([fresh.Key], Assert.Single(restored.Assignments).PendingAsyncQuestions!);
+    }
+
+    [Fact]
+    public void EstablishedNativeRunStillRejectsOlderDifferentRunWithoutClearingAttention()
+    {
+        var question = Question("current-question", 21, "current");
+        var current = Running(question) with { RunId = "current", StartedAt = Start.AddSeconds(20), RequestsComplete = true };
+        var pool = new TaskAlertPool();
+        pool.ApplySourceSnapshot(Snapshot([current], second: 22));
+        var assigned = Assert.Single(pool.Assignments);
+
+        var older = Running() with { RunId = "previous", StartedAt = Start.AddSeconds(10), RequestsComplete = true,
+            ResolvedQuestions = [question] };
+        Assert.False(pool.ApplySourceSnapshot(Snapshot([older], 2, 23)));
+        Assert.False(pool.ApplySourceSnapshot(Snapshot([older with
+            { State = TaskAlertState.Fault, CompletedAt = Start.AddSeconds(15) }], 3, 24)));
+        var retained = Assert.Single(pool.Assignments);
+        Assert.Equal(assigned.UpdatedAt, retained.UpdatedAt);
+        Assert.Equal(assigned.ObservedActiveAt, retained.ObservedActiveAt);
+        Assert.Equal(TaskAlertState.Approval, retained.State);
+        Assert.Equal("current", retained.TurnId);
+        Assert.Equal(Start.AddSeconds(20), retained.TurnBoundaryAt);
+        Assert.Equal([question.Key], retained.PendingAsyncQuestions!);
+    }
+
     [Fact]
     public void OnlyExactPositiveResolutionClearsAsyncQuestion()
     {

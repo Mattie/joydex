@@ -13,6 +13,60 @@ public sealed class T3TaskIntegrationTests
     private static readonly T3ConnectionOptions Options = new() { Enabled = true, SshHost = "configured-host", EnvironmentId = "environment-one" };
 
     [Fact]
+    public async Task DisabledTaskAlertsSkipRemoteReadsWithoutFailureOrBackoff()
+    {
+        using var files = new Scratch();
+        await using var coordinator = files.Coordinator(enabled: false);
+        var transport = new FixtureTransport { Result = new() { ErrorClass = "Timeout" } };
+        var logs = new List<string>();
+        await using var monitor = new T3TaskAlertMonitor(coordinator, Options, logs.Add, new T3Reader(transport));
+        // True means the poll loop keeps its ordinary five-second idle cadence.
+        Assert.True(await monitor.ReadOnceAsync(default));
+        Assert.True(await monitor.ReadOnceAsync(default));
+        Assert.Equal(0, transport.Calls);
+        Assert.Null(coordinator.GetSnapshot().T3Status);
+        Assert.Empty(logs);
+    }
+
+    [Fact]
+    public async Task DisablingTaskAlertsStopsTheNextReadAndReenablingResumesIt()
+    {
+        using var files = new Scratch();
+        await using var coordinator = files.Coordinator();
+        var now = DateTimeOffset.UtcNow.AddSeconds(-10);
+        var transport = new FixtureTransport { Result = Result(now) };
+        await using var monitor = new T3TaskAlertMonitor(coordinator, Options, _ => { }, new T3Reader(transport));
+        Assert.True(await monitor.ReadOnceAsync(default));
+        Assert.Equal(1, transport.Calls);
+        Assert.Single(coordinator.GetSnapshot().Assignments);
+
+        coordinator.SetEnabled(false);
+        Assert.True(await monitor.ReadOnceAsync(default));
+        Assert.True(await monitor.ReadOnceAsync(default));
+        Assert.Equal(1, transport.Calls);
+        Assert.Empty(coordinator.GetSnapshot().Assignments);
+
+        coordinator.SetEnabled(true);
+        transport.Result = Result(now.AddSeconds(1));
+        Assert.True(await monitor.ReadOnceAsync(default));
+        Assert.Equal(2, transport.Calls);
+        Assert.Single(coordinator.GetSnapshot().Assignments);
+    }
+
+    [Fact]
+    public async Task DisabledMonitorStillHonorsCancellationWithoutStartingSsh()
+    {
+        using var files = new Scratch();
+        await using var coordinator = files.Coordinator(enabled: false);
+        var transport = new FixtureTransport { Result = Result(DateTimeOffset.UtcNow) };
+        await using var monitor = new T3TaskAlertMonitor(coordinator, Options, _ => { }, new T3Reader(transport));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => monitor.ReadOnceAsync(cancellation.Token));
+        Assert.Equal(0, transport.Calls);
+    }
+
+    [Fact]
     public async Task ReaderToPoolPreservesPermissionsAndVisitAcknowledgementsAcrossRestartAndOutage()
     {
         using var files = new Scratch();
@@ -144,9 +198,11 @@ public sealed class T3TaskIntegrationTests
     private sealed class FixtureTransport : IT3SshTransport
     {
         public required T3ReadResult Result { get; set; }
+        public int Calls { get; private set; }
         public JsonElement? ScriptOptions { get; private set; }
         public Task<string> ExecuteAsync(string host, string script, CancellationToken token)
         {
+            Calls++;
             const string marker = "JOYDEX_OPTIONS = json.loads(base64.b64decode('";
             var start = script.IndexOf(marker, StringComparison.Ordinal) + marker.Length;
             ScriptOptions = JsonDocument.Parse(Convert.FromBase64String(script[start..script.IndexOf("'", start, StringComparison.Ordinal)])).RootElement.Clone();
@@ -158,7 +214,7 @@ public sealed class T3TaskIntegrationTests
         private readonly string _root = Path.Combine(Path.GetTempPath(), "joydex-t3-tests-" + Guid.NewGuid().ToString("N"));
         public string State => Path.Combine(_root, "state.json");
         public Scratch() => Directory.CreateDirectory(_root);
-        public TaskAlertCoordinator Coordinator() => new(Path.Combine(_root, "preferences.json"), new(T3: Options), State);
+        public TaskAlertCoordinator Coordinator(bool enabled = true) => new(Path.Combine(_root, "preferences.json"), new(Enabled: enabled, T3: Options), State);
         public void Dispose() => Directory.Delete(_root, true);
     }
     private sealed class SuccessfulNavigator : ITaskAlertNavigator
