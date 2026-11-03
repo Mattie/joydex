@@ -34,7 +34,7 @@ public sealed partial class T3Reader
             deadline.CancelAfter(TimeSpan.FromSeconds(25));
             var result = await new T3LocalMetadataReader().ReadAsync(DesktopHome, environment.EnvironmentId, knownThreadIds, deadline.Token).ConfigureAwait(false);
             if (!result.Success) return result;
-            if (!ValidHash(result.SourceEpoch) || result.Tasks.Any(task => !ValidTask(task))) return Failure("InvalidMetadata", "The local environment returned invalid metadata.");
+            if (!ValidHash(result.SourceEpoch) || !ValidCatalogObservation(result) || result.Tasks.Any(task => !ValidTask(task))) return Failure("InvalidMetadata", "The local environment returned invalid metadata.");
             return result with { DisplayName = environment.DisplayName, TransportKind = "local", ContextDiagnostic = UnknownContext };
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return SanitizeFailure("Timeout"); }
@@ -50,9 +50,10 @@ internal sealed class T3LocalMetadataReader
 {
     private readonly Func<string, string[], CancellationToken, Task<string>> _cli;
     private readonly Func<Uri, string?, CancellationToken, Task<JsonDocument>> _get;
+    private readonly TimeProvider _clock;
     internal T3LocalMetadataReader(Func<string, string[], CancellationToken, Task<string>>? cli = null,
-        Func<Uri, string?, CancellationToken, Task<JsonDocument>>? get = null)
-    { _cli = cli ?? RunCliAsync; _get = get ?? GetAsync; }
+        Func<Uri, string?, CancellationToken, Task<JsonDocument>>? get = null, TimeProvider? clock = null)
+    { _cli = cli ?? RunCliAsync; _get = get ?? GetAsync; _clock = clock ?? TimeProvider.System; }
 
     internal async Task<T3ReadResult> ReadAsync(string home, string expectedId, IReadOnlyCollection<string> knownIds, CancellationToken cancellationToken)
     {
@@ -83,6 +84,7 @@ internal sealed class T3LocalMetadataReader
                 throw new T3TransportException("UnexpectedScopes", "The temporary grant was not exactly read-only.");
             var token = credential.RootElement.GetProperty("token").GetString();
             if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(sessionId)) throw new InvalidDataException();
+            var catalogObservedAt = _clock.GetUtcNow();
             using var shell = await _get(new(origin, "/api/orchestration/shell?omitIdleSubagents=true"), token, cancellationToken).ConfigureAwait(false);
             var threads = shell.RootElement.GetProperty("threads");
             var sequence = shell.RootElement.GetProperty("snapshotSequence").GetInt64();
@@ -120,7 +122,7 @@ internal sealed class T3LocalMetadataReader
             var current = T3Reader.ReadBoundedFile(runtimePath);
             if (!runtimeRaw.AsSpan().SequenceEqual(current)) throw new T3TransportException("RuntimeChanged", "The local server restarted during the read.");
             result = new() { Success = true, EnvironmentId = expectedId, SourceEpoch = Convert.ToHexString(SHA256.HashData(runtimeRaw)),
-                Sequence = sequence, CapturedAt = DateTimeOffset.UtcNow,
+                Sequence = sequence, CapturedAt = _clock.GetUtcNow(), CatalogObservedAt = catalogObservedAt,
                 IsComplete = complete, Tasks = tasks.ToArray(), TransportKind = "local" };
         }
         finally

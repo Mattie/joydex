@@ -31,6 +31,23 @@ class Response:
 
 
 class T3ProjectorTests(unittest.TestCase):
+    def test_catalog_boundary_is_captured_before_shell_not_after_slow_details(self):
+        real_datetime = PROJECTOR.datetime.datetime
+        before_shell = real_datetime(2026, 10, 20, 10, 20, 30, tzinfo=PROJECTOR.datetime.timezone.utc)
+        clock = {"now": before_shell}
+        class Clock(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock["now"]
+        def response(request, timeout):
+            clock["now"] = before_shell + PROJECTOR.datetime.timedelta(seconds=20 if "/threads/" in request.full_url else 10)
+            return Response(self.detail if "/threads/" in request.full_url else self.shell)
+        with patch.object(PROJECTOR.datetime, "datetime", Clock), patch.object(self, "open", side_effect=response):
+            result = self.read(knownThreadIds=["thread-1"])
+        self.assertEqual(result["catalogObservedAt"], before_shell.isoformat())
+        self.assertEqual(result["capturedAt"], (before_shell + PROJECTOR.datetime.timedelta(seconds=20)).isoformat())
+        self.assertIn("revoke", self.calls[-1])
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)

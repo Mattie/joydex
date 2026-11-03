@@ -51,7 +51,10 @@ Codex labels use its existing Desktop bridge catalog independently of lifecycle 
 Completed history does not allocate new slots at startup. Consecutive complete observations
 from the same source generation can recover a run that both starts and finishes between polls,
 using its native run identity and timestamps. Partial reads, outages and source restarts reset
-that recovery baseline; a generic update timestamp never establishes new work.
+that recovery baseline; a generic update timestamp never establishes new work. Recovery uses
+the previous shell catalog's observation boundary, recorded before its fetch, rather than the
+end of later detail reads. End-of-read capture time still records freshness. A missing or
+backwards catalog boundary disables recovery without discarding positive task observations.
 
 Task navigation preserves the assigned identity. Codex uses its desktop URI association;
 T3 launches the verified installed executable with its desktop URI as a single argument.

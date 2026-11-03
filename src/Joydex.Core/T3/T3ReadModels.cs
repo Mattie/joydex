@@ -14,6 +14,7 @@ public sealed record T3ReadResult
     public string SourceEpoch { get; init; } = "";
     public long Sequence { get; init; }
     public DateTimeOffset CapturedAt { get; init; }
+    public DateTimeOffset? CatalogObservedAt { get; init; }
     public bool IsComplete { get; init; }
     public T3TaskMetadata[] Tasks { get; init; } = [];
     public string? BindingFingerprint { get; init; }

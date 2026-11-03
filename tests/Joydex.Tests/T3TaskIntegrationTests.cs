@@ -25,6 +25,29 @@ public sealed class T3TaskIntegrationTests
 
     private static readonly T3ConnectionOptions Options = new() { Enabled = true, SshHost = "configured-host", EnvironmentId = "environment-one" };
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReaderCatalogBoundaryReachesPoolWhenTaskFinishedDuringPriorDetailReads(bool sameAggregateSequence)
+    {
+        using var files = new Scratch();
+        await using var coordinator = files.Coordinator();
+        var now = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var transport = new FixtureTransport { Result = Result(now.AddSeconds(30)) with
+            { CatalogObservedAt = now.AddSeconds(10), Tasks = [] } };
+        await using var monitor = new T3TaskAlertMonitor(coordinator, Options, _ => { }, new T3Reader(transport));
+        Assert.True(await monitor.ReadOnceAsync(default));
+        Assert.Empty(coordinator.GetSnapshot().Assignments);
+        transport.Result = transport.Result with
+        {
+            Sequence = transport.Result.Sequence + (sameAggregateSequence ? 0 : 1), CapturedAt = now.AddSeconds(40), CatalogObservedAt = now.AddSeconds(35),
+            Tasks = [new() { Id = "fast-thread", RunId = "fast-run", Status = "completed",
+                StartedAt = now.AddSeconds(20), CompletedAt = now.AddSeconds(25), ReadComplete = true, RequestsComplete = true }],
+        };
+        Assert.True(await monitor.ReadOnceAsync(default));
+        Assert.Equal(TaskAlertState.Completed, Assert.Single(coordinator.GetSnapshot().Assignments).State);
+    }
+
     [Fact]
     public async Task DisabledTaskAlertsSkipRemoteReadsWithoutFailureOrBackoff()
     {

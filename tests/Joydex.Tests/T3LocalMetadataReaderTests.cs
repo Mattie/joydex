@@ -7,6 +7,39 @@ namespace Joydex.Tests;
 public sealed class T3LocalMetadataReaderTests
 {
     [Fact]
+    public async Task CatalogBoundaryPrecedesShellAndSlowDetailsWhileFreshnessUsesReadEnd()
+    {
+        using var files = new Scratch();
+        var clock = new MutableClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        var beforeShell = clock.Current;
+        var reader = new T3LocalMetadataReader((_, arguments, _) => Task.FromResult(arguments[2] == "issue"
+            ? "{\"sessionId\":\"own\",\"token\":\"synthetic\",\"scopes\":[\"orchestration:read\"]}" : "revoked"),
+            (uri, _, _) =>
+            {
+                if (uri.AbsolutePath == "/.well-known/t3/environment") return Task.FromResult(JsonDocument.Parse("{\"environmentId\":\"local-native\"}"));
+                if (uri.AbsolutePath == "/api/orchestration/shell")
+                {
+                    clock.Current = beforeShell.AddSeconds(10);
+                    return Task.FromResult(JsonDocument.Parse("{\"snapshotSequence\":1,\"projects\":[],\"threads\":[{\"id\":\"thread\",\"status\":\"running\",\"activeRunId\":\"run\",\"latestRunStartedAt\":\"2026-01-01T00:00:00Z\"}]}"));
+                }
+                clock.Current = beforeShell.AddSeconds(20);
+                return Task.FromResult(JsonDocument.Parse("{\"snapshotSequence\":2,\"projection\":{\"thread\":{\"id\":\"thread\"},\"nodes\":[],\"runtimeRequests\":[],\"runs\":[{\"id\":\"run\",\"status\":\"running\",\"startedAt\":\"2026-01-01T00:00:00Z\"}]}}"));
+            }, clock);
+        var result = await reader.ReadAsync(files.Home, "local-native", ["thread"], default);
+        Assert.True(result.Success);
+        Assert.Equal(beforeShell, result.CatalogObservedAt);
+        Assert.Equal(beforeShell.AddSeconds(20), result.CapturedAt);
+        Assert.True(beforeShell.AddSeconds(15) > result.CatalogObservedAt);
+        Assert.True(beforeShell.AddSeconds(15) < result.CapturedAt);
+    }
+
+    private sealed class MutableClock(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Current { get; set; } = now;
+        public override DateTimeOffset GetUtcNow() => Current;
+    }
+
+    [Fact]
     public async Task CancellationAfterGrantUsesIndependentRevocationAndEndpointMismatchIssuesNothing()
     {
         using var files = new Scratch(); using var cancellation = new CancellationTokenSource();

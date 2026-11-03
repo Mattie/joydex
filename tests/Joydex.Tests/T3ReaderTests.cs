@@ -7,6 +7,24 @@ namespace Joydex.Tests;
 public sealed class T3ReaderTests
 {
     [Theory]
+    [InlineData(null, true)]
+    [InlineData("2026-10-20T10:20:20Z", true)]
+    [InlineData("2026-10-20T10:20:30Z", true)]
+    [InlineData("2026-10-20T10:20:31Z", false)]
+    [InlineData("2026-10-20T10:19:29Z", true)]
+    [InlineData("1970-01-01T00:00:00Z", false)]
+    [InlineData("not-a-timestamp", false)]
+    public async Task OptionalCatalogObservationMustBeOrderedAfterEpochAndNoLaterThanReadEnd(string? observed, bool accepted)
+    {
+        var raw = Snapshot();
+        if (observed is not null) raw = raw.Replace("\"isComplete\":true", "\"catalogObservedAt\":" + JsonSerializer.Serialize(observed) + ",\"isComplete\":true");
+        var result = await new T3Reader(new FakeTransport(raw)).ReadAsync(Options, []);
+        Assert.Equal(accepted, result.Success);
+        if (accepted) Assert.Equal(observed is null ? null : DateTimeOffset.Parse(observed), result.CatalogObservedAt);
+        else Assert.Equal("InvalidMetadata", result.ErrorClass);
+    }
+
+    [Theory]
     [InlineData(1)]
     [InlineData(-1073741510)]
     public async Task NativeCliExitCodeIsRetainedWithoutPrivateErrorDetails(int exitCode)

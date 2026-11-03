@@ -15,7 +15,7 @@ public sealed class AggregateTaskAlertPoolTests
         new("thread", "run", TaskAlertState.Running, Start, AsyncQuestions: questions);
     private static TaskAlertSourceSnapshot Snapshot(TaskAlertSourceObservation[] tasks, long sequence = 1,
         int second = 10, long generation = 1, bool complete = true) =>
-        new(Source, generation, sequence, Start.AddSeconds(second), complete, tasks);
+        new(Source, generation, sequence, Start.AddSeconds(second), complete, tasks, Start.AddSeconds(second));
 
     [Fact]
     public void IdentitySeparatesBackendsEnvironmentsAndOrdinalNativeIdsThroughLegacyMaps()
@@ -301,7 +301,7 @@ public sealed class AggregateTaskAlertPoolTests
     [InlineData("generation")]
     [InlineData("restart")]
     [InlineData("disabled")]
-    [InlineData("same-sequence")]
+    [InlineData("same-catalog-boundary")]
     public void FastCompletionRecoveryRequiresAnUninterruptedPositiveSourceBaseline(string interruption)
     {
         var pool = new TaskAlertPool();
@@ -312,8 +312,53 @@ public sealed class AggregateTaskAlertPoolTests
         if (interruption == "disabled") { pool.SetEnabled(false); pool.SetEnabled(true); }
         var fast = Running() with { RunId = "fast", State = TaskAlertState.Completed,
             StartedAt = Start.AddSeconds(12), CompletedAt = Start.AddSeconds(13) };
-        pool.ApplySourceSnapshot(Snapshot([fast], interruption == "same-sequence" ? 1 : 3, 14,
-            interruption == "generation" ? 2 : 1));
+        pool.ApplySourceSnapshot(Snapshot([fast], 3, 14,
+            interruption == "generation" ? 2 : 1) with
+            { CatalogObservedAt = Start.AddSeconds(interruption == "same-catalog-boundary" ? 10 : 14) });
+        Assert.Empty(pool.Assignments);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CompletionDuringPreviousDetailReadsUsesTheCatalogBoundary(bool sameAggregateSequence)
+    {
+        var pool = new TaskAlertPool();
+        pool.ApplySourceSnapshot(Snapshot([], second: 30) with { CatalogObservedAt = Start.AddSeconds(10) });
+        var fast = Running() with { RunId = "fast", State = TaskAlertState.Completed,
+            StartedAt = Start.AddSeconds(20), CompletedAt = Start.AddSeconds(25) };
+        pool.ApplySourceSnapshot(Snapshot([fast], sameAggregateSequence ? 1 : 2, 40) with { CatalogObservedAt = Start.AddSeconds(35) });
+        Assert.Equal(TaskAlertState.Completed, Assert.Single(pool.Assignments).State);
+    }
+
+    [Theory]
+    [InlineData("previous-missing")]
+    [InlineData("current-missing")]
+    [InlineData("backwards")]
+    [InlineData("historical")]
+    public void CompletionRecoveryRequiresKnownOrderedCatalogBoundaries(string gap)
+    {
+        var pool = new TaskAlertPool();
+        pool.ApplySourceSnapshot(Snapshot([], second: 30) with
+            { CatalogObservedAt = gap == "previous-missing" ? null : Start.AddSeconds(10) });
+        var fast = Running() with { RunId = "fast", State = TaskAlertState.Completed,
+            StartedAt = Start.AddSeconds(gap == "historical" ? 5 : 20), CompletedAt = Start.AddSeconds(25) };
+        pool.ApplySourceSnapshot(Snapshot([fast], 2, 40) with
+            { CatalogObservedAt = gap == "current-missing" ? null : Start.AddSeconds(gap == "backwards" ? 9 : 35) });
+        Assert.Empty(pool.Assignments);
+    }
+
+    [Fact]
+    public void BackwardsCatalogBoundaryCannotBecomeALowerHistoryRecoveryFloor()
+    {
+        var pool = new TaskAlertPool();
+        var history = Running() with { State = TaskAlertState.Completed,
+            StartedAt = Start.AddSeconds(9), CompletedAt = Start.AddSeconds(25) };
+        pool.ApplySourceSnapshot(Snapshot([history], second: 30) with { CatalogObservedAt = Start.AddSeconds(10) });
+        pool.ApplySourceSnapshot(Snapshot([history], 2, 40) with { CatalogObservedAt = Start.AddSeconds(8) });
+        pool.ApplySourceSnapshot(Snapshot([history], 3, 50) with { CatalogObservedAt = Start.AddSeconds(35) });
+        Assert.Empty(pool.Assignments);
+        pool.ApplySourceSnapshot(Snapshot([history], 4, 60) with { CatalogObservedAt = Start.AddSeconds(55) });
         Assert.Empty(pool.Assignments);
     }
 

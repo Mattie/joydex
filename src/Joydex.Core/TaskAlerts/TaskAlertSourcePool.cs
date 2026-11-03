@@ -4,7 +4,7 @@ public sealed partial class TaskAlertPool
 {
     private const int MaximumSourceAcknowledgements = 2048;
     private readonly List<TaskAlertSourceAcknowledgement> _sourceAcknowledgements = [];
-    private readonly Dictionary<TaskAlertSourceIdentity, (long Generation, long Sequence, DateTimeOffset CapturedAt, bool Complete)> _sourceCursors = [];
+    private readonly Dictionary<TaskAlertSourceIdentity, (long Generation, long Sequence, DateTimeOffset CapturedAt, bool Complete, DateTimeOffset? CatalogObservedAt)> _sourceCursors = [];
 
     /// <summary>Applies positive native observations directly, without synthesizing Codex hooks.</summary>
     public bool ApplySourceSnapshot(TaskAlertSourceSnapshot snapshot)
@@ -12,6 +12,7 @@ public sealed partial class TaskAlertPool
         ArgumentNullException.ThrowIfNull(snapshot);
         if (!Enabled || snapshot.Source is null || snapshot.Tasks is null || snapshot.Generation < 0
             || snapshot.Sequence < 0 || snapshot.CapturedAt == default
+            || snapshot.CatalogObservedAt is { } catalogAt && (catalogAt <= DateTimeOffset.UnixEpoch || catalogAt > snapshot.CapturedAt)
             || !Enum.IsDefined(snapshot.Source.Backend) || !TaskAlertIdentity.IsNativeId(snapshot.Source.EnvironmentId)) return false;
         if (_sourceCursors.TryGetValue(snapshot.Source, out var cursor)
             && (snapshot.Generation < cursor.Generation
@@ -20,9 +21,13 @@ public sealed partial class TaskAlertPool
                 || snapshot.Generation == cursor.Generation && snapshot.Sequence == cursor.Sequence
                     && snapshot.CapturedAt == cursor.CapturedAt)) return false;
         var complete = snapshot.IsComplete && snapshot.Tasks.All(task => task is { ReadComplete: true });
+        // Detail reads can advance the aggregate sequence beyond the shell's.
+        // Only ordered shell boundaries establish a completion recovery interval.
         DateTimeOffset? terminalBaseline = cursor.Complete && complete && cursor.Generation == snapshot.Generation
-            && snapshot.Sequence > cursor.Sequence ? cursor.CapturedAt : null;
-        _sourceCursors[snapshot.Source] = (snapshot.Generation, snapshot.Sequence, snapshot.CapturedAt, complete);
+            && snapshot.CatalogObservedAt > cursor.CatalogObservedAt
+                ? cursor.CatalogObservedAt : null;
+        var catalogBoundary = snapshot.CatalogObservedAt < cursor.CatalogObservedAt ? null : snapshot.CatalogObservedAt;
+        _sourceCursors[snapshot.Source] = (snapshot.Generation, snapshot.Sequence, snapshot.CapturedAt, complete, catalogBoundary);
         // A partial catalog cannot certify retained tasks that were not read.
         var changed = snapshot.IsComplete && SetSourceUnavailable(snapshot.Source, false);
         foreach (var observation in snapshot.Tasks)

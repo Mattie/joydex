@@ -300,6 +300,7 @@ def read_metadata(root, executable, options):
             if len(raw) > MAX_BYTES:
                 raise SafeError("PayloadLimit", "The environment response exceeds the size limit.")
             return json.loads(raw)
+        catalog_observed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         shell = get("/api/orchestration/shell?omitIdleSubagents=true")
         threads = shell.get("threads")
         sequence = shell.get("snapshotSequence")
@@ -402,7 +403,8 @@ def read_metadata(root, executable, options):
         if hashlib.sha256(bounded_bytes(runtime_path)).digest() != runtime_before:
             raise SafeError("RuntimeChanged", "The environment restarted during the read; retry the connection.")
         result = {"success": True, "environmentId": environment_id, "sourceEpoch": epoch, "sequence": sequence,
-                  "capturedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), "isComplete": complete,
+                  "capturedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                  "catalogObservedAt": catalog_observed_at, "isComplete": complete,
                   "tasks": tasks, "bindingFingerprint": optional_fingerprint(root / "keybindings.json")}
     finally:
         try:

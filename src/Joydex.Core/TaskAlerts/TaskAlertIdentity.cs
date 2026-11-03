@@ -86,7 +86,8 @@ public sealed record TaskAlertSourceObservation(
 
 /// <summary>Absence from either a partial or complete catalog never ends an assignment.</summary>
 public sealed record TaskAlertSourceSnapshot(TaskAlertSourceIdentity Source, long Generation, long Sequence,
-    DateTimeOffset CapturedAt, bool IsComplete, TaskAlertSourceObservation[] Tasks);
+    DateTimeOffset CapturedAt, bool IsComplete, TaskAlertSourceObservation[] Tasks,
+    DateTimeOffset? CatalogObservedAt = null);
 
 public sealed record TaskAlertSourceAcknowledgement(TaskAlertIdentity Identity, string? RunId, string? Key,
     DateTimeOffset AcknowledgedAt);

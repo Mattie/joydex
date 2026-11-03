@@ -52,7 +52,7 @@ public sealed class T3TaskAlertMonitor(
         if (_lastError is not null) log("T3 environment " + options.EnvironmentId + " task monitoring resumed.");
         _lastError = null;
         coordinator.ApplySourceSnapshot(new(source, _generation, result.Sequence,
-            result.CapturedAt, result.IsComplete, result.Tasks.Select(task => Project(source, task)).ToArray()), result);
+            result.CapturedAt, result.IsComplete, result.Tasks.Select(task => Project(source, task)).ToArray(), result.CatalogObservedAt), result);
         return true;
     }
 

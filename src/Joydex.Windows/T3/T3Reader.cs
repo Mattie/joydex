@@ -70,7 +70,7 @@ public sealed partial class T3Reader(IT3SshTransport? transport = null)
             if (!string.IsNullOrEmpty(options.EnvironmentId) && options.EnvironmentId != result.EnvironmentId)
                 return Failure("EnvironmentMismatch", "The discovered environment does not match the saved identity.");
             if (!ValidId(result.EnvironmentId) || !ValidHash(result.SourceEpoch) || result.Sequence < 0
-                || result.CapturedAt <= DateTimeOffset.UnixEpoch || result.Tasks is null || result.Tasks.Length > 1128
+                || result.CapturedAt <= DateTimeOffset.UnixEpoch || !ValidCatalogObservation(result) || result.Tasks is null || result.Tasks.Length > 1128
                 || result.Tasks.Any(t => !ValidTask(t)))
                 return Failure("InvalidMetadata", "The environment returned incomplete or invalid metadata.");
             return result with
@@ -143,6 +143,9 @@ public sealed partial class T3Reader(IT3SshTransport? transport = null)
         && task.PendingRequests.Concat(task.ResolvedQuestions).All(r => r is not null && ValidId(r.Id) && (r.RunId is null || ValidId(r.RunId)))
         && new[] { task.StartedAt, task.CompletedAt, task.LatestUserAuthoredMessageAt }.Concat(task.PendingRequests.Concat(task.ResolvedQuestions).Select(r => r.CreatedAt))
             .All(t => t is null || t > DateTimeOffset.UnixEpoch);
+
+    private static bool ValidCatalogObservation(T3ReadResult result) => result.CatalogObservedAt is not { } observed
+        || observed > DateTimeOffset.UnixEpoch && observed <= result.CapturedAt;
 
     private static bool ValidSetupResult(T3ShortcutSetupResult result) =>
         (result.BindingFingerprint is null || ValidHash(result.BindingFingerprint))
