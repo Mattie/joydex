@@ -39,7 +39,7 @@ public sealed partial class T3Reader
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return SanitizeFailure("Timeout"); }
         catch (OperationCanceledException) { throw; }
-        catch (T3TransportException error) { return SanitizeFailure(error.ErrorClass); }
+        catch (T3TransportException error) { return SanitizeFailure(error.ErrorClass, error.ExitCode); }
         catch { return Failure("LocalReadFailed", "The local metadata read failed; private details were withheld."); }
         finally { _operation.Release(); }
     }
@@ -201,7 +201,8 @@ internal sealed class T3LocalMetadataReader
 
     private static async Task<string> RunCliAsync(string home, string[] arguments, CancellationToken cancellationToken)
     {
-        var executable = InstalledT3ForegroundResolver.FindInstalledExecutable() ?? throw new T3TransportException("LocalCliUnavailable", "The installed T3 executable could not be verified.");
+        var executable = InstalledT3ForegroundResolver.FindInstalledExecutable(out var failureClass)
+            ?? throw new T3TransportException(failureClass ?? "LocalCliUnavailable", "The installed T3 executable could not be verified.");
         var entry = Path.Combine(Path.GetDirectoryName(executable)!, "resources", "server.asar", "apps", "server", "dist", "bin.mjs");
         if (!File.Exists(Path.Combine(Path.GetDirectoryName(executable)!, "resources", "server.asar"))) throw new InvalidDataException();
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
@@ -221,7 +222,7 @@ internal sealed class T3LocalMetadataReader
             var output = ReadBoundedAsync(process.StandardOutput.BaseStream, 64 * 1024, deadline.Token);
             var errors = ReadBoundedAsync(process.StandardError.BaseStream, 64 * 1024, deadline.Token);
             await Task.WhenAll(output, errors, process.WaitForExitAsync(deadline.Token)).ConfigureAwait(false);
-            if (process.ExitCode != 0) throw new T3TransportException("CliFailed", "The T3 CLI operation failed; private output was withheld.");
+            if (process.ExitCode != 0) throw new T3TransportException("CliFailed", "The T3 CLI operation failed; private output was withheld.", process.ExitCode);
             return Encoding.UTF8.GetString(await output.ConfigureAwait(false));
         }
         finally

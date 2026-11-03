@@ -55,6 +55,10 @@ that recovery baseline; a generic update timestamp never establishes new work.
 
 Task navigation preserves the assigned identity. Codex uses its desktop URI association;
 T3 launches the verified installed executable with its desktop URI as a single argument.
+The current-user protocol command takes precedence; the merged registration is used only when
+the user command is absent. Invalid overrides and failed file/product verification do not
+fall through to another executable. Read diagnostics retain safe verification stages and
+numeric CLI exit codes, excluding raw process output and exception details.
 This avoids a Windows application chooser when protocol dispatch fails despite an existing
 T3 registration. An unverified executable or failed launch acknowledges no question alerts.
 Shared physical New/Previous/Next/Stop actions inspect the foreground app. T3 dispatch requires

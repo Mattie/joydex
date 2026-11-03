@@ -6,6 +6,7 @@ public sealed record T3ReadResult
     public bool Success { get; init; }
     public string? ErrorClass { get; init; }
     public string? Reason { get; init; }
+    public int? CliExitCode { get; init; }
     public string EnvironmentId { get; init; } = "";
     public string? DisplayName { get; init; }
     public string? TransportKind { get; init; }

@@ -6,6 +6,42 @@ namespace Joydex.Tests;
 
 public sealed class T3ReaderTests
 {
+    [Theory]
+    [InlineData(1)]
+    [InlineData(-1073741510)]
+    public async Task NativeCliExitCodeIsRetainedWithoutPrivateErrorDetails(int exitCode)
+    {
+        var result = await new T3Reader(new ExitFailureTransport(exitCode)).ReadAsync(Options, []);
+        Assert.Equal("CliFailed", result.ErrorClass);
+        Assert.Equal(exitCode, result.CliExitCode);
+        Assert.Contains(exitCode.ToString(), result.Reason);
+        Assert.DoesNotContain("PRIVATE STDERR", JsonSerializer.Serialize(result));
+    }
+
+    private sealed class ExitFailureTransport(int exitCode) : IT3SshTransport
+    {
+        public Task<string> ExecuteAsync(string host, string script, CancellationToken token) =>
+            Task.FromException<string>(new T3TransportException("CliFailed", "PRIVATE STDERR", exitCode));
+    }
+
+    [Theory]
+    [InlineData("CliFailed")]
+    [InlineData("LocalCliUnavailable")]
+    [InlineData("RuntimeChanged")]
+    [InlineData("LocalCliRegistrationMissing")]
+    [InlineData("LocalCliRegistrationInvalid")]
+    [InlineData("LocalCliExecutableMissing")]
+    [InlineData("LocalCliProductMismatch")]
+    [InlineData("LocalCliVerificationFailed")]
+    public async Task KnownOperationalFailuresPreserveSafeClassificationAndWithholdProcessOutput(string kind)
+    {
+        var raw = JsonSerializer.Serialize(new { success = false, errorClass = kind, reason = "PRIVATE PROCESS OUTPUT" });
+        var result = await new T3Reader(new FakeTransport(raw)).ReadAsync(Options, []);
+        Assert.False(result.Success);
+        Assert.Equal(kind, result.ErrorClass);
+        Assert.DoesNotContain("PRIVATE PROCESS OUTPUT", JsonSerializer.Serialize(result));
+    }
+
     private static T3ConnectionOptions Options => new() { SshHost = "configured-host", EnvironmentId = "env-one" };
 
     [Fact]

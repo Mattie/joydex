@@ -10,6 +10,19 @@ namespace Joydex.Tests;
 
 public sealed class T3TaskIntegrationTests
 {
+    [Fact]
+    public async Task MonitorLogsOnlyKnownCliExitMetadataAndNotPrivateFailureReason()
+    {
+        using var files = new Scratch();
+        await using var coordinator = files.Coordinator();
+        var logs = new List<string>();
+        await using var monitor = new T3TaskAlertMonitor(coordinator, Options, logs.Add,
+            readEnvironment: (_, _) => Task.FromResult(new T3ReadResult { ErrorClass = "CliFailed", CliExitCode = 1, Reason = "PRIVATE STDERR" }));
+        Assert.False(await monitor.ReadOnceAsync(default));
+        Assert.Contains("CliFailed; exit=1", Assert.Single(logs));
+        Assert.DoesNotContain("PRIVATE STDERR", logs[0]);
+    }
+
     private static readonly T3ConnectionOptions Options = new() { Enabled = true, SshHost = "configured-host", EnvironmentId = "environment-one" };
 
     [Fact]

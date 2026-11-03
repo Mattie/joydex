@@ -4,9 +4,10 @@ using System.Text.RegularExpressions;
 
 namespace Joydex.Windows.T3;
 
-public sealed class T3TransportException(string errorClass, string reason) : Exception(reason)
+public sealed class T3TransportException(string errorClass, string reason, int? exitCode = null) : Exception(reason)
 {
     public string ErrorClass { get; } = errorClass;
+    public int? ExitCode { get; } = exitCode;
 }
 
 public interface IT3SshTransport

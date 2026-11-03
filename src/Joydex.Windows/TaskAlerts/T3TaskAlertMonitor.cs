@@ -41,9 +41,11 @@ public sealed class T3TaskAlertMonitor(
         if (!result.Success)
         {
             coordinator.SetSourceUnavailable(source, result);
-            if (_lastError != result.ErrorClass)
-                log("T3 environment " + options.EnvironmentId + " task monitoring unavailable (" + result.ErrorClass + "); other sources remain independent.");
-            _lastError = result.ErrorClass;
+            var diagnostic = result.ErrorClass == "CliFailed" && result.CliExitCode is { } exitCode
+                ? "CliFailed; exit=" + exitCode : result.ErrorClass;
+            if (_lastError != diagnostic)
+                log("T3 environment " + options.EnvironmentId + " task monitoring unavailable (" + diagnostic + "); other sources remain independent.");
+            _lastError = diagnostic;
             return false;
         }
         if (_epoch != result.SourceEpoch) { _epoch = result.SourceEpoch; _generation = Interlocked.Increment(ref _nextGeneration); }

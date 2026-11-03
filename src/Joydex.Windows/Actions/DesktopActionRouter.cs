@@ -167,19 +167,51 @@ public sealed partial class InstalledT3ForegroundResolver : IDesktopActionForegr
             && string.Equals(current.ExecutablePath, foreground.ExecutablePath, StringComparison.OrdinalIgnoreCase);
     }
 
-    internal static string? FindInstalledExecutable()
+    internal static string? FindInstalledExecutable() => FindInstalledExecutable(out _);
+
+    internal static string? FindInstalledExecutable(out string? failureClass)
     {
         try
         {
-            using var handler = Registry.ClassesRoot.OpenSubKey(@"t3code\shell\open\command");
-            var path = ParseRegisteredExecutable(handler?.GetValue(null) as string);
-            if (path is null || !File.Exists(path)) return null;
-            var product = FileVersionInfo.GetVersionInfo(path).ProductName;
-            return product is not null && (product.Equals("T3 Code (Beta)", StringComparison.OrdinalIgnoreCase)
-                || product.Equals("T3 Code", StringComparison.OrdinalIgnoreCase)) ? path : null;
+            // The current-user protocol command is authoritative when present.
+            // An invalid override must never fall through to another installation.
+            using var user = Registry.CurrentUser.OpenSubKey(@"Software\Classes\t3code\shell\open\command");
+            string? mergedCommand = null;
+            if (user is null)
+            {
+                using var merged = Registry.ClassesRoot.OpenSubKey(@"t3code\shell\open\command");
+                mergedCommand = merged?.GetValue(null) as string;
+            }
+            return VerifyProtocolRegistration(user is not null, user?.GetValue(null) as string, mergedCommand,
+                File.Exists, path => FileVersionInfo.GetVersionInfo(path).ProductName, out failureClass);
         }
         catch (Exception error) when (error is System.Security.SecurityException or UnauthorizedAccessException or IOException
-            or ArgumentException or NotSupportedException) { return null; }
+            or ArgumentException or NotSupportedException)
+        {
+            failureClass = "LocalCliVerificationFailed";
+            return null;
+        }
+    }
+
+    internal static string? VerifyProtocolRegistration(bool userKeyPresent, string? userCommand, string? mergedCommand,
+        Func<string, bool> fileExists, Func<string, string?> productName, out string? failureClass)
+    {
+        failureClass = null;
+        try
+        {
+            var command = userKeyPresent ? userCommand : mergedCommand;
+            if (!userKeyPresent && command is null) { failureClass = "LocalCliRegistrationMissing"; return null; }
+            var path = ParseRegisteredExecutable(command);
+            if (path is null) { failureClass = "LocalCliRegistrationInvalid"; return null; }
+            if (!fileExists(path)) { failureClass = "LocalCliExecutableMissing"; return null; }
+            var product = productName(path);
+            if (product is not null && (product.Equals("T3 Code (Beta)", StringComparison.OrdinalIgnoreCase)
+                || product.Equals("T3 Code", StringComparison.OrdinalIgnoreCase))) return path;
+            failureClass = "LocalCliProductMismatch";
+            return null;
+        }
+        catch (Exception error) when (error is System.Security.SecurityException or UnauthorizedAccessException or IOException
+            or ArgumentException or NotSupportedException) { failureClass = "LocalCliVerificationFailed"; return null; }
     }
 
     internal static string? ParseRegisteredExecutable(string? value)

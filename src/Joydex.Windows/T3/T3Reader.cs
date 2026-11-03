@@ -76,6 +76,7 @@ public sealed partial class T3Reader(IT3SshTransport? transport = null)
             return result with
             {
                 Reason = null, ErrorClass = null, DisplayName = DisplayLabel(options.DisplayName),
+                CliExitCode = null,
                 BindingFingerprint = ValidHash(result.BindingFingerprint) ? result.BindingFingerprint : null,
                 ContextDiagnostic = UnknownContext,
                 Tasks = result.Tasks.Select(task => task with
@@ -87,7 +88,7 @@ public sealed partial class T3Reader(IT3SshTransport? transport = null)
             };
         }
         catch (OperationCanceledException) { throw; }
-        catch (T3TransportException error) { return SanitizeFailure(error.ErrorClass); }
+        catch (T3TransportException error) { return SanitizeFailure(error.ErrorClass, error.ExitCode); }
         catch { return Failure("InvalidMetadata", "The environment read failed; private details were withheld."); }
         finally { _operation.Release(); }
     }
@@ -170,7 +171,7 @@ public sealed partial class T3Reader(IT3SshTransport? transport = null)
     }
 
     private static T3ReadResult Failure(string kind, string reason) => new() { ErrorClass = kind, Reason = reason };
-    private static T3ReadResult SanitizeFailure(string? kind) => kind switch
+    private static T3ReadResult SanitizeFailure(string? kind, int? exitCode = null) => kind switch
     {
         "EnvironmentMismatch" => Failure(kind, "The discovered environment does not match the saved identity."),
         "EnvironmentRequired" => Failure(kind, "Test the connection and save the discovered identity first."),
@@ -182,6 +183,16 @@ public sealed partial class T3Reader(IT3SshTransport? transport = null)
         "BindingsChanged" => Failure(kind, "The keybinding file changed during setup; retry after reviewing it."),
         "LoopbackRequired" or "RedirectRejected" => Failure(kind, "The environment must expose its own loopback HTTP API without redirects."),
         "UnexpectedScopes" => Failure(kind, "The temporary grant did not have exactly read-only permissions."),
+        "CliFailed" => Failure(kind, exitCode is { } code
+            ? $"The local T3 CLI operation exited with code {code}; private process output was withheld."
+            : "The local T3 CLI operation failed; private process output was withheld.") with { CliExitCode = exitCode },
+        "LocalCliUnavailable" => Failure(kind, "The installed local T3 executable could not be verified for the metadata reader."),
+        "LocalCliRegistrationMissing" => Failure(kind, "No local T3 protocol executable registration was found."),
+        "LocalCliRegistrationInvalid" => Failure(kind, "The local T3 protocol command did not match the supported executable and URI argument shape."),
+        "LocalCliExecutableMissing" => Failure(kind, "The registered local T3 executable is missing."),
+        "LocalCliProductMismatch" => Failure(kind, "The registered executable did not identify itself as a supported T3 Desktop product."),
+        "LocalCliVerificationFailed" => Failure(kind, "The local T3 installation metadata could not be read or verified; private details were withheld."),
+        "RuntimeChanged" => Failure(kind, "The T3 environment restarted or changed runtime identity during the read; retrying is safe."),
         "Busy" => Failure(kind, "A T3 operation is already in progress."),
         "SshFailed" or "SshUnavailable" => Failure(kind, "The SSH reader failed. Check the saved alias and noninteractive current-user authentication."),
         _ => Failure("ReadFailed", "The environment operation failed; private details were withheld."),

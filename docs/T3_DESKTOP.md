@@ -34,6 +34,10 @@ Task Alerts shows each task's title, project, application/environment and provid
 available. T3 task buttons launch the verified installed desktop executable with its native
 chat URI as one argument, avoiding Windows' custom-protocol association lookup. If the
 executable cannot be verified, navigation fails without acknowledging question alerts.
+Executable discovery checks the current-user protocol command first, retaining strict file and
+product verification. A present invalid user override blocks fallback. Connection diagnostics
+distinguish missing registration, invalid command, missing file, product mismatch and verification
+failure; CLI failures retain a numeric exit code without exposing process output.
 A successful visit acknowledges the async questions already displayed by Joydex.
 Newer questions and blocking permissions stay
 pending. This does not answer or remove the application's question cards.
