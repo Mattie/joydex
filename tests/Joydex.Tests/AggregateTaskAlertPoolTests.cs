@@ -232,6 +232,51 @@ public sealed class AggregateTaskAlertPoolTests
         Assert.Equal(expected, Assert.Single(pool.Assignments).State);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NewWaitingRunDoesNotInheritCompletedRunsTimer(bool restart)
+    {
+        var oldQuestion = Question("old-question");
+        var permission = Question("permission", 21, "next");
+        var pool = new TaskAlertPool();
+        pool.ApplySourceSnapshot(Snapshot([Running(oldQuestion)]));
+        pool.ApplySourceSnapshot(Snapshot([Running() with
+            { State = TaskAlertState.Completed, CompletedAt = Start.AddSeconds(11) }], 2, 12));
+        Assert.NotNull(Assert.Single(pool.Assignments).CompleteAfter);
+        if (restart)
+        {
+            var saved = pool.CaptureState();
+            pool = new TaskAlertPool();
+            pool.Restore(saved);
+        }
+
+        var waiting = Running() with
+        {
+            RunId = "next", StartedAt = Start.AddSeconds(20), State = null,
+            LatestHumanUserTurnAt = Start.AddSeconds(20), BlockingRequests = [permission],
+            RequestsComplete = true,
+        };
+        pool.ApplySourceSnapshot(Snapshot([waiting], 3, 22));
+        pool.Advance(Start.AddSeconds(23));
+        var assigned = Assert.Single(pool.Assignments);
+        Assert.Equal(TaskAlertState.Approval, assigned.State);
+        Assert.Equal("next", assigned.TurnId);
+        Assert.Null(assigned.PendingAsyncQuestions);
+        Assert.Null(assigned.CompleteAfter);
+        Assert.Equal(Start.AddSeconds(20), assigned.UpdatedAt);
+
+        var restored = new TaskAlertPool();
+        restored.Restore(pool.CaptureState());
+        restored.Advance(Start.AddSeconds(24));
+        Assert.Equal(TaskAlertState.Approval, Assert.Single(restored.Assignments).State);
+        restored.ApplySourceSnapshot(Snapshot([waiting with { BlockingRequests = [] }], 4, 25));
+        Assert.Equal(TaskAlertState.Running, Assert.Single(restored.Assignments).State);
+        restored.ApplySourceSnapshot(Snapshot([waiting with { BlockingRequests = [],
+            State = TaskAlertState.Completed, CompletedAt = Start.AddSeconds(26) }], 5, 27));
+        Assert.Equal(TaskAlertState.Completed, Assert.Single(restored.Assignments).State);
+    }
+
     [Fact]
     public void ConsecutiveCompleteSnapshotsRecognizeAFastRunWithoutBackfillingStartupHistory()
     {

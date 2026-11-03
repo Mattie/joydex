@@ -131,9 +131,11 @@ public sealed partial class TaskAlertPool
         var terminal = observation.ReadComplete && observation.RunId is not null && observation.StartedAt is { } start
             && observation.CompletedAt is { } end && end >= start
             && observation.State is TaskAlertState.Completed or TaskAlertState.Fault;
-        var nextState = existing.State;
-        var completeAfter = existing.CompleteAfter;
-        var updatedAt = existing.UpdatedAt;
+        // A verified new run owns its lifecycle even if first observed waiting
+        // for permission. The preceding run's completion timer cannot end it.
+        var nextState = sameRun ? existing.State : TaskAlertState.Running;
+        var completeAfter = sameRun ? existing.CompleteAfter : null;
+        var updatedAt = sameRun ? existing.UpdatedAt : observation.StartedAt!.Value;
         if (active)
         {
             nextState = TaskAlertState.Running;
