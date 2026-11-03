@@ -6,6 +6,20 @@ namespace Joydex.Tests;
 
 public sealed class T3ReaderTests
 {
+    [Fact]
+    public async Task RegistrationStatusDiagnosticsRetainOnlyCanonicalNumbersAndNeverPrivateReason()
+    {
+        var raw = JsonSerializer.Serialize(new { success = false, errorClass = "LocalCliRegistrationMissing:hkcu=0:hkcr=2", reason = "PRIVATE REGISTRY VALUE" });
+        var result = await new T3Reader(new FakeTransport(raw)).ReadAsync(Options, []);
+        Assert.Equal("LocalCliRegistrationMissing:hkcu=0:hkcr=2", result.ErrorClass);
+        Assert.Contains("HKCU status 0; HKCR status 2", result.Reason);
+        Assert.DoesNotContain("PRIVATE REGISTRY VALUE", JsonSerializer.Serialize(result));
+        raw = JsonSerializer.Serialize(new { success = false, errorClass = "LocalCliRegistrationMissing:hkcu=PRIVATE:hkcr=2" });
+        result = await new T3Reader(new FakeTransport(raw)).ReadAsync(Options, []);
+        Assert.Equal("ReadFailed", result.ErrorClass);
+        Assert.DoesNotContain("PRIVATE", JsonSerializer.Serialize(result));
+    }
+
     [Theory]
     [InlineData(null, true)]
     [InlineData("2026-10-20T10:20:20Z", true)]

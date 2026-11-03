@@ -4,6 +4,16 @@ namespace Joydex.Tests;
 
 public sealed class T3InstalledExecutableVerificationTests
 {
+    [Theory]
+    [InlineData("LocalCliRegistrationMissing:hkcu=2:hkcr=2", true)]
+    [InlineData("LocalCliRegistrationMissing:hkcu=0:hkcr=6", true)]
+    [InlineData("LocalCliRegistrationMissing:hkcu=PRIVATE:hkcr=2", false)]
+    [InlineData("LocalCliRegistrationMissing:hkcu=-1:hkcr=2", false)]
+    [InlineData("LocalCliRegistrationMissing:hkcu=2:hkcr=2:PRIVATE", false)]
+    [InlineData("LocalCliRegistrationMissing:hkcu=2147483648:hkcr=2", false)]
+    public void MissingRegistrationDiagnosticsAcceptOnlyTwoFixedNumericStatusFields(string value, bool expected)
+        => Assert.Equal(expected, InstalledT3ForegroundResolver.TryParseMissingRegistrationDiagnostic(value, out _, out _));
+
     private const string UserPath = @"C:\Apps\User T3\T3 Code (Beta).exe";
     private const string MachinePath = @"C:\Apps\Machine T3\T3 Code.exe";
     private static string Command(string path) => "\"" + path + "\" \"%1\"";

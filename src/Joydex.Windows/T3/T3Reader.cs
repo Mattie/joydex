@@ -174,7 +174,11 @@ public sealed partial class T3Reader(IT3SshTransport? transport = null)
     }
 
     private static T3ReadResult Failure(string kind, string reason) => new() { ErrorClass = kind, Reason = reason };
-    private static T3ReadResult SanitizeFailure(string? kind, int? exitCode = null) => kind switch
+    private static T3ReadResult SanitizeFailure(string? kind, int? exitCode = null) =>
+        Joydex.Windows.Actions.InstalledT3ForegroundResolver.TryParseMissingRegistrationDiagnostic(kind, out var userStatus, out var classesStatus)
+            ? Failure($"LocalCliRegistrationMissing:hkcu={userStatus}:hkcr={classesStatus}",
+                $"The local T3 registration lookup failed (HKCU status {userStatus}; HKCR status {classesStatus}); private registration values were withheld.")
+            : kind switch
     {
         "EnvironmentMismatch" => Failure(kind, "The discovered environment does not match the saved identity."),
         "EnvironmentRequired" => Failure(kind, "Test the connection and save the discovered identity first."),

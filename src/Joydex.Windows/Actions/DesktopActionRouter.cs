@@ -182,8 +182,11 @@ public sealed partial class InstalledT3ForegroundResolver : IDesktopActionForegr
                 using var merged = Registry.ClassesRoot.OpenSubKey(@"t3code\shell\open\command");
                 mergedCommand = merged?.GetValue(null) as string;
             }
-            return VerifyProtocolRegistration(user is not null, user?.GetValue(null) as string, mergedCommand,
+            var executable = VerifyProtocolRegistration(user is not null, user?.GetValue(null) as string, mergedCommand,
                 File.Exists, path => FileVersionInfo.GetVersionInfo(path).ProductName, out failureClass);
+            if (executable is null && failureClass == "LocalCliRegistrationMissing")
+                failureClass = ProbeMissingRegistration();
+            return executable;
         }
         catch (Exception error) when (error is System.Security.SecurityException or UnauthorizedAccessException or IOException
             or ArgumentException or NotSupportedException)
@@ -192,6 +195,37 @@ public sealed partial class InstalledT3ForegroundResolver : IDesktopActionForegr
             return null;
         }
     }
+
+    // Managed OpenSubKey returns null for several native failures, not only a
+    // missing key. Probe just these two fixed paths after that exact failure.
+    private static string ProbeMissingRegistration()
+    {
+        var userStatus = OpenStatus(new IntPtr(unchecked((int)0x80000001)), @"Software\Classes\t3code\shell\open\command");
+        var classesStatus = OpenStatus(new IntPtr(unchecked((int)0x80000000)), @"t3code\shell\open\command");
+        return "LocalCliRegistrationMissing:hkcu=" + userStatus + ":hkcr=" + classesStatus;
+    }
+
+    private static int OpenStatus(IntPtr root, string path)
+    {
+        var status = RegOpenKeyEx(root, path, 0, 0x20019, out var opened);
+        if (status == 0 && opened != IntPtr.Zero) RegCloseKey(opened);
+        return status;
+    }
+
+    internal static bool TryParseMissingRegistrationDiagnostic(string? value, out int userStatus, out int classesStatus)
+    {
+        userStatus = classesStatus = 0;
+        if (value is null || value.Length > 90) return false;
+        var parts = value.Split(':');
+        return parts.Length == 3 && parts[0] == "LocalCliRegistrationMissing"
+            && parts[1].StartsWith("hkcu=", StringComparison.Ordinal) && parts[2].StartsWith("hkcr=", StringComparison.Ordinal)
+            && int.TryParse(parts[1].AsSpan(5), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out userStatus)
+            && int.TryParse(parts[2].AsSpan(5), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out classesStatus);
+    }
+
+    [DllImport("advapi32.dll", EntryPoint = "RegOpenKeyExW", CharSet = CharSet.Unicode)]
+    private static extern int RegOpenKeyEx(IntPtr root, string subKey, int options, int desiredAccess, out IntPtr opened);
+    [DllImport("advapi32.dll")] private static extern int RegCloseKey(IntPtr key);
 
     internal static string? VerifyProtocolRegistration(bool userKeyPresent, string? userCommand, string? mergedCommand,
         Func<string, bool> fileExists, Func<string, string?> productName, out string? failureClass)
