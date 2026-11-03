@@ -38,6 +38,11 @@ Executable discovery checks the current-user protocol command first, retaining s
 product verification. A present invalid user override blocks fallback. Connection diagnostics
 distinguish missing registration, invalid command, missing file, product mismatch and verification
 failure; CLI failures retain a numeric exit code without exposing process output.
+When protocol registration is absent, Joydex can verify the executable through the local T3
+server's runtime descriptor. Its recorded process must still be running under the current user
+and desktop session, with a start time consistent with the descriptor and T3 product identity. Stale or reused process
+IDs are rejected. This route supports monitoring and task navigation without changing Windows
+protocol registration.
 A successful visit acknowledges the async questions already displayed by Joydex.
 Newer questions and blocking permissions stay
 pending. This does not answer or remove the application's question cards.

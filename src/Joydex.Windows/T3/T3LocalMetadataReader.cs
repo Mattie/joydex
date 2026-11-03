@@ -64,8 +64,7 @@ internal sealed class T3LocalMetadataReader
         var runtimeRaw = T3Reader.ReadBoundedFile(runtimePath);
         using var runtime = JsonDocument.Parse(runtimeRaw);
         var origin = new Uri(runtime.RootElement.GetProperty("origin").GetString()!);
-        if (origin.Scheme != "http" || !origin.IsLoopback || !string.IsNullOrEmpty(origin.UserInfo)
-            || origin.AbsolutePath != "/" || !string.IsNullOrEmpty(origin.Query) || !string.IsNullOrEmpty(origin.Fragment))
+        if (!IsSupportedLoopbackOrigin(origin))
             throw new T3TransportException("LoopbackRequired", "Only the local loopback API is permitted.");
         if (!runtime.RootElement.TryGetProperty("startedAt", out var started) || !DateTimeOffset.TryParse(started.GetString(), out _))
             throw new InvalidDataException();
@@ -242,6 +241,9 @@ internal sealed class T3LocalMetadataReader
         return output.ToArray();
     }
     private static bool IsLive(string status) => status is "queued" or "preparing" or "starting" or "running" or "waiting";
+    internal static bool IsSupportedLoopbackOrigin(Uri origin) => origin.Scheme == "http" && origin.IsLoopback
+        && string.IsNullOrEmpty(origin.UserInfo) && origin.AbsolutePath == "/"
+        && string.IsNullOrEmpty(origin.Query) && string.IsNullOrEmpty(origin.Fragment);
     private static bool IsPresent(JsonElement row, string name) => row.ValueKind == JsonValueKind.Object && row.TryGetProperty(name, out var value) && value.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
     private static string? Text(JsonElement row, string name) => row.ValueKind == JsonValueKind.Object && row.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     private static string RequiredId(JsonElement row, string name) => Text(row, name) is { Length: > 0 and <= 512 } value && !value.Any(char.IsControl) ? value : throw new InvalidDataException();

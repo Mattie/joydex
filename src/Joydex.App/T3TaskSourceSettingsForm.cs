@@ -118,7 +118,7 @@ internal sealed class T3TaskSourceSettingsForm : Form
         string environmentId, bool discovery = false, bool followDesktop = false) => new T3ConnectionOptions
     {
         Enabled = !discovery && enabled, SshHost = host, DisplayName = displayName,
-        EnvironmentId = discovery ? "" : environmentId, FollowDesktop = followDesktop
+        EnvironmentId = discovery && !followDesktop ? "" : environmentId, FollowDesktop = followDesktop
     }.Normalize();
 
     internal static string DescribeSourceStatuses(IEnumerable<T3ReadResult> sources) => string.Join(Environment.NewLine,

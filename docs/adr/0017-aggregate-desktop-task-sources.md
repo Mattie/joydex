@@ -62,6 +62,11 @@ The current-user protocol command takes precedence; the merged registration is u
 the user command is absent. Invalid overrides and failed file/product verification do not
 fall through to another executable. Read diagnostics retain safe verification stages and
 numeric CLI exit codes, excluding raw process output and exception details.
+When the fixed native registry probes confirm both protocol commands are absent, the
+current-user local server's runtime descriptor can identify one live executable instead.
+That process must match the current user and desktop session, have started no later than the
+descriptor's timestamp, and pass the same executable/product checks. This never scans by process name or
+overrides an invalid present registration. PID reuse and unavailable process evidence fail closed.
 This avoids a Windows application chooser when protocol dispatch fails despite an existing
 T3 registration. An unverified executable or failed launch acknowledges no question alerts.
 Shared physical New/Previous/Next/Stop actions inspect the foreground app. T3 dispatch requires

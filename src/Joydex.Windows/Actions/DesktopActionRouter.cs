@@ -185,7 +185,13 @@ public sealed partial class InstalledT3ForegroundResolver : IDesktopActionForegr
             var executable = VerifyProtocolRegistration(user is not null, user?.GetValue(null) as string, mergedCommand,
                 File.Exists, path => FileVersionInfo.GetVersionInfo(path).ProductName, out failureClass);
             if (executable is null && failureClass == "LocalCliRegistrationMissing")
+            {
                 failureClass = ProbeMissingRegistration();
+                if (TryParseMissingRegistrationDiagnostic(failureClass, out var userStatus, out var classesStatus, out var currentStatus)
+                    && userStatus == 2 && classesStatus == 2 && currentStatus == 2)
+                    executable = ResolveRuntimeWhenRegistrationMissing("LocalCliRegistrationMissing", T3RuntimeExecutableResolver.FindCurrentUserExecutable);
+                if (executable is not null) failureClass = null;
+            }
             return executable;
         }
         catch (Exception error) when (error is System.Security.SecurityException or UnauthorizedAccessException or IOException
@@ -195,6 +201,9 @@ public sealed partial class InstalledT3ForegroundResolver : IDesktopActionForegr
             return null;
         }
     }
+
+    internal static string? ResolveRuntimeWhenRegistrationMissing(string? failureClass, Func<string?> resolveRuntime) =>
+        failureClass == "LocalCliRegistrationMissing" ? resolveRuntime() : null;
 
     // Managed OpenSubKey returns null for several native failures, not only a
     // missing key. Probe just these two fixed paths after that exact failure.

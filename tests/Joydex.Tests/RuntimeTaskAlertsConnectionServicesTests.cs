@@ -4,6 +4,7 @@ using Joydex.Core.Config;
 using Joydex.Core.TaskAlerts;
 using Joydex.Core.Voice;
 using Joydex.Windows.TaskAlerts;
+using Joydex.Windows.T3;
 using Joydex.Core.T3;
 
 namespace Joydex.Tests;
@@ -156,7 +157,14 @@ public sealed class RuntimeTaskAlertsConnectionServicesTests
         Assert.Equal("saved-environment", saved.EnvironmentId);
         var discovery = T3TaskSourceSettingsForm.BuildOptions(true, "server", "source", "saved-environment", true, true);
         Assert.False(discovery.Enabled);
-        Assert.Equal("", discovery.EnvironmentId);
+        Assert.Equal("saved-environment", discovery.EnvironmentId);
+        var catalog = new T3DesktopDiscoveryResult(true, true,
+            [new("local", "Local", true, null, false),
+             new("saved-environment", "Remote", false, null, true, "Relay route needs a verified fallback", TransportKind: "relay")]);
+        var verified = Assert.Single(T3Reader.DesktopTestCandidates(catalog, discovery));
+        Assert.Equal("server", verified.SshHost);
+        Assert.Equal("saved-environment", verified.EnvironmentId);
+        Assert.Null(verified.UnsupportedReason);
     }
 
     [Fact]
