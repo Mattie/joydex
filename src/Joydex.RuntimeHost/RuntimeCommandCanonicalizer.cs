@@ -1,5 +1,6 @@
 using Joydex.Contracts;
 using Joydex.Core.Voice;
+using Joydex.Core.TaskAlerts;
 
 namespace Joydex.RuntimeHost;
 
@@ -67,7 +68,8 @@ internal static class RuntimeCommandCanonicalizer
             arguments.VoiceWakeTuning,
             continuationToken,
             pluginId,
-            NormalizeTaskAlertQuestions(arguments.TaskAlertQuestions));
+            NormalizeTaskAlertQuestions(arguments.TaskAlertQuestions),
+            arguments.T3Connection?.Normalize());
         return HasAny(normalized) ? normalized : null;
     }
 
@@ -75,6 +77,9 @@ internal static class RuntimeCommandCanonicalizer
         RuntimeCommandKind kind,
         RuntimeCommandArguments? arguments)
     {
+        if (arguments?.Task?.Identity?.Backend == TaskAlertBackend.RemoteT3
+            && kind != RuntimeCommandKind.NavigateToDesktopTask)
+            return "T3 targets support task navigation only; Codex messaging and Room Voice require a local Codex target.";
         bool Only(params string[] allowed)
         {
             var names = allowed.ToHashSet(StringComparer.Ordinal);
@@ -89,11 +94,14 @@ internal static class RuntimeCommandCanonicalizer
                        && (arguments.VoiceWakeTuning is null || names.Contains(nameof(arguments.VoiceWakeTuning)))
                        && (arguments.ContinuationToken is null || names.Contains(nameof(arguments.ContinuationToken)))
                        && (arguments.PluginId is null || names.Contains(nameof(arguments.PluginId)))
-                       && (arguments.TaskAlertQuestions is null || names.Contains(nameof(arguments.TaskAlertQuestions))));
+                       && (arguments.TaskAlertQuestions is null || names.Contains(nameof(arguments.TaskAlertQuestions)))
+                       && (arguments.T3Connection is null || names.Contains(nameof(arguments.T3Connection))));
         }
 
         var valid = kind switch
         {
+            RuntimeCommandKind.TestT3Connection or RuntimeCommandKind.SetupT3Shortcuts or RuntimeCommandKind.RemoveT3Shortcuts =>
+                arguments?.T3Connection is not null && Only(nameof(arguments.T3Connection)),
             RuntimeCommandKind.DismissTaskAlertQuestions =>
                 arguments?.TaskAlertQuestions is not null && Only(nameof(arguments.TaskAlertQuestions)),
             RuntimeCommandKind.AdoptExternalSettings =>
@@ -140,9 +148,10 @@ internal static class RuntimeCommandCanonicalizer
     {
         if (questions is null) return null;
         if (questions.Slot is < 1 or > 10 || string.IsNullOrWhiteSpace(questions.SessionId)
-            || questions.SessionId.Length > 512 || questions.QuestionKeys is not { Length: > 0 and <= 1024 }
+            || questions.SessionId.Length > 8192 || questions.QuestionKeys is not { Length: > 0 and <= 1024 }
             || questions.QuestionKeys.Any(key => key is not { Length: 64 } || !key.All(Uri.IsHexDigit)))
             throw new ArgumentException("The selected task question alerts are invalid.");
+        TaskAlertIdentity.FromPoolKey(questions.SessionId).Validate();
         return questions with
         {
             QuestionKeys = questions.QuestionKeys.Select(key => key.ToUpperInvariant())
@@ -156,11 +165,23 @@ internal static class RuntimeCommandCanonicalizer
         {
             return null;
         }
+        task.Identity?.Validate();
+        if (task.Identity is { Backend: TaskAlertBackend.RemoteT3 } identity)
+        {
+            identity.Validate();
+            if (task.TaskId != identity.NativeThreadId || task.HostId != identity.EnvironmentId)
+                throw new ArgumentException("The task identity does not match its source.");
+            return task;
+        }
         if (!CodexTaskReference.TryParse(task.TaskId, out var taskId))
         {
             throw new ArgumentException("A valid Codex task ID is required.");
         }
         ArgumentException.ThrowIfNullOrWhiteSpace(task.HostId);
+        if (task.Identity is { } localIdentity
+            && (!CodexTaskReference.TryParse(localIdentity.NativeThreadId, out var identityTaskId)
+                || identityTaskId != taskId || !string.Equals(task.HostId.Trim(), "local", StringComparison.OrdinalIgnoreCase)))
+            throw new ArgumentException("The task identity does not match its local Codex target.");
         return new RuntimeTaskReference(taskId, task.HostId.Trim());
     }
 
@@ -244,5 +265,6 @@ internal static class RuntimeCommandCanonicalizer
         || arguments.VoiceWakeTuning is not null
         || arguments.ContinuationToken is not null
         || arguments.PluginId is not null
-        || arguments.TaskAlertQuestions is not null;
+        || arguments.TaskAlertQuestions is not null
+        || arguments.T3Connection is not null;
 }

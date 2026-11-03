@@ -25,6 +25,7 @@ internal sealed class TaskAlertsForm : ThemedForm
     private readonly Label _bank;
     private readonly Label _dropped;
     private readonly Label _telemetry;
+    private readonly Label _t3SourceStatus;
     private readonly RoundedButton _telemetryToggle;
     private readonly ToolTip _toolTips = new();
     private readonly ModernDataGridView _assignments;
@@ -179,7 +180,7 @@ internal sealed class TaskAlertsForm : ThemedForm
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
             Dock = DockStyle.Top,
-            RowCount = 4,
+            RowCount = 5,
         };
         summaryLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         summaryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -187,17 +188,29 @@ internal sealed class TaskAlertsForm : ThemedForm
         summaryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         summaryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         summaryLayout.Controls.Add(_clearQuestionsOnTurnEnd, 0, 3);
+        summaryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _t3SourceStatus = new Label
+        {
+            AccessibleName = "T3 source and shortcut status",
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 4, 0, 0),
+            Tag = ThemeTone.Subtle,
+            Visible = false,
+        };
+        summaryLayout.Controls.Add(_t3SourceStatus, 0, 4);
 
         var summaryHeader = new TableLayoutPanel
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            ColumnCount = 5,
+            ColumnCount = 6,
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             RowCount = 1,
         };
         summaryHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        summaryHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         summaryHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         summaryHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         summaryHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -218,6 +231,16 @@ internal sealed class TaskAlertsForm : ThemedForm
             Margin = new Padding(0, 7, 0, 0),
         };
         summaryHeader.Controls.Add(_bank, 2, 0);
+        var t3Settings = new Button { Text = "T3 desktop…", AutoSize = true, Enabled = _runtimeServices is not null };
+        t3Settings.Click += (_, _) =>
+        {
+            if (_runtimeServices is not null)
+            {
+                using var form = new T3TaskSourceSettingsForm(_runtimeServices);
+                form.ShowDialog(this);
+            }
+        };
+        summaryHeader.Controls.Add(t3Settings, 5, 0);
         summaryHeader.Controls.Add(new Label
         {
             Text = "Dropped events:",
@@ -310,9 +333,11 @@ internal sealed class TaskAlertsForm : ThemedForm
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Control", HeaderText = "Control", FillWeight = 70, MinimumWidth = 110 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "State", HeaderText = "State", FillWeight = 60, MinimumWidth = 100 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Color", HeaderText = "Color", FillWeight = 55, MinimumWidth = 95 });
-        _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Session", HeaderText = "Task ID", FillWeight = 125, MinimumWidth = 230 });
+        _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Session", HeaderText = "Task", FillWeight = 125, MinimumWidth = 230 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Workspace", HeaderText = "Workspace", FillWeight = 90, MinimumWidth = 150 });
         _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "RoutingTarget", HeaderText = "Routing target", FillWeight = 210, MinimumWidth = 320 });
+        _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Source", HeaderText = "Application / source", FillWeight = 90, MinimumWidth = 150 });
+        _assignments.Columns.Add(new DataGridViewTextBoxColumn { Name = "Model", HeaderText = "Provider / model", FillWeight = 100, MinimumWidth = 150 });
 
         _events = new ModernDataGridView
         {
@@ -411,7 +436,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         _ignoreSelected = new RoundedButton
         {
             AccessibleDescription = "Opens a menu for choosing task or workspace scope.",
-            AccessibleName = "Choose ignore scope for selected Codex task source",
+            AccessibleName = "Choose ignore scope for selected task source",
             Enabled = false,
             Margin = new Padding(0, 0, 8, 0),
             Text = "Ignore selected ▾",
@@ -428,7 +453,7 @@ internal sealed class TaskAlertsForm : ThemedForm
         _dismissSelectedQuestions.Click += OnDismissQuestions;
         _ignoredSources = new RoundedButton
         {
-            AccessibleName = "Manage ignored Codex task status sources",
+            AccessibleName = "Manage ignored task status sources",
             Text = "Ignored sources (0)",
         };
         _ignoredSources.Click += (_, _) => ShowIgnoredSources();
@@ -805,6 +830,32 @@ internal sealed class TaskAlertsForm : ThemedForm
         {
             _enabled.Checked = snapshot.Enabled;
             _clearQuestionsOnTurnEnd.Checked = snapshot.ClearQuestionsOnTurnEnd;
+            var remoteTasks = snapshot.Assignments.Where(task => task.TaskIdentity.Backend == TaskAlertBackend.RemoteT3).ToArray();
+            var showT3Status = snapshot.T3Status is not null || snapshot.T3Statuses is { Count: > 0 } || remoteTasks.Length > 0;
+            _t3SourceStatus.Visible = showT3Status;
+            if (snapshot.T3Statuses is { Count: > 0 } sources)
+            {
+                _t3SourceStatus.Text = T3TaskSourceSettingsForm.DescribeSourceStatuses(sources.Take(4))
+                    + (sources.Count > 4 ? $"{Environment.NewLine}{sources.Count - 4} more environments · Open T3 desktop settings for details." : "");
+                _toolTips.SetToolTip(_t3SourceStatus, string.Join(Environment.NewLine, sources.Select(source =>
+                    (string.IsNullOrWhiteSpace(source.DisplayName) ? "T3" : source.DisplayName) + ": "
+                    + (source.CapturedAt > DateTimeOffset.UnixEpoch
+                        ? $"Last metadata read {source.CapturedAt.ToLocalTime():g}. " : "No current metadata read. ")
+                    + (source.Reason ?? "Shared shortcuts unavailable: desktop context unverified."))));
+            }
+            else if (showT3Status)
+            {
+                var health = snapshot.T3Status is { Success: true } status
+                    ? (!status.IsComplete || remoteTasks.Any(task => task.SourceUnavailable) ? "connected (partial)" : "connected")
+                    : "unavailable";
+                var sourceName = string.IsNullOrWhiteSpace(snapshot.T3Status?.DisplayName) ? "T3" : $"T3 / {snapshot.T3Status.DisplayName}";
+                _t3SourceStatus.Text = $"{sourceName} {health} · Shared shortcuts unavailable: desktop context unverified.";
+                var freshness = snapshot.T3Status?.CapturedAt > DateTimeOffset.UnixEpoch
+                    ? $"Last metadata read: {snapshot.T3Status.CapturedAt.ToLocalTime():g}"
+                    : "No current metadata read.";
+                _toolTips.SetToolTip(_t3SourceStatus, string.Join(Environment.NewLine,
+                    new[] { freshness, snapshot.T3Status?.Reason }.Where(value => !string.IsNullOrWhiteSpace(value))));
+            }
             _bank.Text = snapshot.BankAutomaticallyDetected
                 ? $"M{snapshot.Bank} (automatic)"
                 : $"M{snapshot.Bank} (fallback)";
@@ -840,19 +891,22 @@ internal sealed class TaskAlertsForm : ThemedForm
                     page == TaskAlertPage.Primary
                         ? $"M2-M4 B{TaskAlertSlots.Button(assignment.Slot)}"
                         : $"M1 B{TaskAlertSlots.Button(assignment.Slot)}",
-                    assignment.State.ToString().ToLowerInvariant(),
+                    assignment.State.ToString().ToLowerInvariant() + (assignment.SourceUnavailable ? " (stale)" : ""),
                     $"{color.Red:X2} {color.Green:X2} {color.Blue:X2}",
-                    assignment.SessionId,
-                    DisplayWorkspace(assignment.Workspace),
-                    TaskDeepLinkNavigator.BuildUri(assignment.SessionId));
+                    assignment.Metadata?.Title ?? assignment.TaskIdentity.NativeThreadId,
+                    assignment.Metadata?.Project ?? DisplayWorkspace(assignment.Workspace),
+                    TaskDeepLinkNavigator.BuildUri(assignment.TaskIdentity),
+                    SourceDisplayName(snapshot, assignment.TaskIdentity),
+                    string.Join(" / ", new[] { assignment.Metadata?.Provider, assignment.Metadata?.Model }.Where(value => !string.IsNullOrWhiteSpace(value))));
                 _assignments.Rows[rowIndex].Tag = new SuppressionTarget(
                     assignment.SessionId,
-                    assignment.Workspace);
-                _assignments.Rows[rowIndex].Cells["Session"].ToolTipText = assignment.SessionId;
+                    assignment.Workspace, assignment.Metadata?.Title, SourceDisplayName(snapshot, assignment.TaskIdentity));
+                _assignments.Rows[rowIndex].Cells["Session"].ToolTipText = DescribeTaskSource(assignment.SessionId);
+                _assignments.Rows[rowIndex].Cells["Source"].ToolTipText = assignment.TaskIdentity.EnvironmentId;
                 _assignments.Rows[rowIndex].Cells["Workspace"].ToolTipText =
                     assignment.Workspace ?? "Workspace metadata will appear after the next event.";
                 _assignments.Rows[rowIndex].Cells["RoutingTarget"].ToolTipText =
-                    TaskDeepLinkNavigator.BuildUri(assignment.SessionId);
+                    TaskDeepLinkNavigator.BuildUri(assignment.TaskIdentity);
             }
 
             _events.Rows.Clear();
@@ -880,8 +934,8 @@ internal sealed class TaskAlertsForm : ThemedForm
             var suppressionCount = snapshot.Suppressions?.Count ?? 0;
             _ignoredSources.Text = $"Ignored sources ({suppressionCount})";
             _ignoredSources.AccessibleName = suppressionCount == 1
-                ? "Manage 1 ignored Codex task status source"
-                : $"Manage {suppressionCount} ignored Codex task status sources";
+                ? "Manage 1 ignored task status source"
+                : $"Manage {suppressionCount} ignored task status sources";
             UpdateSuppressionActions();
         }
         finally
@@ -904,13 +958,14 @@ internal sealed class TaskAlertsForm : ThemedForm
             return;
         }
 
-        var workspace = DisplayWorkspace(target.Workspace);
-        _selectedSource.Text = $"Selected: {workspace} / {CompactTaskId(target.SessionId)}";
+        var identity = TaskAlertIdentity.FromPoolKey(target.SessionId);
+        var source = target.SourceName ?? (identity.Backend == TaskAlertBackend.RemoteT3 ? $"T3 / {identity.EnvironmentId}" : "Codex / local");
+        _selectedSource.Text = $"Selected: {source} / {target.Title ?? CompactTaskId(identity.NativeThreadId)}";
         _toolTips.SetToolTip(
             _selectedSource,
             string.IsNullOrWhiteSpace(target.Workspace)
-                ? target.SessionId
-                : $"{target.Workspace}\n{target.SessionId}");
+                ? DescribeTaskSource(target.SessionId)
+                : $"{target.Workspace}\n{DescribeTaskSource(target.SessionId)}");
     }
 
     private SuppressionTarget? GetSelectedTarget()
@@ -964,9 +1019,9 @@ internal sealed class TaskAlertsForm : ThemedForm
         {
             AccessibleName = "Ignore selected task status source",
         };
-        var taskItem = new ToolStripMenuItem($"This task · {CompactTaskId(target.SessionId)}")
+        var taskItem = new ToolStripMenuItem($"This task · {target.Title ?? CompactTaskId(TaskAlertIdentity.FromPoolKey(target.SessionId).NativeThreadId)}")
         {
-            ToolTipText = target.SessionId,
+            ToolTipText = DescribeTaskSource(target.SessionId),
         };
         taskItem.Click += (_, _) => IgnoreSelectedTask(target);
         var workspaceAvailable = !string.IsNullOrWhiteSpace(target.Workspace);
@@ -1013,10 +1068,11 @@ internal sealed class TaskAlertsForm : ThemedForm
 
     private async void IgnoreSelectedTask(SuppressionTarget target)
     {
+        var backend = TaskAlertIdentity.FromPoolKey(target.SessionId).Backend == TaskAlertBackend.RemoteT3 ? "T3" : "Codex";
         if (MessageBox.Show(
-                $"Ignore this exact Codex task?\n\n{target.SessionId}\n\n" +
+                $"Ignore this exact {backend} task?\n\n{target.Title}\n{DescribeTaskSource(target.SessionId)}\n\n" +
                 "The rule stays active after Joydex restarts until you re-enable it.",
-                "Ignore Codex task",
+                $"Ignore {backend} task",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question,
                 MessageBoxDefaultButton.Button2) != DialogResult.Yes)
@@ -1086,6 +1142,20 @@ internal sealed class TaskAlertsForm : ThemedForm
     private static string CompactTaskId(string sessionId) => sessionId.Length <= 20
         ? sessionId
         : $"{sessionId[..12]}...";
+
+    internal static string DescribeTaskSource(string sessionId)
+    {
+        var identity = TaskAlertIdentity.FromPoolKey(sessionId);
+        return identity.Backend == TaskAlertBackend.RemoteT3
+            ? $"T3 / {identity.EnvironmentId}\n{identity.NativeThreadId}"
+            : $"Codex / local\n{identity.NativeThreadId}";
+    }
+
+    private static string SourceDisplayName(TaskAlertSnapshot snapshot, TaskAlertIdentity identity) =>
+        identity.Backend == TaskAlertBackend.LocalCodex ? "Codex / local"
+        : (snapshot.T3Statuses?.FirstOrDefault(source => source.EnvironmentId == identity.EnvironmentId)
+            ?? snapshot.T3Status) is { } status && status.EnvironmentId == identity.EnvironmentId && !string.IsNullOrWhiteSpace(status.DisplayName)
+            ? "T3 / " + status.DisplayName : "T3 / " + identity.EnvironmentId;
 
     private static string DisplayWorkspace(string? workspace)
     {
@@ -1406,5 +1476,5 @@ internal sealed class TaskAlertsForm : ThemedForm
         Func<RuntimeTaskAlertQuestionDismissal, Guid, Task> DismissQuestions,
         Func<bool, Guid, Task> SetClearQuestionsOnTurnEnd);
 
-    private sealed record SuppressionTarget(string SessionId, string? Workspace);
+    private sealed record SuppressionTarget(string SessionId, string? Workspace, string? Title = null, string? SourceName = null);
 }

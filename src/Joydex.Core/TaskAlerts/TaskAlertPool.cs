@@ -1,6 +1,6 @@
 namespace Joydex.Core.TaskAlerts;
 
-public sealed class TaskAlertPool
+public sealed partial class TaskAlertPool
 {
     public static readonly TimeSpan StopGrace = TimeSpan.FromSeconds(1);
     public static readonly TimeSpan BackfillDelay = TimeSpan.FromSeconds(5);
@@ -51,9 +51,10 @@ public sealed class TaskAlertPool
                     pending?.CaptureAsyncQuestions() ?? [], assignment.ObservedActiveAt,
                     pending?.CaptureQuestionOrigins() ?? [],
                     _deferredQuestions.GetValueOrDefault(assignment.SessionId)?.Values.ToArray() ?? [],
-                    assignment.TurnBoundaryAt);
+                    assignment.TurnBoundaryAt, assignment.Identity?.Backend == TaskAlertBackend.RemoteT3 ? assignment.Identity : null,
+                    assignment.LatestHumanUserTurnAt);
             })
-            .ToArray());
+            .ToArray(), _sourceAcknowledgements.Count == 0 ? null : _sourceAcknowledgements.ToArray());
 
     /// <summary>
     /// Replaces current assignments from a validated, all-or-nothing restart snapshot.
@@ -66,12 +67,17 @@ public sealed class TaskAlertPool
             throw new InvalidDataException("The task-alert state has an invalid assignment list.");
         }
 
+        var restoredAcknowledgements = ValidateSourceAcknowledgements(state.SourceAcknowledgements);
         var restoredAssignments = new Dictionary<int, TaskAlertAssignment>();
         var restoredPending = new Dictionary<string, PendingAttention>(StringComparer.Ordinal);
         var restoredDeferred = new Dictionary<string, Dictionary<string, TaskAlertQuestionOrigin>>(StringComparer.Ordinal);
         var sessions = new HashSet<string>(StringComparer.Ordinal);
         foreach (var stored in state.Assignments)
         {
+            if (stored?.Identity is { } identity && identity.PoolKey != stored.SessionId)
+                throw new InvalidDataException("Task-alert identity does not match its pool key.");
+            if (stored is { Identity: null } && !TaskAlertIdentity.IsNativeId(stored.SessionId))
+                throw new InvalidDataException("Task-alert state has no valid native identity.");
             if (stored is null
                 || stored.Slot is < 1 or > 10
                 || string.IsNullOrWhiteSpace(stored.SessionId)
@@ -79,6 +85,7 @@ public sealed class TaskAlertPool
                 || stored.UpdatedAt == default
                 || stored.ObservedActiveAt == default(DateTimeOffset)
                 || stored.TurnBoundaryAt == default(DateTimeOffset)
+                || stored.LatestHumanUserTurnAt == default(DateTimeOffset)
                 || stored.WorkspaceKey is not null
                     && !TaskAlertSuppression.IsWorkspaceKey(stored.WorkspaceKey)
                 || stored.CompleteAfter is { } completeAfter
@@ -93,7 +100,8 @@ public sealed class TaskAlertPool
                         stored.State,
                         stored.UpdatedAt,
                         stored.CompleteAfter,
-                        stored.WorkspaceKey, ObservedActiveAt: stored.ObservedActiveAt, TurnBoundaryAt: stored.TurnBoundaryAt))
+                        stored.WorkspaceKey, ObservedActiveAt: stored.ObservedActiveAt, TurnBoundaryAt: stored.TurnBoundaryAt,
+                        Identity: stored.Identity, LatestHumanUserTurnAt: stored.LatestHumanUserTurnAt))
                 || !sessions.Add(stored.SessionId))
             {
                 throw new InvalidDataException("The task-alert state contains an invalid assignment.");
@@ -130,6 +138,9 @@ public sealed class TaskAlertPool
             }
         }
 
+        _sourceAcknowledgements.Clear();
+        _sourceAcknowledgements.AddRange(restoredAcknowledgements);
+        _sourceCursors.Clear();
         _assignments.Clear();
         foreach (var pair in restoredAssignments)
         {
@@ -154,7 +165,7 @@ public sealed class TaskAlertPool
     public bool Apply(TaskAlertEvent taskEvent)
     {
         ArgumentNullException.ThrowIfNull(taskEvent);
-        if (!Enabled || string.IsNullOrWhiteSpace(taskEvent.SessionId))
+        if (!Enabled || !TaskAlertIdentity.IsNativeId(taskEvent.SessionId))
         {
             return false;
         }
@@ -407,6 +418,7 @@ public sealed class TaskAlertPool
             return false;
         }
 
+        RememberSourceAcknowledgement(assignment, null, assignment.TurnId, acknowledgedAt);
         _pendingAttention.Remove(assignment.SessionId);
         _deferredQuestions.Remove(assignment.SessionId);
         _assignments.Remove(slot);
@@ -435,7 +447,15 @@ public sealed class TaskAlertPool
             || !_pendingAttention.TryGetValue(sessionId, out var pending)) return false;
 
         var changed = false;
-        foreach (var key in questionKeys) changed |= pending.CompleteAsyncQuestion(key);
+        foreach (var key in questionKeys)
+        {
+            var origin = pending.CaptureQuestionOrigins().FirstOrDefault(question => question.Key == key);
+            if (origin is not null && pending.CompleteAsyncQuestion(key))
+            {
+                RememberSourceAcknowledgement(existing, key, origin.TurnId, dismissedAt);
+                changed = true;
+            }
+        }
         if (!changed) return false;
         // Hooks already received by the runtime may still be queued. A UI action must not
         // advance their ordering watermark and make a real, earlier hook look out of order.
@@ -448,7 +468,7 @@ public sealed class TaskAlertPool
     {
         ArgumentNullException.ThrowIfNull(observation);
         var active = observation.State is TaskAlertState.Running or TaskAlertState.Approval;
-        if (!Enabled || string.IsNullOrWhiteSpace(observation.SessionId) || observation.SessionId.Length > 512
+        if (!Enabled || !TaskAlertIdentity.IsNativeId(observation.SessionId)
             || string.IsNullOrWhiteSpace(observation.TurnId) || observation.TurnId.Length > 512
             || !Enum.IsDefined(observation.State) || observation.StartedAt == default
             || observation.StartedAt > observedAt.AddSeconds(5)
@@ -515,6 +535,7 @@ public sealed class TaskAlertPool
         }
 
         Enabled = enabled;
+        _sourceCursors.Clear();
         _assignments.Clear();
         _backfillAfter.Clear();
         _pendingAttention.Clear();
@@ -882,6 +903,8 @@ public sealed class TaskAlertPool
 
             _correlated[key!] = _correlated.GetValueOrDefault(key!) + 1;
         }
+
+        public void AddOnce(string key) => _correlated.TryAdd(key, 1);
 
         public bool Complete(string key)
         {

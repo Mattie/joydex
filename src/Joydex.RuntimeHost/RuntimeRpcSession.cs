@@ -1,5 +1,6 @@
 using Joydex.Contracts;
 using Joydex.Core.Input;
+using Joydex.Core.TaskAlerts;
 
 namespace Joydex.RuntimeHost;
 
@@ -132,7 +133,7 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
                 identity,
                 attached.Snapshot,
                 _engine.GetInputSnapshot(ConnectionId),
-                negotiatedMinor >= 1 ? _engine.GetUiSnapshot() : null,
+                negotiatedMinor >= 1 ? FilterUi(_engine.GetUiSnapshot()) : null,
                 inputEventCursor);
             lock (_gate)
             {
@@ -176,16 +177,27 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
             _engine.GetIdentitySnapshot(),
             settings,
             _engine.GetInputSnapshot(ConnectionId),
-            _negotiatedProtocolMinor >= 1 ? _engine.GetUiSnapshot() : null,
+            _negotiatedProtocolMinor >= 1 ? FilterUi(_engine.GetUiSnapshot()) : null,
             inputEventCursor);
     }
 
-    public Task<PrepareSettingsResult> PrepareSettingsAsync(
+    public async Task<PrepareSettingsResult> PrepareSettingsAsync(
         PrepareSettingsRequest request,
         CancellationToken cancellationToken)
     {
         EnsureAttached();
-        return _engine.PrepareSettingsAsync(ConnectionId, request, cancellationToken);
+        ArgumentNullException.ThrowIfNull(request);
+        if (_negotiatedProtocolMinor < 5 && request.Patch?.TaskAlerts is { } taskAlerts)
+        {
+            var current = await _engine.GetSettingsSnapshotAsync(ConnectionId, cancellationToken).ConfigureAwait(false);
+            if (_negotiatedProtocolMinor < 4 && (HasT3Configuration(current.Desired.TaskAlerts) || HasT3Configuration(current.Active.TaskAlerts)
+                || HasT3Configuration(taskAlerts)))
+                throw new InvalidOperationException("The negotiated runtime protocol cannot update Task Alerts while T3 is configured. Reconnect with an aggregate-tasks capable settings client.");
+            if (current.Desired.TaskAlerts.T3?.FollowDesktop is true || current.Active.TaskAlerts.T3?.FollowDesktop is true
+                || taskAlerts.T3?.FollowDesktop is true)
+                throw new InvalidOperationException("The negotiated runtime protocol cannot update Task Alerts while following T3 desktop environments. Reconnect with a desktop-sources capable settings client.");
+        }
+        return await _engine.PrepareSettingsAsync(ConnectionId, request, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<ApplySettingsResult> ApplySettingsAsync(
@@ -419,12 +431,24 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
 
     private RuntimeEvent ForNegotiatedProtocol(RuntimeEvent runtimeEvent) =>
         _negotiatedProtocolMinor >= 1 || !IsUiEvent(runtimeEvent.Kind)
-            ? runtimeEvent
+            ? runtimeEvent with { TaskAlerts = FilterAlerts(runtimeEvent.TaskAlerts) }
             : new RuntimeEvent(
                 runtimeEvent.EngineEpoch,
                 runtimeEvent.Sequence,
                 RuntimeEventKind.RuntimeIdentityChanged,
                 Identity: _compatibilityIdentity);
+
+    private RuntimeUiSnapshot? FilterUi(RuntimeUiSnapshot? snapshot) => snapshot is null ? null :
+        snapshot with { TaskAlerts = FilterAlerts(snapshot.TaskAlerts) };
+
+    private RuntimeTaskAlertSnapshot? FilterAlerts(RuntimeTaskAlertSnapshot? snapshot) =>
+        snapshot is null || _negotiatedProtocolMinor >= 5 ? snapshot : snapshot with
+        {
+            Assignments = _negotiatedProtocolMinor >= 4 ? snapshot.Assignments
+                : snapshot.Assignments.Where(task => task.TaskIdentity.Backend == TaskAlertBackend.LocalCodex).ToArray(),
+            T3Status = _negotiatedProtocolMinor >= 4 ? snapshot.T3Status : null,
+            T3Statuses = null,
+        };
 
     private static bool IsUiEvent(RuntimeEventKind kind) => kind is
         RuntimeEventKind.PromptPickerChanged or
@@ -489,6 +513,16 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
     private void ValidateCommandAuthorization(RuntimeCommandRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (_negotiatedProtocolMinor < 5 && request.Arguments?.T3Connection?.FollowDesktop is true)
+            throw new InvalidOperationException("The negotiated runtime protocol does not support T3 desktop environment discovery.");
+        if (_negotiatedProtocolMinor < 4
+            && (request.Kind is RuntimeCommandKind.TestT3Connection or RuntimeCommandKind.SetupT3Shortcuts
+                    or RuntimeCommandKind.RemoveT3Shortcuts
+                || request.Arguments?.T3Connection is not null
+                || request.Arguments?.Task?.Identity is { Backend: not TaskAlertBackend.LocalCodex }
+                || IsRemoteTaskKey(request.Arguments?.Task?.TaskId)
+                || IsRemoteTaskKey(request.Arguments?.TaskAlertQuestions?.SessionId)))
+            throw new InvalidOperationException("The negotiated runtime protocol does not support aggregate T3 task commands.");
         if (IsPluginManagementCommand(request.Kind) && _negotiatedProtocolMinor < 3)
         {
             throw new InvalidOperationException(
@@ -502,6 +536,17 @@ internal sealed class RuntimeRpcSession : IRuntimeRpcServer, IAsyncDisposable
                     ? "Only the tray client may open settings."
                     : "Only the tray client may stop the runtime.");
         }
+    }
+
+    private static bool HasT3Configuration(TaskAlertPreferences preferences) => preferences.T3 is { } t3
+        && (t3.Enabled || t3.FollowDesktop || !string.IsNullOrWhiteSpace(t3.SshHost) || !string.IsNullOrWhiteSpace(t3.EnvironmentId)
+            || !string.IsNullOrWhiteSpace(t3.DisplayName));
+
+    private static bool IsRemoteTaskKey(string? key)
+    {
+        if (key is null || key.Length > TaskAlertSuppression.MaximumEncodedTaskIdLength) return false;
+        try { return TaskAlertIdentity.FromPoolKey(key).Backend == TaskAlertBackend.RemoteT3; }
+        catch (InvalidDataException) { return false; }
     }
 
     private static bool IsPluginManagementCommand(RuntimeCommandKind kind) => kind is

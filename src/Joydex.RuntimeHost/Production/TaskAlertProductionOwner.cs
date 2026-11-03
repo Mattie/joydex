@@ -16,7 +16,10 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
     private readonly TaskAlertPipeServer _pipe;
     private readonly VirpilProductionPlugin _virpil;
     private readonly TaskAlertReconciler _reconciler;
+    private readonly T3TaskAlertMonitor? _t3Monitor;
+    private readonly T3DesktopTaskAlertMonitor? _t3DesktopMonitor;
     private ProductionDesktopBrokerLease? _desktopBrokerLease;
+    private DateTimeOffset _nextMetadataRead;
     private readonly TaskCompletionSource _ownedCompletion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _completion;
@@ -29,7 +32,8 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
         ProductionWindowsStaHost windowsSta,
         TaskAlertCoordinator coordinator,
         TaskAlertPipeServer pipe,
-        VirpilProductionPlugin virpil)
+        VirpilProductionPlugin virpil,
+        Joydex.Core.T3.T3ConnectionOptions? t3 = null)
     {
         _factory = factory;
         _windowsSta = windowsSta;
@@ -37,7 +41,11 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
         _pipe = pipe;
         _virpil = virpil;
         _reconciler = new TaskAlertReconciler(coordinator, ReadDesktopAsync, factory.WriteLog);
-        _completion = Task.WhenAny(_ownedCompletion.Task, windowsSta.Completion, pipe.Completion, _reconciler.Completion).Unwrap();
+        if (t3 is { Enabled: true, FollowDesktop: true }) _t3DesktopMonitor = new(coordinator, t3, factory.WriteLog);
+        else if (t3 is { Enabled: true }) _t3Monitor = new(coordinator, t3, factory.WriteLog);
+        _completion = Task.WhenAny(_ownedCompletion.Task, windowsSta.Completion, pipe.Completion,
+            _reconciler.Completion, _t3Monitor?.Completion ?? _ownedCompletion.Task,
+            _t3DesktopMonitor?.Completion ?? _ownedCompletion.Task).Unwrap();
     }
 
     public SettingsAggregateId Aggregate => SettingsAggregateId.TaskAlerts;
@@ -83,12 +91,14 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
 
             pipe = new TaskAlertPipeServer(coordinator, factory.WriteLog);
             virpil = VirpilProductionPlugin.Start(coordinator, paths, factory.WriteLog, generation);
-            owner = new TaskAlertProductionOwner(factory, windowsSta, coordinator, pipe, virpil);
+            owner = new TaskAlertProductionOwner(factory, windowsSta, coordinator, pipe, virpil, activeSettings.TaskAlerts.T3);
             coordinator.Changed += owner.OnChanged;
             SystemEvents.PowerModeChanged += owner.OnPowerModeChanged;
             SystemEvents.SessionEnding += owner.OnSessionEnding;
             pipe.Start();
             owner._reconciler.Start();
+            owner._t3Monitor?.Start();
+            owner._t3DesktopMonitor?.Start();
             return owner;
         }
         catch (Exception startupFailure)
@@ -106,6 +116,10 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
             }
             if (owner is not null)
             {
+                try { owner._t3DesktopMonitor?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                catch (Exception exception) { cleanupFailures.Add(exception); }
+                try { owner._t3Monitor?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                catch (Exception exception) { cleanupFailures.Add(exception); }
                 try { owner._reconciler.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
                 catch (Exception exception) { cleanupFailures.Add(exception); }
                 if (owner._desktopBrokerLease is not null)
@@ -151,6 +165,8 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
         _factory.ClearTaskAlerts(this);
         _coordinator.Changed -= OnChanged;
         var failures = new List<Exception>();
+        if (_t3Monitor is not null) await TryDisposeAsync(_t3Monitor, failures);
+        if (_t3DesktopMonitor is not null) await TryDisposeAsync(_t3DesktopMonitor, failures);
         await TryDisposeAsync(_reconciler, failures);
         if (_desktopBrokerLease is not null) await TryDisposeAsync(_desktopBrokerLease, failures);
         await TryDisposeAsync(_pipe, failures);
@@ -170,8 +186,20 @@ internal sealed class TaskAlertProductionOwner : IProductionRuntimeOwner
     private async Task<TaskAlertDesktopSnapshot> ReadDesktopAsync(IReadOnlyList<string> knownTaskIds, CancellationToken token)
     {
         _desktopBrokerLease ??= await _factory.AcquireTaskAlertDesktopBrokerAsync(token).ConfigureAwait(false);
-        return await new DesktopTaskBridgeClient(_desktopBrokerLease.PipeName)
-            .ReadTaskAlertSnapshotAsync(knownTaskIds, token).ConfigureAwait(false);
+        var client = new DesktopTaskBridgeClient(_desktopBrokerLease.PipeName);
+        var snapshot = await client.ReadTaskAlertSnapshotAsync(knownTaskIds, token).ConfigureAwait(false);
+        if (DateTimeOffset.UtcNow < _nextMetadataRead) return snapshot;
+        _nextMetadataRead = DateTimeOffset.UtcNow.AddSeconds(30);
+        try
+        {
+            var catalog = await client.ListTasksAsync(knownTaskIds[0], cancellationToken: token).ConfigureAwait(false);
+            _coordinator.SetTaskMetadata(catalog.Tasks.Select(task => KeyValuePair.Create(task.Id,
+                new TaskAlertMetadata(task.Title, task.ProjectId))));
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or TimeoutException
+            or System.Text.Json.JsonException or ArgumentException)
+        { _factory.WriteLog("Codex task labels are unavailable (" + error.GetType().Name + ")."); }
+        return snapshot;
     }
 
     private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs eventArgs)

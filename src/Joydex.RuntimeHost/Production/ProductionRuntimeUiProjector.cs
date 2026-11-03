@@ -155,7 +155,9 @@ internal sealed class ProductionRuntimeUiProjector
                 .ToArray(),
             (snapshot.Suppressions ?? []).ToArray(),
             snapshot.EffectiveLedOutput,
-            hooks);
+            hooks,
+            snapshot.T3Status,
+            snapshot.T3Statuses?.ToArray());
         lock (_gate)
         {
             _taskAlerts = projected;

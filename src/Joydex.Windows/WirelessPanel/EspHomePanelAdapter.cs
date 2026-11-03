@@ -575,7 +575,8 @@ public sealed class EspHomePanelAdapter : IAsyncDisposable
             slot,
             bank,
             TaskAlertSlots.Button(slot),
-            assignment.SessionId);
+            assignment.SessionId,
+            assignment.TaskIdentity);
         if (!await _navigator.NavigateAsync(navigation, cancellationToken).ConfigureAwait(false))
         {
             return;

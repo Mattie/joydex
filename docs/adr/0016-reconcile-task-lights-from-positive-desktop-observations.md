@@ -61,8 +61,9 @@ and terminal acknowledgments retain authority. Acknowledged turns cannot be resu
 lagging active observation during the same runtime lifetime. Positive active observations renew
 a separate persisted lease heartbeat; they do not advance hook ordering timestamps.
 
-The broker projects only task/turn identity, lifecycle timestamps and workspace identity. It
-does not forward titles, messages or tool output into task alerts. Oversized projected frames
+The lifecycle broker projects only task/turn identity, lifecycle timestamps and workspace identity.
+ADR 0017 adds a separate private display-metadata cache populated from the existing task catalog;
+those labels never become lifecycle evidence. Messages and tool output stay outside task alerts. Oversized projected frames
 omit workspace paths while retaining their ignore hashes. Unknown states and transport failures
 produce content-free diagnostics; hooks continue independently. Scans run roughly every five
 seconds after the prior read finishes and retry reads after recovery, without replaying mutations.

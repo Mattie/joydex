@@ -2,7 +2,12 @@ using Joydex.Core.Input;
 
 namespace Joydex.Core.TaskAlerts;
 
-public sealed record TaskAlertNavigationRequest(int Slot, int Bank, int Button, string SessionId);
+public sealed record TaskAlertNavigationRequest(int Slot, int Bank, int Button, string SessionId,
+    TaskAlertIdentity? Identity = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public TaskAlertIdentity TaskIdentity => Identity ?? TaskAlertIdentity.FromPoolKey(SessionId);
+}
 
 public sealed record TaskAlertInterception(
     IReadOnlyList<JoystickEvent> RemainingEvents,
@@ -59,7 +64,7 @@ public sealed class TaskAlertInputInterceptor(Func<IReadOnlyList<TaskAlertAssign
                     assignment.Slot,
                     TaskAlertSlots.BankFromLogicalButton(button),
                     TaskAlertSlots.Button(assignment.Slot),
-                    assignment.SessionId));
+                    assignment.SessionId, assignment.Identity));
                 continue;
             }
 

@@ -17,11 +17,12 @@ public sealed record TaskAlertPreferences(
     int Bank = 2,
     TaskAlertSuppressionRule[]? Suppressions = null,
     TaskAlertLedOptions? LedOutput = null,
-    bool ClearQuestionsOnTurnEnd = false)
+    bool ClearQuestionsOnTurnEnd = false,
+    Joydex.Core.T3.T3ConnectionOptions? T3 = null)
 {
     public static TaskAlertPreferences Default { get; } = new(
         Suppressions: [],
-        LedOutput: TaskAlertLedOptions.CreateDefault());
+        LedOutput: TaskAlertLedOptions.CreateDefault(), T3: new());
 
     public TaskAlertPreferences Normalize()
     {
@@ -34,7 +35,8 @@ public sealed record TaskAlertPreferences(
             .Take(TaskAlertSuppression.MaximumRules)
             .ToArray();
         var ledOutput = (LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize();
-        return this with { Bank = bank, Suppressions = suppressions, LedOutput = ledOutput };
+        return this with { Bank = bank, Suppressions = suppressions, LedOutput = ledOutput,
+            T3 = (T3 ?? new()).Normalize() };
     }
 }
 

@@ -1,6 +1,7 @@
 using System.Threading.Channels;
 using System.Text.Json;
 using Joydex.Core.TaskAlerts;
+using Joydex.Core.T3;
 
 namespace Joydex.Windows.TaskAlerts;
 
@@ -13,7 +14,9 @@ public sealed record TaskAlertSnapshot(
     IReadOnlyList<TaskAlertEventTrace>? RecentEvents = null,
     IReadOnlyList<TaskAlertSuppressionRule>? Suppressions = null,
     TaskAlertLedOptions? LedOutput = null,
-    bool ClearQuestionsOnTurnEnd = false)
+    bool ClearQuestionsOnTurnEnd = false,
+    T3ReadResult? T3Status = null,
+    IReadOnlyList<T3ReadResult>? T3Statuses = null)
 {
     public TaskAlertLedOptions EffectiveLedOutput =>
         (LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize();
@@ -51,6 +54,13 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
     private readonly string _statePath;
     private readonly Action<string> _log;
     private readonly TaskAlertPool _pool;
+    private TaskAlertMetadataStore? _metadata;
+    private T3ReadResult? _t3Status;
+    private readonly Dictionary<string, T3ReadResult> _t3Statuses = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _desktopSources = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _desktopCatalogSources = new(StringComparer.Ordinal);
+    private T3ReadResult? _discoveryStatus;
+    private T3ReadResult[] _desktopDiagnostics = [];
     private readonly Channel<TaskAlertEvent> _events = Channel.CreateUnbounded<TaskAlertEvent>(new UnboundedChannelOptions
     {
         SingleReader = true,
@@ -155,6 +165,156 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         {
             return SnapshotUnsafe();
         }
+    }
+
+    /// <summary>Publishes positive remote observations without manufacturing local lifecycle hooks.</summary>
+    public void ApplySourceSnapshot(TaskAlertSourceSnapshot source, T3ReadResult status)
+    {
+        TaskAlertSnapshot snapshot;
+        lock (_sync)
+        {
+            var configured = _preferences.T3 ?? new T3ConnectionOptions();
+            if (!_pool.Enabled || !IsT3SourceEnabledUnsafe(source.Source)) return;
+            var displayName = configured.FollowDesktop ? _t3Statuses.GetValueOrDefault(source.Source.EnvironmentId)?.DisplayName : configured.DisplayName;
+            var projectedStatus = status with { Tasks = [], EnvironmentId = source.Source.EnvironmentId,
+                DisplayName = displayName, Enabled = true };
+            _t3Statuses[source.Source.EnvironmentId] = projectedStatus;
+            if (!configured.FollowDesktop) _t3Status = projectedStatus;
+            source = source with { Tasks = source.Tasks.Where(task => !IsSuppressedUnsafe(
+                TaskAlertIdentity.RemoteT3(source.Source.EnvironmentId, task.NativeThreadId).PoolKey, null)).ToArray() };
+            if (_pool.ApplySourceSnapshot(source)) TrySaveStateUnsafe();
+            var labelsChanged = false;
+            _metadata ??= new TaskAlertMetadataStore(_statePath + ".metadata.json");
+            foreach (var task in source.Tasks)
+                if (task.Metadata is not null)
+                    labelsChanged |= _metadata.Set(TaskAlertIdentity.RemoteT3(source.Source.EnvironmentId, task.NativeThreadId).PoolKey, task.Metadata);
+            if (labelsChanged) SaveMetadataUnsafe();
+            snapshot = SnapshotUnsafe();
+        }
+        RaiseChanged(snapshot);
+    }
+
+    public void SetSourceUnavailable(TaskAlertSourceIdentity source, T3ReadResult status)
+    {
+        TaskAlertSnapshot snapshot;
+        lock (_sync)
+        {
+            if (!IsT3SourceEnabledUnsafe(source)) return;
+            _pool.SetSourceUnavailable(source);
+            var configured = _preferences.T3;
+            var previous = _t3Statuses.GetValueOrDefault(source.EnvironmentId);
+            var projectedStatus = status with
+            {
+                Tasks = [], EnvironmentId = source.EnvironmentId,
+                DisplayName = configured?.FollowDesktop is true ? previous?.DisplayName : configured?.DisplayName,
+                TransportKind = status.TransportKind ?? previous?.TransportKind,
+                CapturedAt = status.CapturedAt > DateTimeOffset.UnixEpoch ? status.CapturedAt : previous?.CapturedAt ?? default,
+                Enabled = true,
+            };
+            _t3Statuses[source.EnvironmentId] = projectedStatus;
+            if (configured?.FollowDesktop is not true) _t3Status = projectedStatus;
+            snapshot = SnapshotUnsafe();
+        }
+        RaiseChanged(snapshot);
+    }
+
+    /// <summary>Positive disables retire their source; only a complete catalog can retire an absent source.</summary>
+    public void SetT3DesktopEnvironments(T3DesktopDiscoveryResult catalog)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        TaskAlertSnapshot snapshot;
+        lock (_sync)
+        {
+            if (_preferences.T3 is not { Enabled: true, FollowDesktop: true }) return;
+            if (catalog.Environments.Count > 64 || catalog.Success && !catalog.IsComplete
+                && _desktopCatalogSources.Union(catalog.Environments.Where(environment => !string.IsNullOrWhiteSpace(environment.EnvironmentId))
+                    .Select(environment => environment.EnvironmentId), StringComparer.Ordinal).Count() > 64)
+                catalog = new(false, false, [], "The desktop catalog exceeds the supported environment limit; existing sources are retained.");
+            var complete = catalog.IsComplete && catalog.Environments.Count <= 64;
+            if (!catalog.Success || !complete)
+                _discoveryStatus = new() { ErrorClass = catalog.Success ? "PartialCatalog" : "DiscoveryUnavailable",
+                    Reason = catalog.Error ?? "The T3 desktop environment catalog is unavailable or incomplete.", TransportKind = "discovery", DisplayName = "T3 desktop discovery" };
+            else _discoveryStatus = null;
+            if (catalog.Success)
+            {
+                if (complete) _desktopCatalogSources.Clear();
+                var enabled = new HashSet<string>(StringComparer.Ordinal);
+                var diagnostics = new List<T3ReadResult>();
+                foreach (var environment in catalog.Environments.Take(64))
+                {
+                    if (string.IsNullOrWhiteSpace(environment.EnvironmentId) || environment.EnvironmentId.Length > 512
+                        || environment.EnvironmentId.Any(char.IsControl))
+                    {
+                        diagnostics.Add(new() { DisplayName = environment.DisplayName, TransportKind = environment.TransportKind,
+                            Enabled = environment.Enabled, ErrorClass = "UnsupportedRoute",
+                            Reason = environment.UnsupportedReason ?? "The desktop environment identity could not be verified." });
+                        continue;
+                    }
+                    var supported = environment.Enabled && string.IsNullOrWhiteSpace(environment.UnsupportedReason);
+                    _desktopCatalogSources.Add(environment.EnvironmentId);
+                    if (supported) enabled.Add(environment.EnvironmentId);
+                    if (supported || !environment.Enabled || complete || !_t3Statuses.ContainsKey(environment.EnvironmentId))
+                    {
+                        if (supported) _desktopSources.Add(environment.EnvironmentId);
+                        else if (!environment.Enabled || complete)
+                        {
+                            _desktopSources.Remove(environment.EnvironmentId);
+                            _pool.SetSourceUnavailable(new(TaskAlertBackend.RemoteT3, environment.EnvironmentId));
+                        }
+                        var previous = _t3Statuses.GetValueOrDefault(environment.EnvironmentId);
+                        _t3Statuses[environment.EnvironmentId] = supported && previous is not null
+                            ? previous with { DisplayName = environment.DisplayName, TransportKind = environment.TransportKind, Enabled = true }
+                            : new() { EnvironmentId = environment.EnvironmentId, DisplayName = environment.DisplayName,
+                                TransportKind = environment.TransportKind, Enabled = environment.Enabled,
+                                ErrorClass = !environment.Enabled ? "Disabled" : supported ? "AwaitingRead" : "UnsupportedRoute",
+                                Reason = environment.UnsupportedReason ?? (environment.Enabled ? "Waiting for a metadata read." : "This environment is disabled in T3 desktop."),
+                                CapturedAt = previous?.CapturedAt ?? default };
+                    }
+                }
+                var allDiagnostics = (complete ? diagnostics : _desktopDiagnostics.Concat(diagnostics))
+                    .DistinctBy(status => (status.DisplayName, status.TransportKind, status.Reason)).ToArray();
+                _desktopDiagnostics = allDiagnostics.Take(64).ToArray();
+                if (allDiagnostics.Length > 64)
+                    _discoveryStatus = new() { ErrorClass = "DiagnosticLimit", TransportKind = "discovery", DisplayName = "T3 desktop discovery",
+                        Reason = "Additional unsupported routes exceed the diagnostic limit; previously authorized sources are retained." };
+                if (complete)
+                    foreach (var missing in _desktopSources.Where(id => !enabled.Contains(id)).ToArray())
+                    {
+                        _desktopSources.Remove(missing);
+                        _pool.SetSourceUnavailable(new(TaskAlertBackend.RemoteT3, missing));
+                        if (_t3Statuses.TryGetValue(missing, out var status))
+                            _t3Statuses[missing] = status with { Success = false, Enabled = false, ErrorClass = "NotEnabled",
+                                Reason = "This environment is no longer enabled in the T3 desktop catalog." };
+                    }
+            }
+            snapshot = SnapshotUnsafe();
+        }
+        RaiseChanged(snapshot);
+    }
+
+    private bool IsT3SourceEnabledUnsafe(TaskAlertSourceIdentity source) => source.Backend == TaskAlertBackend.RemoteT3
+        && _preferences.T3 is { Enabled: true } configured
+        && (configured.FollowDesktop ? _desktopSources.Contains(source.EnvironmentId) : configured.EnvironmentId == source.EnvironmentId);
+
+    /// <summary>Refreshes labels only; catalog metadata never starts or ends a task.</summary>
+    public void SetTaskMetadata(IEnumerable<KeyValuePair<string, TaskAlertMetadata>> labels)
+    {
+        TaskAlertSnapshot? snapshot = null;
+        lock (_sync)
+        {
+            _metadata ??= new TaskAlertMetadataStore(_statePath + ".metadata.json");
+            var changed = false;
+            foreach (var pair in labels.Take(2048)) changed |= _metadata.Set(pair.Key, pair.Value);
+            if (changed) { SaveMetadataUnsafe(); snapshot = SnapshotUnsafe(); }
+        }
+        RaiseChanged(snapshot);
+    }
+
+    private void SaveMetadataUnsafe()
+    {
+        try { _metadata?.Save(); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { _log("Task display metadata could not be saved (" + error.GetType().Name + ")."); }
     }
 
     public void SetEnabled(bool enabled)
@@ -569,22 +729,41 @@ public sealed class TaskAlertCoordinator : IAsyncDisposable
         }
     }
 
-    private TaskAlertSnapshot SnapshotUnsafe() => new(
+    private TaskAlertSnapshot SnapshotUnsafe()
+    {
+        if (_preferences.T3?.FollowDesktop is true)
+        {
+            var retained = _pool.Assignments.Where(task => task.TaskIdentity.Backend == TaskAlertBackend.RemoteT3)
+                .Select(task => task.TaskIdentity.EnvironmentId).ToHashSet(StringComparer.Ordinal);
+            foreach (var removed in _t3Statuses.Keys.Where(id => !_desktopCatalogSources.Contains(id) && !retained.Contains(id)).ToArray())
+                _t3Statuses.Remove(removed);
+        }
+        return new(
         _pool.Enabled,
-        _pool.Assignments,
+        _pool.Assignments.Select(assignment => assignment with
+        {
+            Metadata = assignment.Metadata ?? (_metadata ??= new TaskAlertMetadataStore(_statePath + ".metadata.json")).Get(assignment.SessionId)
+        }).ToArray(),
         _pool.DroppedEventCount,
         _detectedBank ?? _preferences.Bank,
         _detectedBank is not null,
         [.. _recentEvents],
         [.. (_preferences.Suppressions ?? [])],
         (_preferences.LedOutput ?? TaskAlertLedOptions.CreateDefault()).Normalize(),
-        _preferences.ClearQuestionsOnTurnEnd);
+        _preferences.ClearQuestionsOnTurnEnd,
+        _t3Status,
+        _t3Statuses.Values.OrderBy(status => status.DisplayName, StringComparer.Ordinal).ThenBy(status => status.EnvironmentId, StringComparer.Ordinal)
+            .Concat(_desktopDiagnostics).Concat(_discoveryStatus is null ? [] : new[] { _discoveryStatus }).ToArray());
+    }
 
     private void RestoreStateUnsafe()
     {
         try
         {
             _pool.Restore(TaskAlertStateStore.Load(_statePath));
+            foreach (var source in _pool.Assignments.Select(task => task.TaskIdentity.Source)
+                .Where(source => source.Backend == TaskAlertBackend.RemoteT3).Distinct().ToArray())
+                _pool.SetSourceUnavailable(source);
             _pool.RemoveAssignments(assignment => IsSuppressedUnsafe(
                 assignment.SessionId,
                 assignment.WorkspaceKey), DateTimeOffset.UtcNow);

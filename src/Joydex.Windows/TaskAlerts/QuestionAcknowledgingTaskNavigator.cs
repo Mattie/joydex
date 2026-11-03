@@ -16,6 +16,12 @@ public sealed class QuestionAcknowledgingTaskNavigator(
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            request.TaskIdentity.Validate();
+            if (request.Identity is not null && request.Identity.PoolKey != request.SessionId) return false;
+        }
+        catch (InvalidDataException) { return false; }
         var snapshot = getSnapshot();
         var displayed = snapshot.Enabled
             ? snapshot.Assignments.FirstOrDefault(item => string.Equals(item.SessionId, request.SessionId, StringComparison.OrdinalIgnoreCase))

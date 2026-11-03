@@ -96,7 +96,7 @@ internal sealed class CompanionProductionOwner : IProductionInputOwner
         try
         {
             var entries = catalog.Refresh(config);
-            var promptSubmitExecutor = factory.CreateActionExecutor(config);
+            var promptSubmitExecutor = factory.CreateActionExecutor(config, routeDesktopActions: false);
             promptPicker = new PromptPickerCoordinator(
                 config,
                 factory.WriteActivity,

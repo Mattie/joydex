@@ -3,7 +3,7 @@ namespace Joydex.Contracts;
 public static class RuntimeProtocol
 {
     public const int MajorVersion = 1;
-    public const int MinorVersion = 3;
+    public const int MinorVersion = 5;
     public const int MaximumMessageBytes = 1024 * 1024;
     public const int MaximumRetainedEvents = 256;
 
@@ -16,6 +16,8 @@ public static class RuntimeProtocol
     public const string SettingsTransferCapability = "settings-transfer.v1";
     public const string ReliableCursorsCapability = "reliable-cursors.v1";
     public const string PluginManagementCapability = "plugin-management.v1";
+    public const string AggregateTasksCapability = "aggregate-tasks.v1";
+    public const string T3DesktopSourcesCapability = "t3-desktop-sources.v1";
 
     public static string[] Capabilities { get; } =
     [
@@ -28,6 +30,8 @@ public static class RuntimeProtocol
         SettingsTransferCapability,
         ReliableCursorsCapability,
         PluginManagementCapability,
+        AggregateTasksCapability,
+        T3DesktopSourcesCapability,
     ];
 
     public static string[] CapabilitiesForMinor(int negotiatedMinor) => Capabilities
@@ -36,6 +40,8 @@ public static class RuntimeProtocol
             || capability is not (SettingsTransferCapability or ReliableCursorsCapability))
         .Where(capability => negotiatedMinor >= 3
             || capability != PluginManagementCapability)
+        .Where(capability => negotiatedMinor >= 4 || capability != AggregateTasksCapability)
+        .Where(capability => negotiatedMinor >= 5 || capability != T3DesktopSourcesCapability)
         .ToArray();
 }
 

@@ -20,6 +20,7 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
     private readonly object _heldKeyLock = new();
     private readonly Dictionary<InjectedKeyHoldId, CodexBindingResolution> _heldPushToTalkResolutions = [];
     private readonly ICodexDictationControl _dictationControl;
+    private readonly Func<ActionRequest, CancellationToken, Task<ActionExecutionResult?>>? _desktopActionRouter;
     private readonly object _dictationLock = new();
     private readonly Dictionary<DictationHoldId, IntPtr> _dictationWindows =
         new(DictationOwnerEqualityComparer.Instance);
@@ -35,7 +36,8 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         WorkingDirectoryLauncherRegistry? launchers = null,
         Action<ActionRequest>? internalAction = null,
         InjectedKeyStateOwner? injectedKeyStateOwner = null,
-        ICodexDictationControl? dictationControl = null)
+        ICodexDictationControl? dictationControl = null,
+        Func<ActionRequest, CancellationToken, Task<ActionExecutionResult?>>? desktopActionRouter = null)
     {
         _safety = safety ?? throw new ArgumentNullException(nameof(safety));
         _log = log ?? throw new ArgumentNullException(nameof(log));
@@ -48,6 +50,7 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
         _internalAction = internalAction;
         _injectedKeyState = injectedKeyStateOwner ?? new InjectedKeyStateOwner(_inputSender);
         _dictationControl = dictationControl ?? new WindowsCodexDictationControl();
+        _desktopActionRouter = desktopActionRouter;
     }
 
     public async Task<ActionExecutionResult> ExecuteAsync(
@@ -74,6 +77,13 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
             return ReleasePushToTalk(request);
         }
 
+        if (_desktopActionRouter is not null
+            && await _desktopActionRouter(request, cancellationToken).ConfigureAwait(false) is { } routed)
+            return routed;
+
+        if (request.Action == CodexAction.StopTask)
+            return LogBlocked(request, null, "Stop task is unavailable: no verified Codex Desktop stop action is configured.");
+
         CodexBindingResolution? resolution = null;
         try
         {
@@ -90,6 +100,10 @@ public sealed class CodexActionExecutor : IInjectedKeyStateLifecycle
                 resolution = await _keybindings.ResolveAsync(request.Action, cancellationToken).ConfigureAwait(false);
             }
             cancellationToken.ThrowIfCancellationRequested();
+            // Binding discovery may yield while focus changes to another desktop app.
+            if (_desktopActionRouter is not null
+                && await _desktopActionRouter(request, cancellationToken).ConfigureAwait(false) is { } changedTarget)
+                return changedTarget;
             var foreground = _foregroundGuard.Check(_safety, actionMayBringCodexForward: false);
             if (_safety.DryRun)
             {

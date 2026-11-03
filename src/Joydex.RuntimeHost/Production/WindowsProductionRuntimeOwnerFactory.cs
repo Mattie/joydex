@@ -378,7 +378,8 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
 
     internal CodexActionExecutor CreateActionExecutor(
         CompanionConfig config,
-        Action<Joydex.Core.Mapping.ActionRequest>? internalAction = null) => new(
+        Action<Joydex.Core.Mapping.ActionRequest>? internalAction = null,
+        bool routeDesktopActions = true) => new(
         config.Safety,
         WriteActivity,
         GetKeybindings(),
@@ -386,7 +387,10 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         _foreground,
         _inputSender,
         internalAction: internalAction,
-        injectedKeyStateOwner: _injectedKeys);
+        injectedKeyStateOwner: _injectedKeys,
+        desktopActionRouter: routeDesktopActions
+            ? new DesktopActionRouter(config.Safety, WriteActivity, inputSender: _inputSender).TryExecuteAsync
+            : null);
 
     VoiceHostCommandPolicy IVoicePluginHostServices.CreateVoiceHostPolicy(
         SettingsBundle activeSettings)
@@ -394,7 +398,7 @@ internal sealed partial class WindowsProductionRuntimeOwnerFactory :
         var navigator = new PinnedVoiceTargetNavigator(
             activeSettings.Companion.Safety,
             WriteLog);
-        var executor = CreateActionExecutor(activeSettings.Companion);
+        var executor = CreateActionExecutor(activeSettings.Companion, routeDesktopActions: false);
         return new VoiceHostCommandPolicy(
             activeSettings.Voice.Normalize(),
             activeSettings.Companion.Safety,
